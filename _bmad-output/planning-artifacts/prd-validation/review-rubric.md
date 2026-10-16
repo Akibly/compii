@@ -1,0 +1,50 @@
+# PRD Quality Review — Compii
+
+## Overall verdict
+Compii has a coherent learning-to-action proposition, unusually explicit autonomy boundaries, and a concrete user-approved character/presentation direction; the linked flows, contracts and test plan make this substantially more useful than a feature wish list. It is adequate to start bounded feasibility work, but not yet a release-ready implementation contract: learning outcomes, the supported-task benchmark, and several acceptance bounds remain undefined. Treat the six-document packet as a strong planning baseline with unresolved release gates, not proof that planning or implementation is complete.
+
+## Decision-readiness — adequate
+The PRD's “Product principles,” “Scope boundaries,” and “Recommended product defaults” expose meaningful choices: desktop independence, explicit memory, Windows/Android first, and no universal platform parity. The “Status and reading order” paragraph distinguishes user decisions from “recommended engineering defaults,” which is honest. The linked architecture and implementation plan correctly defer native feasibility and transport selection to spikes rather than pretending those decisions are settled.
+
+### Findings
+- **medium** Decision status lacks an operational resolution record (§ Recommended product defaults; § Requirements and release allocation; linked Technical Architecture § Constraints and engineering gates) — “Windows desktop first, Android companion in the same V1 milestone” and the broad V1 allocation are proposed defaults, but there is no decision register identifying which open choices block which milestone, who resolves them, and what evidence settles them. *Fix:* Add a short decision table with status, decision owner/role, required evidence, and latest stage for resolution; retain the distinction between user-confirmed and engineering-proposed choices.
+
+## Substance over theater — strong
+“Demonstrate capability through verified outcomes rather than a claim of fictional Jarvis-level intelligence” is a substantive constraint, not marketing filler. The pitch ties the mascot to teaching, collaborative work, and bounded execution; the audience section drives the adult-only initial scope. Research evidence is qualified as vendor claims or anecdote, and the linked test plan contains actual latency, safety, accessibility and task-success targets. There are no unnecessary fictional personas or unsupported novelty claims.
+
+## Strategic coherence — thin
+The thesis is recognizable: a tested “learning-to-action transition” rather than merely another screen-controlling mascot. Teach me / With me / For me and the first vertical slice support that thesis. However, V1 includes a substantial general-agent platform, while the product outcome used to decide whether learning plus delegation actually helps its initial users remains unspecified. The linked plan's unaided-repeat pilot is a useful start, not yet a measurable product success criterion.
+
+### Findings
+- **high** No decision-grade learning outcome (§ Evidence and references, final paragraph; linked Implementation & Test Plan § Provisional performance and quality gates) — “differentiated through a tested learning-to-action transition” is the core bet, but “Teaching pilot includes an unaided repeat task” does not define the cohort, task difficulty, baseline, success threshold, evaluation window, or outcome that would justify expansion. *Fix:* Define a bounded pilot with an unaided completion measure and baseline, plus a decision rule for iteration versus expansion; add counter-metrics for erroneous guidance, user takeover, and dependence on automated completion.
+- **medium** V1 breadth is not prioritized within the release (§ Requirements and release allocation, C01–C11) — Research, memory, phone pairing, voice, two providers, teaching, and desktop execution all land in V1. The linked build sequence orders engineering work but does not identify what can be deferred if feasibility or effort exceeds expectations without losing the core product thesis. *Fix:* Distinguish the minimum learning-to-action validation milestone from the public V1 bundle and explicitly rank the remaining capabilities and their deferral consequences.
+
+## Done-ness clarity — thin
+The requirement table has observable consequences, and linked T01–T18 supply unusually useful negative tests for approval, replay, deletion and stale observations. C02 is especially clear. Nevertheless, some “acceptance outcomes” name mechanisms rather than fully bounded completion criteria, and the release benchmark is not yet executable. These gaps are important for downstream story creation, even though they need not block the initial UI or feasibility spikes.
+
+### Findings
+- **high** Supported scope and release benchmark are not enumerated (§ Requirements and release allocation, C06–C08 and teaching-validation paragraph; linked Implementation & Test Plan § Provisional performance and quality gates) — “a browser-based spreadsheet, a browser workflow, and Windows file management” and “a published fixed set of 30 low-risk supported tasks” leave engineers free to choose incompatible applications, task boundaries, fixtures and interpretations of success. *Fix:* Publish the first supported application/version matrix and task fixtures with initial state, allowed actions, evidence of success, failure conditions, repeat counts and scoring rules before implementing or claiming the corresponding teaching/execution coverage.
+- **medium** Bounded research and runtime budgets have no baseline values (§ Requirements and release allocation, C07 and C09; linked User Flows § F07 and F08) — “bounded plans,” “bounded multi-source research,” and “scope/time/cost choice” do not define shipped defaults, hard ceilings, accounting when provider prices are unknown, or when a partial result becomes acceptable. *Fix:* Specify configurable defaults and hard-stop behavior for time, actions, source/page counts and estimated spend; include a no-known-price behavior and deterministic cutoff acceptance cases.
+
+## Scope honesty — adequate
+The packet explicitly excludes unrestricted consequential actions, background recording, universal undo, off-app mobile overlays and identical platform capability. It labels deferred V1.1/V2 functionality and admits that the supplied video could not be verified. The provenance of current implementation status now needs updating: the PRD is visibly a pre-build snapshot, but its unqualified present-tense statements conflict with the local character prototype recorded in the current task context.
+
+### Findings
+- **medium** Historical baseline can be mistaken for current implementation status (§ Status and reading order; linked Implementation & Test Plan § Ready-to-start checklist) — “Application implementation has not started” and “A running Flutter build ... do not yet exist” are no longer accurate as current-state statements after the character-preview slice. They also conflate a visual prototype with completion of native/AI capability gates if corrected too broadly. *Fix:* Preserve the dated baseline and add a current evidence/status note distinguishing implemented/tested character UI from unimplemented AI, native overlays, secure pairing and hardware verification; link test/build evidence without marking full P0/P1 complete.
+
+## Downstream usability — thin
+C01–C20 are contiguous and linked flows reference those identifiers; T01–T18 provide a useful requirements-to-test map. The six documents are individually readable. For a chain-top PRD feeding UX, architecture and stories, however, mode terminology and requirement granularity are not yet sufficiently normalized to prevent independent implementations from interpreting the same row differently.
+
+### Findings
+- **medium** Shared terms and atomic obligations need stable extraction anchors (§ Product principles; § Requirements and release allocation, C03, C07 and C08; linked AI & Data Contracts § Task and teaching state) — Human labels “Teach me / With me / For me,” prose “teach, collaborate, and execute,” and wire values `teach | collaborate | execute` are consistent in intent but not collected in a glossary. Broad rows bundle independently testable behaviors such as pause/resume/stop, approval and verification, making story coverage easy to overstate. *Fix:* Add a compact glossary mapping display labels to domain values and introduce stable sub-requirement/acceptance identifiers for bundled obligations; map stories/tests to those without renumbering C01–C20.
+
+## Shape fit — adequate
+A compact PRD plus five focused companion documents fits this solo-led consumer product better than a huge monolithic template. The flows describe real journeys and failures; named fictional protagonists would add little by themselves. The brownfield relationship is correctly explicit: Bluey is the Swift reference, not the Flutter product. The primary shape limitation is the already-reported absence of outcome and acceptance detail, rather than missing ceremonial sections.
+
+## Mechanical notes
+- C01–C20 and F01–F10 are contiguous; T01–T18 cover the initial-release requirements. Later-release features intentionally lack detailed acceptance scenarios and must not be treated as ready stories.
+- No inline `[ASSUMPTION]` tags, assumptions index, or memlog/addendum exist. Proposed defaults are instead qualified in prose; a future extraction should preserve that status rather than treating absence of tags as user confirmation.
+- The main PRD contains no standalone success-metric IDs or glossary. These are substantive traceability gaps described above, not formatting failures by themselves.
+- Flows use a generic user rather than named protagonists; the initial adult Windows audience is stated in the PRD. Retain that context when extracting a journey into a separate story.
+- “Scope boundaries” excludes unrestricted consequential actions rather than all consequential actions; linked contracts explicitly allow exact-action approval. Preserve that distinction in summaries.
+

@@ -1,0 +1,206 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Compii PRD Validation</title><style>
+  :root {
+    --bg: #fafaf9;
+    --surface: #ffffff;
+    --border: #e7e5e4;
+    --text: #1c1917;
+    --muted: #78716c;
+
+    --verdict-strong: #16a34a;
+    --verdict-adequate: #65a30d;
+    --verdict-thin: #d97706;
+    --verdict-broken: #dc2626;
+
+    --sev-low: #64748b;
+    --sev-medium: #ca8a04;
+    --sev-high: #ea580c;
+    --sev-critical: #dc2626;
+
+    --grade-exc: #16a34a;
+    --grade-good: #65a30d;
+    --grade-fair: #d97706;
+    --grade-poor: #dc2626;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 24px 64px; }
+
+  header.report-header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 24px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 24px;
+  }
+  .title h1 { margin: 0; font-size: 22px; font-weight: 600; letter-spacing: -0.01em; }
+  .title .subtitle { color: var(--muted); font-size: 13px; margin-top: 4px; font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .grade {
+    padding: 10px 18px;
+    border-radius: 8px;
+    font-weight: 600;
+    color: white;
+    font-size: 15px;
+    white-space: nowrap;
+  }
+  .grade-excellent { background: var(--grade-exc); }
+  .grade-good { background: var(--grade-good); }
+  .grade-fair { background: var(--grade-fair); }
+  .grade-poor { background: var(--grade-poor); }
+
+  .synthesis {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--muted);
+    border-radius: 8px;
+    padding: 18px 22px;
+    margin-bottom: 24px;
+    font-size: 15.5px;
+  }
+  .synthesis p { margin: 0 0 10px; }
+  .synthesis p:last-child { margin-bottom: 0; }
+
+  .dimension-summary {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .dim-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 14px;
+  }
+  .dim-card .dim-name { font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  .dim-card .dim-verdict { font-size: 14px; font-weight: 600; }
+
+  section.dimension, section.reviewer-section { margin-bottom: 14px; }
+  section.dimension details, section.reviewer-section details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  section summary {
+    padding: 14px 20px;
+    cursor: pointer;
+    user-select: none;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  section summary::-webkit-details-marker { display: none; }
+  section summary::before {
+    content: "▸";
+    display: inline-block;
+    color: var(--muted);
+    transition: transform 0.15s ease;
+  }
+  section details[open] summary::before { transform: rotate(90deg); }
+  section summary h2 {
+    display: inline;
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    letter-spacing: -0.005em;
+    flex: 1;
+  }
+  .verdict-pill {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 999px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: white;
+  }
+  .verdict-strong { background: var(--verdict-strong); }
+  .verdict-adequate { background: var(--verdict-adequate); }
+  .verdict-thin { background: var(--verdict-thin); }
+  .verdict-broken { background: var(--verdict-broken); }
+
+  .dim-body { padding: 4px 20px 18px; }
+  .dim-judgment { color: var(--text); font-size: 14.5px; }
+  .dim-judgment p { margin: 0 0 10px; }
+
+  .findings-list { padding: 0 20px 4px; }
+  article.finding {
+    padding: 14px 0;
+    border-top: 1px solid var(--border);
+  }
+  article.finding:first-child { border-top: none; }
+  article.finding header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 6px;
+  }
+  .badge {
+    font-size: 10.5px;
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    line-height: 1.4;
+  }
+  .badge-sev-low { background: rgba(100, 116, 139, 0.12); color: var(--sev-low); }
+  .badge-sev-medium { background: rgba(202, 138, 4, 0.14); color: var(--sev-medium); }
+  .badge-sev-high { background: rgba(234, 88, 12, 0.14); color: var(--sev-high); }
+  .badge-sev-critical { background: rgba(220, 38, 38, 0.14); color: var(--sev-critical); }
+  .finding-title { margin: 0; font-size: 15px; font-weight: 500; flex: 1; min-width: 200px; }
+  .finding-location { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; color: var(--muted); }
+  .finding-note, .finding-fix { margin-top: 6px; font-size: 14px; }
+  .finding-fix strong { color: var(--muted); font-weight: 500; }
+
+  .reviewer-source {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+
+  .mechanical {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-top: 24px;
+    font-size: 14px;
+  }
+  .mechanical h3 { margin: 0 0 10px; font-size: 14px; font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .mechanical ul { margin: 0; padding-left: 20px; }
+  .mechanical li { margin-bottom: 4px; color: var(--text); }
+
+  footer.report-footer {
+    margin-top: 40px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+    font-size: 12px;
+    color: var(--muted);
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+  footer .meta { display: flex; gap: 24px; flex-wrap: wrap; }
+</style></head><body><div class="container">
+<header class="report-header"><div class="title"><h1>Compii — Validation Report</h1><div class="subtitle">D:/compii/docs/compii/01-product-requirements.md</div></div><div class="grade grade-fair">Fair</div></header>
+<div class="synthesis"><p>Compii has a coherent learning-to-action proposition, unusually explicit autonomy boundaries, and a concrete user-approved character/presentation direction; the linked flows, contracts and test plan make this substantially more useful than a feature wish list. It is adequate to start bounded feasibility work, but not yet a release-ready implementation contract: learning outcomes, the supported-task benchmark, and several acceptance bounds remain undefined. Treat the six-document packet as a strong planning baseline with unresolved release gates, not proof that planning or implementation is complete.</p></div>
+<div class="dimension-summary"><div class="dim-card"><div class="dim-name">Decision-readiness</div><div class="dim-verdict" style="color:var(--verdict-adequate)">adequate</div></div><div class="dim-card"><div class="dim-name">Substance over theater</div><div class="dim-verdict" style="color:var(--verdict-strong)">strong</div></div><div class="dim-card"><div class="dim-name">Strategic coherence</div><div class="dim-verdict" style="color:var(--verdict-thin)">thin</div></div><div class="dim-card"><div class="dim-name">Done-ness clarity</div><div class="dim-verdict" style="color:var(--verdict-thin)">thin</div></div><div class="dim-card"><div class="dim-name">Scope honesty</div><div class="dim-verdict" style="color:var(--verdict-adequate)">adequate</div></div><div class="dim-card"><div class="dim-name">Downstream usability</div><div class="dim-verdict" style="color:var(--verdict-thin)">thin</div></div><div class="dim-card"><div class="dim-name">Shape fit</div><div class="dim-verdict" style="color:var(--verdict-adequate)">adequate</div></div></div>
+<section class="dimension"><details ><summary><h2>Decision-readiness</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><div class="dim-judgment"><p>The PRD's “Product principles,” “Scope boundaries,” and “Recommended product defaults” expose meaningful choices: desktop independence, explicit memory, Windows/Android first, and no universal platform parity. The “Status and reading order” paragraph distinguishes user decisions from “recommended engineering defaults,” which is honest. The linked architecture and implementation plan correctly defer native feasibility and transport selection to spikes rather than pretending those decisions are settled.</p></div></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span></header><div class="finding-note">Decision status lacks an operational resolution record (§ Recommended product defaults; § Requirements and release allocation; linked Technical Architecture § Constraints and engineering gates) — “Windows desktop first, Android companion in the same V1 milestone” and the broad V1 allocation are proposed defaults, but there is no decision register identifying which open choices block which milestone, who resolves them, and what evidence settles them.</div><div class="finding-fix"><strong>Fix:</strong> Add a short decision table with status, decision owner/role, required evidence, and latest stage for resolution; retain the distinction between user-confirmed and engineering-proposed choices.</div></article></div></details></section>
+<section class="dimension"><details ><summary><h2>Substance over theater</h2><span class="verdict-pill verdict-strong">strong</span></summary><div class="dim-body"><div class="dim-judgment"><p>“Demonstrate capability through verified outcomes rather than a claim of fictional Jarvis-level intelligence” is a substantive constraint, not marketing filler. The pitch ties the mascot to teaching, collaborative work, and bounded execution; the audience section drives the adult-only initial scope. Research evidence is qualified as vendor claims or anecdote, and the linked test plan contains actual latency, safety, accessibility and task-success targets. There are no unnecessary fictional personas or unsupported novelty claims.</p></div></div><div class="findings-list"></div></details></section>
+<section class="dimension"><details open><summary><h2>Strategic coherence</h2><span class="verdict-pill verdict-thin">thin</span></summary><div class="dim-body"><div class="dim-judgment"><p>The thesis is recognizable: a tested “learning-to-action transition” rather than merely another screen-controlling mascot. Teach me / With me / For me and the first vertical slice support that thesis. However, V1 includes a substantial general-agent platform, while the product outcome used to decide whether learning plus delegation actually helps its initial users remains unspecified. The linked plan's unaided-repeat pilot is a useful start, not yet a measurable product success criterion.</p></div></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span></header><div class="finding-note">No decision-grade learning outcome (§ Evidence and references, final paragraph; linked Implementation &amp; Test Plan § Provisional performance and quality gates) — “differentiated through a tested learning-to-action transition” is the core bet, but “Teaching pilot includes an unaided repeat task” does not define the cohort, task difficulty, baseline, success threshold, evaluation window, or outcome that would justify expansion.</div><div class="finding-fix"><strong>Fix:</strong> Define a bounded pilot with an unaided completion measure and baseline, plus a decision rule for iteration versus expansion; add counter-metrics for erroneous guidance, user takeover, and dependence on automated completion.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span></header><div class="finding-note">V1 breadth is not prioritized within the release (§ Requirements and release allocation, C01–C11) — Research, memory, phone pairing, voice, two providers, teaching, and desktop execution all land in V1. The linked build sequence orders engineering work but does not identify what can be deferred if feasibility or effort exceeds expectations without losing the core product thesis.</div><div class="finding-fix"><strong>Fix:</strong> Distinguish the minimum learning-to-action validation milestone from the public V1 bundle and explicitly rank the remaining capabilities and their deferral consequences.</div></article></div></details></section>
+<section class="dimension"><details open><summary><h2>Done-ness clarity</h2><span class="verdict-pill verdict-thin">thin</span></summary><div class="dim-body"><div class="dim-judgment"><p>The requirement table has observable consequences, and linked T01–T18 supply unusually useful negative tests for approval, replay, deletion and stale observations. C02 is especially clear. Nevertheless, some “acceptance outcomes” name mechanisms rather than fully bounded completion criteria, and the release benchmark is not yet executable. These gaps are important for downstream story creation, even though they need not block the initial UI or feasibility spikes.</p></div></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-high">high</span></header><div class="finding-note">Supported scope and release benchmark are not enumerated (§ Requirements and release allocation, C06–C08 and teaching-validation paragraph; linked Implementation &amp; Test Plan § Provisional performance and quality gates) — “a browser-based spreadsheet, a browser workflow, and Windows file management” and “a published fixed set of 30 low-risk supported tasks” leave engineers free to choose incompatible applications, task boundaries, fixtures and interpretations of success.</div><div class="finding-fix"><strong>Fix:</strong> Publish the first supported application/version matrix and task fixtures with initial state, allowed actions, evidence of success, failure conditions, repeat counts and scoring rules before implementing or claiming the corresponding teaching/execution coverage.</div></article><article class="finding"><header><span class="badge badge-sev-medium">medium</span></header><div class="finding-note">Bounded research and runtime budgets have no baseline values (§ Requirements and release allocation, C07 and C09; linked User Flows § F07 and F08) — “bounded plans,” “bounded multi-source research,” and “scope/time/cost choice” do not define shipped defaults, hard ceilings, accounting when provider prices are unknown, or when a partial result becomes acceptable.</div><div class="finding-fix"><strong>Fix:</strong> Specify configurable defaults and hard-stop behavior for time, actions, source/page counts and estimated spend; include a no-known-price behavior and deterministic cutoff acceptance cases.</div></article></div></details></section>
+<section class="dimension"><details ><summary><h2>Scope honesty</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><div class="dim-judgment"><p>The packet explicitly excludes unrestricted consequential actions, background recording, universal undo, off-app mobile overlays and identical platform capability. It labels deferred V1.1/V2 functionality and admits that the supplied video could not be verified. The provenance of current implementation status now needs updating: the PRD is visibly a pre-build snapshot, but its unqualified present-tense statements conflict with the local character prototype recorded in the current task context.</p></div></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span></header><div class="finding-note">Historical baseline can be mistaken for current implementation status (§ Status and reading order; linked Implementation &amp; Test Plan § Ready-to-start checklist) — “Application implementation has not started” and “A running Flutter build ... do not yet exist” are no longer accurate as current-state statements after the character-preview slice. They also conflate a visual prototype with completion of native/AI capability gates if corrected too broadly.</div><div class="finding-fix"><strong>Fix:</strong> Preserve the dated baseline and add a current evidence/status note distinguishing implemented/tested character UI from unimplemented AI, native overlays, secure pairing and hardware verification; link test/build evidence without marking full P0/P1 complete.</div></article></div></details></section>
+<section class="dimension"><details open><summary><h2>Downstream usability</h2><span class="verdict-pill verdict-thin">thin</span></summary><div class="dim-body"><div class="dim-judgment"><p>C01–C20 are contiguous and linked flows reference those identifiers; T01–T18 provide a useful requirements-to-test map. The six documents are individually readable. For a chain-top PRD feeding UX, architecture and stories, however, mode terminology and requirement granularity are not yet sufficiently normalized to prevent independent implementations from interpreting the same row differently.</p></div></div><div class="findings-list"><article class="finding"><header><span class="badge badge-sev-medium">medium</span></header><div class="finding-note">Shared terms and atomic obligations need stable extraction anchors (§ Product principles; § Requirements and release allocation, C03, C07 and C08; linked AI &amp; Data Contracts § Task and teaching state) — Human labels “Teach me / With me / For me,” prose “teach, collaborate, and execute,” and wire values `teach | collaborate | execute` are consistent in intent but not collected in a glossary. Broad rows bundle independently testable behaviors such as pause/resume/stop, approval and verification, making story coverage easy to overstate.</div><div class="finding-fix"><strong>Fix:</strong> Add a compact glossary mapping display labels to domain values and introduce stable sub-requirement/acceptance identifiers for bundled obligations; map stories/tests to those without renumbering C01–C20.</div></article></div></details></section>
+<section class="dimension"><details ><summary><h2>Shape fit</h2><span class="verdict-pill verdict-adequate">adequate</span></summary><div class="dim-body"><div class="dim-judgment"><p>A compact PRD plus five focused companion documents fits this solo-led consumer product better than a huge monolithic template. The flows describe real journeys and failures; named fictional protagonists would add little by themselves. The brownfield relationship is correctly explicit: Bluey is the Swift reference, not the Flutter product. The primary shape limitation is the already-reported absence of outcome and acceptance detail, rather than missing ceremonial sections.</p></div></div><div class="findings-list"></div></details></section>
+<div class="mechanical"><h3>Mechanical notes</h3><ul><li>C01–C20 and F01–F10 are contiguous; T01–T18 cover the initial-release requirements. Later-release features intentionally lack detailed acceptance scenarios and must not be treated as ready stories.</li><li>No inline `[ASSUMPTION]` tags, assumptions index, or memlog/addendum exist. Proposed defaults are instead qualified in prose; a future extraction should preserve that status rather than treating absence of tags as user confirmation.</li><li>The main PRD contains no standalone success-metric IDs or glossary. These are substantive traceability gaps described above, not formatting failures by themselves.</li><li>Flows use a generic user rather than named protagonists; the initial adult Windows audience is stated in the PRD. Retain that context when extracting a journey into a separate story.</li><li>“Scope boundaries” excludes unrestricted consequential actions rather than all consequential actions; linked contracts explicitly allow exact-action approval. Preserve that distinction in summaries.</li></ul></div>
+<footer class="report-footer"><div class="meta"><span>Rubric: D:/compii/.agents/skills/bmad-prd/assets/prd-validation-checklist.md</span><span>Generated: 2026-10-15T18:05:49.937Z</span><span>Source: review-rubric.md · Twin: validation-report.md</span></div></footer></div></body></html>
