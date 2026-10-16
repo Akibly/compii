@@ -25,7 +25,7 @@ Then start the app (`flutter run -d windows` in `compii_flutter/apps/companion`)
 
 ## Point at something
 
-`POST /point` with `{"target": "File", "message": "..."}` (or exact `x`, `y`, `w`, `h` in screen pixels) makes the character point at it. The desktop overlay that draws this is still experimental: start the app with `COMPII_OVERLAY=1`.
+`POST /point` with `{"target": "File", "message": "..."}` (or exact `x`, `y`, `w`, `h` in screen pixels) makes the character point at it. The app's desktop overlay draws this on Windows.
 
 ## Test
 

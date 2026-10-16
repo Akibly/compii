@@ -10,11 +10,7 @@ import 'src/overlay/overlay_app.dart';
 Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
   WidgetsFlutterBinding.ensureInitialized();
-  // The pointing overlay is opt-in until its transparent window is verified
-  // on real desktops (see docs/compii/character-bible.md, Next).
-  if (Platform.isWindows && Platform.environment['COMPII_OVERLAY'] == '1') {
-    await _startOverlay();
-  }
+  if (Platform.isWindows) await _startOverlay();
   final core = CoreClient()..start();
   runApp(
     MaterialApp(

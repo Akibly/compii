@@ -24,9 +24,9 @@ Future<void> runOverlay() async {
   await windowManager.ensureInitialized();
   final display = await screenRetriever.getPrimaryDisplay();
   final scale = (display.scaleFactor ?? 1).toDouble();
-  // Topmost and hidden from the taskbar are set natively when the popup is created.
+  // Topmost, click-through (layered + transparent), no focus and hidden from
+  // the taskbar are all set natively when the popup is created.
   await windowManager.setBackgroundColor(Colors.transparent);
-  await windowManager.setIgnoreMouseEvents(true);
   runApp(
     OverlayApp(
       core: CoreClient()..start(),

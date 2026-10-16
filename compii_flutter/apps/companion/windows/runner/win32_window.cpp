@@ -145,13 +145,31 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  if (popup_) {
+    // Let DWM blend Flutter's per-pixel alpha with the desktop behind.
+    MARGINS margins = {-1, -1, -1, -1};
+    DwmExtendFrameIntoClientArea(window, &margins);
+  }
+
   UpdateTheme(window);
 
   return OnCreate();
 }
 
 bool Win32Window::Show() {
-  return ShowWindow(window_handle_, popup_ ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL);
+  const bool shown =
+      ShowWindow(window_handle_, popup_ ? SW_SHOWNOACTIVATE : SW_SHOWNORMAL);
+  if (popup_) {
+    // Click-through needs a layered + transparent window. Flutter draws with
+    // DirectComposition, which shows nothing in a window that is already
+    // layered when its surface is set up, so layer only once the first frame
+    // is on screen, and set the alpha (a layered window without it is blank).
+    SetWindowLong(window_handle_, GWL_EXSTYLE,
+                  GetWindowLong(window_handle_, GWL_EXSTYLE) | WS_EX_LAYERED |
+                      WS_EX_TRANSPARENT);
+    SetLayeredWindowAttributes(window_handle_, 0, 255, LWA_ALPHA);
+  }
+  return shown;
 }
 
 // static

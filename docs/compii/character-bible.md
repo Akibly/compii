@@ -79,7 +79,7 @@ flutter test test/character_capture_test.dart --dart-define=CAPTURE=true
 
 On phones (shorter side under 600 px) the screen *is* Compii's head: curl peeking in at the top, eyes filling the middle, hands rising from the bottom edge when they say something, motes drifting across the front. Status, speech, approvals, the command box, mic and Stop float over it; tasks open in a sheet. Desktop can preview it with the phone button. Previews: `build-previews/phone-landscape-working.png`, `phone-landscape-needs-you.png`, `phone-portrait-done.png`.
 
-### Desktop pointing overlay (partly working)
+### Desktop pointing overlay (working)
 
 - **Works:** Core's `point_at` tool finds a button or menu by its visible label through Windows UI Automation (verified live on Notepad's File menu and an IDE's Help menu) and sends a `point` event; the overlay draws the Orbling beside the item with its mitten reaching out, a ring around the item and a bubble (verified in a rendered test, `build-previews/desktop-pointing-overlay.png`).
-- **Not yet:** the transparent, click-through overlay window does not show its drawing on a real Windows desktop. It runs only when `COMPII_OVERLAY=1` is set, until this is fixed. Likely cause: the Flutter engine's DirectX surface inside a layered (click-through) window. Next step: try a DirectComposition-friendly setup or draw the overlay natively.
+- **Window:** the overlay is a small borderless, always-on-top popup that never takes focus. It shows on the real desktop with transparency around the character, and clicks pass through it (verified live in Core's rehearsal mode via `POST /point`). Flutter draws through DirectComposition, which shows nothing in a window that is already layered when its surface is created. So the runner makes the popup layered and click-through (`WS_EX_LAYERED | WS_EX_TRANSPARENT`, alpha 255) only after the first frame is on screen (`Win32Window::Show`). The app starts the overlay automatically on Windows.
