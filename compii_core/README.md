@@ -34,6 +34,15 @@ No paid voice service. Everything runs on this PC and audio never leaves it:
 - **Speaking:** [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) (Apache-2.0 open voice model, 120 MB) when downloaded; otherwise the voice built into Windows. Replies and approval questions are spoken; the mic, Stop, or `/voice/quiet` interrupt immediately.
 - Models download only when you press the buttons in the app's Settings → Voice (`POST /voice/download`), into `~/Compii/models`.
 
+## Thinking ahead
+
+Stored in `~/Compii/proactive.json` and checked every 20 seconds:
+
+- **Routines:** plain-language schedules ("every weekday at 8:30, …"). Compii turns your words into a schedule (`create_routine`, which asks your OK like any standing change) and runs the instruction on time. Normal approvals still apply; a routine that needs you posts an update.
+- **Watches:** *folder* (new files matching a pattern) and *web* (a page starts saying something, or changes) are checked locally for free; *AI* watches use Claude and run at most every 30 minutes, reporting only when the answer is YES.
+- **Daily brief:** at your chosen time, a local summary of what needs you, what got done, what watches caught, what's on today and what's new in Downloads.
+- **Updates inbox:** everything above lands in `/proactive` → `inbox`, is pushed to the app as an `update` event and, with spoken replies on, is said out loud.
+
 ## Point at something
 
 `POST /point` with `{"target": "File", "message": "..."}` (or exact `x`, `y`, `w`, `h` in screen pixels) makes the character point at it. The app's desktop overlay draws this on Windows.

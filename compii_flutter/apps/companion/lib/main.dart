@@ -9,6 +9,7 @@ import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
 import 'src/overlay/overlay_app.dart';
+import 'src/ui/proactive.dart';
 import 'src/ui/quick_bar.dart';
 import 'src/ui/shell.dart';
 import 'src/ui/tokens.dart';
@@ -85,7 +86,7 @@ class CompiiApp extends StatelessWidget {
       builder: (context, child) => Listener(
         onPointerHover: (e) => pointer.value = e.position,
         onPointerMove: (e) => pointer.value = e.position,
-        child: child,
+        child: UpdateNotices(core: core, onView: () => state.go(Section.updates), child: child!),
       ),
       home: quick?.active == true
           ? QuickBar(core: core, quick: quick!)

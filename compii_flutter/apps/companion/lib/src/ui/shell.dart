@@ -4,11 +4,12 @@ import 'package:flutter/services.dart';
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'pages.dart';
+import 'proactive.dart';
 import 'thread.dart';
 import 'tokens.dart';
 import 'voice.dart';
 
-enum Section { home, chat, memory, settings }
+enum Section { home, chat, updates, routines, memory, settings }
 
 /// App-wide UI state shared by the workspace and the quick bar.
 class AppState extends ChangeNotifier {
@@ -88,7 +89,7 @@ String titleOf(TaskView t) {
 
 String ago(double at) {
   final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch((at * 1000).round()));
-  if (d.inSeconds < 45) return 'now';
+  if (d.inMinutes < 1) return 'now';
   if (d.inMinutes < 60) return '${d.inMinutes}m';
   if (d.inHours < 24) return '${d.inHours}h';
   return '${d.inDays}d';
@@ -134,6 +135,8 @@ class Workspace extends StatelessWidget {
                         Expanded(
                           child: switch (state.section) {
                             Section.memory => MemoryPage(core: core, run: _run),
+                            Section.routines => RoutinesPage(core: core, run: _run),
+                            Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
                             Section.settings => SettingsPage(core: core, state: state, run: _run),
                             Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
                             _ => _Home(core: core, state: state, run: _run),
@@ -232,6 +235,19 @@ class _Sidebar extends StatelessWidget {
             child: Column(
               children: [
                 _NavButton(
+                  icon: Icons.notifications_none,
+                  label: 'Updates',
+                  selected: state.section == Section.updates,
+                  onTap: () => state.go(Section.updates),
+                  badge: core.unread,
+                ),
+                _NavButton(
+                  icon: Icons.event_repeat,
+                  label: 'Routines',
+                  selected: state.section == Section.routines,
+                  onTap: () => state.go(Section.routines),
+                ),
+                _NavButton(
                   icon: Icons.auto_awesome_outlined,
                   label: 'Memory',
                   selected: state.section == Section.memory,
@@ -263,7 +279,8 @@ class _Sidebar extends StatelessWidget {
 }
 
 class _NavButton extends StatelessWidget {
-  const _NavButton({required this.icon, required this.label, required this.selected, required this.onTap, this.trailing, this.strong = false});
+  const _NavButton({required this.icon, required this.label, required this.selected, required this.onTap, this.trailing, this.strong = false, this.badge = 0});
+  final int badge;
   final IconData icon;
   final String label;
   final bool selected;
@@ -290,6 +307,12 @@ class _NavButton extends StatelessWidget {
                 child: Text(label, style: context.type.labelLarge?.copyWith(color: strong ? c.accent : c.text)),
               ),
               if (trailing != null) Text(trailing!, style: context.type.labelMedium?.copyWith(color: c.faint)),
+              if (badge > 0)
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
+                  decoration: BoxDecoration(color: c.accent, borderRadius: BorderRadius.circular(10)),
+                  child: Text('$badge', style: TextStyle(color: c.onAccent, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                ),
             ],
           ),
         ),
@@ -333,7 +356,22 @@ class _ConversationTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodyMedium?.copyWith(fontWeight: FontWeight.w500)),
+                      Row(
+                        children: [
+                          if (task.fromRoutine) ...[
+                            Icon(Icons.event_repeat, size: 14, color: c.accent),
+                            const SizedBox(width: 4),
+                          ],
+                          Expanded(
+                            child: Text(
+                              task.fromRoutine ? '${task.origin!['title']}' : titleOf(task),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: context.type.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
+                            ),
+                          ),
+                        ],
+                      ),
                       const SizedBox(height: 2),
                       Row(
                         children: [
@@ -587,6 +625,8 @@ class _Home extends StatelessWidget {
               ),
               const SizedBox(height: 24),
               Composer(core: core, onSend: _start, state: state),
+              const SizedBox(height: 22),
+              BriefCard(core: core, run: run),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 10,

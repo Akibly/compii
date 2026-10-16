@@ -150,6 +150,12 @@ class Voice:
 
     # ---- listening ------------------------------------------------------------
 
+    def _warm_listen(self) -> None:
+        try:
+            self._whisper()
+        except Exception:  # noqa: BLE001 - only an optimisation; the real call reports problems
+            pass
+
     def _whisper(self):
         if self._stt is None:
             with self._load_lock:
@@ -196,7 +202,7 @@ class Voice:
         self.emit({"type": "voice_listening", "on": True})
         self._partial_thread = threading.Thread(target=self._partials, daemon=True)
         self._partial_thread.start()
-        threading.Thread(target=self._whisper, daemon=True).start()  # warm up while you talk
+        threading.Thread(target=self._warm_listen, daemon=True).start()  # warm up while you talk
 
     def _on_audio(self, block: np.ndarray) -> None:
         if self._listening:

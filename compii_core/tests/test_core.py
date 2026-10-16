@@ -461,3 +461,121 @@ def test_shortcut_names_translate():
     assert keys_to_sendkeys("Alt + F4") == "{Alt}{F4}"
     with pytest.raises(ScreenError):
         keys_to_sendkeys("hyper+x")
+
+
+# ---- thinking ahead: routines, watches, brief -------------------------------------------
+
+import datetime as dt  # noqa: E402
+import time  # noqa: E402
+
+from compii_core import proactive as pro  # noqa: E402
+
+
+def test_schedules_compute_the_next_run():
+    wed_9 = dt.datetime(2026, 10, 14, 9, 0)  # a Wednesday
+    assert pro.next_run({"kind": "daily", "at": "08:00"}, wed_9) == dt.datetime(2026, 10, 15, 8, 0)
+    assert pro.next_run({"kind": "weekdays", "at": "08:00"}, dt.datetime(2026, 10, 16, 9, 0)) == dt.datetime(2026, 10, 19, 8, 0)
+    assert pro.next_run({"kind": "weekly", "days": ["mon", "thu"], "at": "18:00"}, wed_9) == dt.datetime(2026, 10, 15, 18, 0)
+    assert pro.next_run({"kind": "every", "minutes": 90}, wed_9) == dt.datetime(2026, 10, 14, 10, 30)
+    assert pro.next_run({"kind": "once", "date": "2026-10-01", "at": "09:00"}, wed_9) is None
+    assert pro.describe({"kind": "weekdays", "at": "08:00"}) == "Every weekday at 08:00"
+    with pytest.raises(ValueError):
+        pro.validate_schedule({"kind": "every", "minutes": 1})
+
+
+def test_folder_watch_reports_only_new_files(home):
+    w = pro.Watch("Invoices", "folder", {"folder": str(home["downloads"]), "pattern": "*invoice*"}, 1)
+    resolve = Path
+    assert pro.check_folder(w, resolve) == []  # first look records what is there
+    (home["downloads"] / "invoice-oct.pdf").write_bytes(b"x")
+    (home["downloads"] / "cat.jpg").write_bytes(b"x")
+    assert pro.check_folder(w, resolve) == ["invoice-oct.pdf"]
+    assert pro.check_folder(w, resolve) == []
+
+
+def test_web_watch_fires_when_text_appears():
+    pages = iter(["Sold out", "Sold out", "Back in stock now", "Back in stock now"])
+    w = pro.Watch("Lamp", "web", {"url": "https://shop.example/lamp", "contains": "in stock"}, 15)
+    results = [pro.check_web(w, fetch=lambda _u: next(pages)) for _ in range(4)]
+    assert results == [None, None, "The page now says “in stock”.", None]
+
+
+def test_brief_summarises_what_matters(home, tmp_path):
+    plans = pro.Proactive(tmp_path / "p.json")
+    plans.post(pro.Update("watch", "Invoices", "New: invoice-oct.pdf"))
+    now = dt.datetime.now().replace(hour=8, minute=0)
+    plans.add_routine("Tidy Downloads", "Tidy my Downloads", {"kind": "daily", "at": "23:30"})
+
+    class T:  # minimal task stand-in
+        def __init__(self, status, request, at):
+            self.status, self.request, self.events = status, request, [{"at": at}]
+
+    tasks = [T("waiting", "Email the report", time.time()), T("done", "Make the spreadsheet", time.time())]
+    brief = pro.compose_brief(tasks=tasks, proactive=plans, downloads=home["downloads"], now=now)
+    titles = [s["title"] for s in brief.sections]
+    assert titles[:3] == ["Needs you", "Done since yesterday", "Your watches caught"]
+    assert "1 thing needs you" in brief.body and "Good morning" in brief.body
+
+
+async def test_routine_runs_on_time_and_posts_its_result(home, monkeypatch):
+    brain = ScriptBrain([], final="Downloads tidied: 3 files sorted.")
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    plans = app.state.plans
+    plans.brief["enabled"] = False
+    r = plans.add_routine("Tidy", "Tidy my Downloads", {"kind": "daily", "at": "07:00"})
+    r.next_run = (dt.datetime.now() - dt.timedelta(minutes=1)).replace(second=0, microsecond=0).isoformat()
+    await app.state.tick()
+    task = next(t for t in app.state.agent.tasks.values() if (t.origin or {}).get("routine") == r.id)
+    await asyncio.wait_for(task.runner, 5)
+    assert plans.inbox[-1].kind == "routine" and "tidied" in plans.inbox[-1].body
+    assert dt.datetime.fromisoformat(plans.routines[r.id].next_run) > dt.datetime.now()
+
+
+async def test_ai_watch_only_reports_a_yes(home):
+    for answer, expect in [("NO: nothing new", 0), ("YES: the price dropped to £40", 1)]:
+        app = build_app(brain=ScriptBrain([], final=answer), workspace=home["workspace"] / answer[:2],
+                        roots=[home["downloads"]], token="tok", voice=quiet_voice(home["workspace"]))
+        plans = app.state.plans
+        plans.brief["enabled"] = False
+        plans.add_watch("Lamp price", "ai", {"check": "the lamp price", "notify_when": "under £45"})
+        await app.state.tick()
+        task = next(iter(app.state.agent.tasks.values()))
+        await asyncio.wait_for(task.runner, 5)
+        await asyncio.sleep(0)
+        watch_updates = [u for u in plans.inbox if u.kind == "watch"]
+        assert len(watch_updates) == expect
+        if expect:
+            assert watch_updates[0].body == "the price dropped to £40"
+
+
+def test_creating_a_routine_needs_approval_like_any_standing_change(home):
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    tool = app.state.agent.toolbox.tools["create_routine"]
+    assert tool.kind_for({}) is ActionKind.CHANGE
+    out = tool.run({"title": "Brief", "instruction": "Summarise my day", "schedule": {"kind": "weekdays", "at": "08:30"}})
+    assert "Every weekday at 08:30" in out.text
+
+
+def test_folder_watches_stay_inside_allowed_folders(home):
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    home["outside"].mkdir()
+    with TestClient(app) as client:
+        h = {"X-Compii-Token": "tok"}
+        bad = client.post("/watches", json={"title": "x", "kind": "folder", "spec": {"folder": str(home["outside"])}}, headers=h)
+        assert bad.status_code == 403
+        ok = client.post("/watches", json={"title": "Invoices", "kind": "folder", "spec": {"folder": str(home["downloads"]), "pattern": "*invoice*"}}, headers=h)
+        assert ok.status_code == 200 and ok.json()["watches"][0]["title"] == "Invoices"
+
+
+def test_run_now_starts_the_routine(home):
+    app = build_app(brain=ScriptBrain([], final="Done."), workspace=home["workspace"], roots=[home["downloads"]],
+                    token="tok", voice=quiet_voice(home["workspace"]))
+    with TestClient(app) as client:
+        h = {"X-Compii-Token": "tok"}
+        rid = client.post("/routines", json={"title": "Tidy", "instruction": "Tidy", "schedule": {"kind": "daily", "at": "07:00"}},
+                          headers=h).json()["routines"][0]["id"]
+        r = client.post(f"/routines/{rid}/run", headers=h)
+        assert r.status_code == 200 and r.json()["origin"]["routine"] == rid

@@ -8,7 +8,12 @@ import 'package:flutter/foundation.dart';
 enum CoreStatus { connecting, offline, online }
 
 class TaskView {
-  TaskView({required this.id, required this.request, required this.status});
+  TaskView({required this.id, required this.request, required this.status, this.origin});
+
+  /// Set when a routine or watch started it rather than the user.
+  final Map<String, dynamic>? origin;
+  bool get fromRoutine => origin?['routine'] != null;
+  bool get fromWatch => origin?['watch'] != null;
   final String id;
   final String request;
   String status;
@@ -19,6 +24,7 @@ class TaskView {
       id: json['id'] as String,
       request: json['request'] as String,
       status: json['status'] as String,
+      origin: json['origin'] == null ? null : Map<String, dynamic>.from(json['origin'] as Map),
     );
     for (final e in json['events'] as List) {
       task.events.add(Map<String, dynamic>.from(e as Map));
@@ -68,7 +74,8 @@ class CoreClient extends ChangeNotifier {
   final HttpClient _http = HttpClient()
     ..connectionTimeout = const Duration(seconds: 3);
 
-  List<TaskView> get ordered => tasks.values.toList().reversed.toList();
+  /// Conversations, newest first. Background AI-watch checks are not shown.
+  List<TaskView> get ordered => tasks.values.where((t) => !t.fromWatch).toList().reversed.toList();
 
   void start() => _connect();
 
@@ -131,12 +138,22 @@ class CoreClient extends ChangeNotifier {
   /// Latest "point at this on screen" event, for the desktop overlay.
   final ValueNotifier<Map<String, dynamic>?> lastPoint = ValueNotifier(null);
 
+  /// Things Compii tells you on its own: briefs, watches, routines.
+  final StreamController<Map<String, dynamic>> updates = StreamController.broadcast();
+  int unread = 0;
+
   /// Voice events (listening, live transcript, speaking, downloads).
   final StreamController<Map<String, dynamic>> voiceEvents = StreamController.broadcast();
 
   void _onEvent(Map<String, dynamic> e) {
     if (e['type'] == 'point') lastPoint.value = e;
     if ('${e['type']}'.startsWith('voice_')) voiceEvents.add(e);
+    if (e['type'] == 'update') {
+      updates.add(e);
+      unread += 1;
+      notifyListeners();
+      return;
+    }
     final id = e['task_id'] as String;
     if (id.isEmpty) return; // not part of a task
     final task = tasks.putIfAbsent(
@@ -145,6 +162,7 @@ class CoreClient extends ChangeNotifier {
         id: id,
         request: e['request'] as String? ?? '',
         status: 'running',
+        origin: e['origin'] == null ? null : Map<String, dynamic>.from(e['origin'] as Map),
       ),
     );
     task.events.add(e);
@@ -194,6 +212,35 @@ class CoreClient extends ChangeNotifier {
   /// The autonomy dial: action kind -> ask_every_time | ask_once_per_task | just_do_it.
   Future<Map<String, String>> policy() async =>
       Map<String, String>.from(await _request('GET', '/policy') as Map);
+  // ---- thinking ahead ----
+  Future<Map<String, dynamic>> proactive() async {
+    final v = Map<String, dynamic>.from(await _request('GET', '/proactive') as Map);
+    unread = v['unread'] as int? ?? 0;
+    notifyListeners();
+    return v;
+  }
+
+  Future<Map<String, dynamic>> _pv(String method, String path, [Object? body]) async {
+    final v = Map<String, dynamic>.from(await _request(method, path, body) as Map);
+    if (v.containsKey('unread')) {
+      unread = v['unread'] as int;
+      notifyListeners();
+    }
+    return v;
+  }
+
+  Future<Map<String, dynamic>> addRoutine(String title, String instruction, Map<String, Object?> schedule) =>
+      _pv('POST', '/routines', {'title': title, 'instruction': instruction, 'schedule': schedule});
+  Future<Map<String, dynamic>> addWatch(String title, String kind, Map<String, Object?> spec) =>
+      _pv('POST', '/watches', {'title': title, 'kind': kind, 'spec': spec});
+  Future<Map<String, dynamic>> setEnabled(String id, bool enabled) => _pv('PATCH', '/proactive/$id', {'enabled': enabled});
+  Future<Map<String, dynamic>> removePlan(String id) => _pv('DELETE', '/proactive/$id');
+  Future<void> runRoutine(String id) => _request('POST', '/routines/$id/run');
+  Future<Map<String, dynamic>> briefSettings({bool? enabled, String? at}) =>
+      _pv('PUT', '/brief', {'enabled': ?enabled, 'at': ?at});
+  Future<void> briefNow() => _request('POST', '/brief/now');
+  Future<Map<String, dynamic>> markRead([String? id]) => _pv('POST', '/inbox/read', {'id': id});
+
   // ---- voice ----
   Future<Map<String, dynamic>> voiceStatus() async =>
       Map<String, dynamic>.from(await _request('GET', '/voice') as Map);
