@@ -234,6 +234,8 @@ class Agent:
         self.journal.record(Entry(task.id, call.name, kind.value, call.input, True, out.text[:500], out.undo))
         await self.emit(task, "action_done", tool=call.name, label=label, ok=True, detail=out.text[:300],
                         undoable=out.undo is not None)
+        if out.point:
+            await self.emit(task, "point", **out.point)
         return result(out.text)
 
     async def _finish(self, task: Task, status: str, text: str) -> None:

@@ -224,3 +224,23 @@ def test_service_requires_token_and_runs_rehearsal(home, monkeypatch):
         tasks = client.get("/tasks", headers=h).json()
         assert tasks[0]["id"] == task_id and tasks[0]["status"] == "done"
         assert (home["workspace"] / "Invoices last month.xlsx").exists()
+
+
+# ---- pointing -----------------------------------------------------------------
+
+
+def test_point_at_reports_position_and_emits_point_event(toolbox, tmp_path):
+    from compii_core.screen import Found
+
+    toolbox._find = lambda target: Found("Save", "ButtonControl", "Report - Word", 100, 200, 160, 230)
+    brain = ScriptBrain([("point_at", {"target": "save", "message": "Click Save."})])
+    task, events, _ = asyncio.run(run_agent(toolbox, tmp_path, brain))
+    point = next(e for e in events if e["type"] == "point")
+    assert (point["x"], point["y"], point["w"], point["h"]) == (100, 200, 60, 30)
+    assert point["message"] == "Click Save." and task.status == "done"
+
+
+def test_point_at_missing_item_is_a_recoverable_error(toolbox):
+    toolbox._find = lambda target: None
+    with pytest.raises(ToolError, match="Couldn't find"):
+        toolbox.execute("point_at", {"target": "Nope", "message": ""})

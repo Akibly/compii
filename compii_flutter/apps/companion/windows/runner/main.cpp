@@ -2,6 +2,8 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <algorithm>
+
 #include "flutter_window.h"
 #include "utils.h"
 
@@ -21,13 +23,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   std::vector<std::string> command_line_arguments =
       GetCommandLineArguments();
+  // The pointing overlay is a second copy of the app in a small popup window.
+  const bool overlay =
+      std::find(command_line_arguments.begin(), command_line_arguments.end(),
+                "--overlay") != command_line_arguments.end();
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
-  if (!window.Create(L"Compii", origin, size)) {
+  if (overlay) {
+    window.SetPopup(true);
+    origin = Win32Window::Point(0, 0);
+    size = Win32Window::Size(460, 360);
+  }
+  if (!window.Create(overlay ? L"Compii overlay" : L"Compii", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

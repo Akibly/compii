@@ -70,10 +70,19 @@ class Orbling extends StatefulWidget {
     this.jobs = 0,
     this.animate = true,
     this.phase = .25,
+    this.face = false,
+    this.reach,
   });
   final Mood mood;
   final int jobs;
   final bool animate;
+
+  /// Close-up: the face fills the whole area (the phone's Face View).
+  final bool face;
+
+  /// Where the free right mitten reaches to, in units of this widget's size
+  /// (may be outside 0..1). Used by the desktop overlay to point at things.
+  final Offset? reach;
 
   /// Animation phase used when not animating (for stills and tests).
   final double phase;
@@ -121,16 +130,16 @@ class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
     return RepaintBoundary(
       child: AnimatedBuilder(
         animation: Listenable.merge([clock, blend]),
-        builder: (context, _) => CustomPaint(
-          painter: OrblingPainter(
-            mood: widget.mood,
-            previous: previous,
-            blend: Curves.easeOutBack.transform(blend.value).clamp(0, 1.08),
-            jobs: widget.jobs,
-            t: still ? widget.phase : clock.value,
-            still: still,
-          ),
-        ),
+        builder: (context, _) {
+          final b = Curves.easeOutBack.transform(blend.value).clamp(0.0, 1.08);
+          final t = still ? widget.phase : clock.value;
+          return CustomPaint(
+            size: Size.infinite,
+            painter: widget.face
+                ? OrblingFacePainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still)
+                : OrblingPainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, reach: widget.reach),
+          );
+        },
       ),
     );
   }
@@ -184,6 +193,7 @@ class OrblingPainter extends CustomPainter {
     required this.jobs,
     required this.t,
     this.still = false,
+    this.reach,
   });
   final Mood mood;
   final Mood previous;
@@ -191,7 +201,7 @@ class OrblingPainter extends CustomPainter {
   final int jobs;
   final double t;
   final bool still;
-
+  final Offset? reach;
 
   double get _wave => math.sin(t * 2 * math.pi);
 
@@ -227,7 +237,21 @@ class OrblingPainter extends CustomPainter {
     canvas.restore();
 
     _drawMitten(canvas, pose.left + Offset(0, -hover + _handBob(left: true)), pose.leftTurn, mirror: false);
-    _drawMitten(canvas, pose.right + Offset(0, -hover + _handBob(left: false)), pose.rightTurn, mirror: true);
+    final target = reach;
+    if (target == null) {
+      _drawMitten(canvas, pose.right + Offset(0, -hover + _handBob(left: false)), pose.rightTurn, mirror: true);
+    } else {
+      // Free mitten flies out and points: fingers toward the target.
+      final from = const Offset(.62, .62);
+      final dir = target - from;
+      final tip = target - dir / dir.distance * .1;
+      canvas.save();
+      canvas.translate(tip.dx, tip.dy);
+      canvas.scale(1.5);
+      canvas.translate(-tip.dx, -tip.dy);
+      _drawMitten(canvas, tip, math.atan2(dir.dy, dir.dx) + math.pi / 2, mirror: true);
+      canvas.restore();
+    }
 
     for (final m in motes.where((m) => !m.behind)) {
       _drawMote(canvas, m);
@@ -541,4 +565,250 @@ class _Mote {
   final bool trail;
   final double angle;
   final double speed;
+}
+
+/// The phone's Face View: the screen is Compii's head. Its curl peeks in at
+/// the top, its eyes fill the middle, its hands rise from the bottom edge
+/// and its motes drift across the front.
+class OrblingFacePainter extends CustomPainter {
+  OrblingFacePainter({
+    required this.mood,
+    required this.previous,
+    required this.blend,
+    required this.jobs,
+    required this.t,
+    this.still = false,
+  });
+  final Mood mood;
+  final Mood previous;
+  final double blend;
+  final int jobs;
+  final double t;
+  final bool still;
+
+  double get _wave => math.sin(t * 2 * math.pi);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width, h = size.height;
+    final pose = _Pose.lerp(_Pose.of(previous), _Pose.of(mood), blend);
+    final dim = mood == Mood.offline;
+    final body = dim ? const Color(0xFF6A63B8) : OrblingPalette.body;
+
+    // Night sky behind the head.
+    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF1B1550));
+
+    // The head: a huge dome whose top sits just below the screen edge.
+    final breathe = dim ? 0.0 : _wave * h * .006;
+    final top = h * .1 - breathe;
+    final head = Path()
+      ..moveTo(-w * .1, h * 1.1)
+      ..lineTo(-w * .1, h * .62)
+      ..cubicTo(-w * .02, top + h * .12, w * .3, top, w * .5, top)
+      ..cubicTo(w * .7, top, w * 1.02, top + h * .12, w * 1.1, h * .62)
+      ..lineTo(w * 1.1, h * 1.1)
+      ..close();
+    canvas.drawPath(head, Paint()..color = body);
+    canvas.save();
+    canvas.clipPath(head);
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(w * .3, top + h * .14), width: w * .32, height: h * .12),
+      Paint()..color = OrblingPalette.bodyLight.withValues(alpha: .55),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: Offset(w * .55, h * 1.05), width: w * 1.3, height: h * .35),
+      Paint()..color = OrblingPalette.bodyDeep.withValues(alpha: .6),
+    );
+    canvas.restore();
+
+    // The curl peeking in at the top.
+    final u = math.min(w, h);
+    final cx = w * .5;
+    canvas.drawPath(
+      Path()
+        ..moveTo(cx, top + u * .01)
+        ..cubicTo(cx - u * .02, top - u * .12, cx + u * .14, top - u * .17, cx + u * .16, top - u * .08)
+        ..cubicTo(cx + u * .17, top - u * .02, cx + u * .09, top - u * .02, cx + u * .1, top - u * .07),
+      Paint()
+        ..color = body
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = u * .06
+        ..strokeCap = StrokeCap.round,
+    );
+
+    // Face geometry scales with the shorter side so portrait and landscape both work.
+    final eyeH = math.min(h * .36, w * .3);
+    final eyeW = eyeH * .72;
+    final eyeY = h * .5;
+    final gap = eyeW * .95;
+    final ink = Paint()..color = OrblingPalette.ink;
+    final stroke = Paint()
+      ..color = OrblingPalette.ink
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = eyeH * .07;
+
+    for (final side in [-1.0, 1.0]) {
+      canvas.drawOval(
+        Rect.fromCenter(center: Offset(cx + side * gap * 1.45, eyeY + eyeH * .62), width: eyeW * .7, height: eyeH * .2),
+        Paint()..color = OrblingPalette.cheek.withValues(alpha: mood == Mood.happy ? .8 : .45),
+      );
+    }
+
+    final blink = mood == Mood.idle && !still && t > .62 && t < .645;
+    for (final side in [-1.0, 1.0]) {
+      final c = Offset(cx + side * gap, eyeY);
+      if (mood == Mood.happy) {
+        canvas.drawPath(
+          Path()
+            ..moveTo(c.dx - eyeW * .42, c.dy + eyeH * .08)
+            ..quadraticBezierTo(c.dx, c.dy - eyeH * .45, c.dx + eyeW * .42, c.dy + eyeH * .08),
+          stroke,
+        );
+      } else if (dim || blink) {
+        canvas.drawPath(
+          Path()
+            ..moveTo(c.dx - eyeW * .4, c.dy)
+            ..quadraticBezierTo(c.dx, c.dy + eyeH * .2, c.dx + eyeW * .4, c.dy),
+          stroke,
+        );
+      } else {
+        final eh = mood == Mood.acting ? eyeH * .82 : eyeH;
+        canvas.drawOval(Rect.fromCenter(center: c, width: eyeW, height: eh), Paint()..color = Colors.white);
+        final small = mood == Mood.problem;
+        final pw = eyeW * (small ? .42 : .6);
+        final ph = eh * (small ? .42 : .6);
+        final g = Offset(pose.gaze.dx * (eyeW - pw) / 2 * .9, pose.gaze.dy * (eh - ph) / 2 * .9);
+        final pc = c + g;
+        canvas.drawOval(Rect.fromCenter(center: pc, width: pw, height: ph), ink);
+        canvas.drawCircle(pc + Offset(-pw * .22, -ph * .22), pw * .22, Paint()..color = Colors.white);
+        canvas.drawCircle(pc + Offset(pw * .2, ph * .2), pw * .09, Paint()..color = Colors.white);
+      }
+      if (!dim) {
+        final browY = eyeY - eyeH * .68;
+        final inner = Offset(c.dx - side * eyeW * .28, browY - pose.brow * eyeH * .14);
+        final outer = Offset(c.dx + side * eyeW * .4, browY + pose.brow * eyeH * .05);
+        canvas.drawLine(inner, outer, stroke);
+      }
+    }
+
+    // Mouth.
+    final m = Offset(cx, eyeY + eyeH * .7);
+    final k = eyeH * .2;
+    switch (mood) {
+      case Mood.happy:
+        canvas.drawPath(
+          Path()
+            ..moveTo(m.dx - k * 1.3, m.dy - k * .2)
+            ..quadraticBezierTo(m.dx, m.dy + k * 1.8, m.dx + k * 1.3, m.dy - k * .2)
+            ..close(),
+          ink,
+        );
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, k * .65), width: k, height: k * .5), Paint()..color = OrblingPalette.cheek);
+      case Mood.waiting:
+        canvas.drawOval(Rect.fromCenter(center: m, width: k * .8, height: k), ink);
+      case Mood.problem:
+        canvas.drawPath(
+          Path()
+            ..moveTo(m.dx - k, m.dy + k * .2)
+            ..quadraticBezierTo(m.dx - k * .5, m.dy - k * .35, m.dx, m.dy + k * .1)
+            ..quadraticBezierTo(m.dx + k * .5, m.dy + k * .5, m.dx + k, m.dy - k * .1),
+          stroke,
+        );
+      case Mood.acting:
+        canvas.drawLine(m - Offset(k * .7, 0), m + Offset(k * .7, 0), stroke);
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .45, k * .3), width: k * .55, height: k * .45), Paint()..color = OrblingPalette.cheek);
+      case Mood.thinking:
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .35, 0), width: k * .6, height: k * .36), ink);
+      case Mood.idle || Mood.offline:
+        canvas.drawPath(
+          Path()
+            ..moveTo(m.dx - k * .9, m.dy - k * .1)
+            ..quadraticBezierTo(m.dx, m.dy + k * .8, m.dx + k * .9, m.dy - k * .1),
+          stroke,
+        );
+    }
+
+    _hands(canvas, size, pose, u);
+    _motes(canvas, size, u);
+  }
+
+  void _hands(Canvas canvas, Size size, _Pose pose, double u) {
+    final w = size.width, h = size.height;
+    final tap = math.sin(t * 2 * math.pi * 6);
+    // Hands come into view from the bottom edge only when they say something.
+    final (double, double) raise = switch (mood) {
+      Mood.happy => (.62, .62),
+      Mood.waiting => (1.2, .72 + math.sin(t * 2 * math.pi * 3) * .02),
+      Mood.problem => (1.2, .55),
+      Mood.thinking => (1.2, .86),
+      Mood.acting => (.9 + math.max(0, tap) * .02, .9 + math.max(0, -tap) * .02),
+      _ => (1.2, 1.2),
+    };
+    final (double, double) xs = switch (mood) {
+      Mood.acting => (.4, .6),
+      Mood.problem => (.12, .78),
+      _ => (.12, .88),
+    };
+    for (final (i, y) in [(0, raise.$1), (1, raise.$2)]) {
+      if (y > 1.1) continue;
+      // Stay clear of the controls along the bottom edge.
+      final at = Offset(w * (i == 0 ? xs.$1 : xs.$2), math.min(h * y, h - 100));
+      canvas.save();
+      canvas.translate(at.dx, at.dy);
+      canvas.rotate(i == 0 ? pose.leftTurn : pose.rightTurn);
+      if (i == 1) canvas.scale(-1, 1);
+      final r = u * .11;
+      final palm = RRect.fromRectAndRadius(Rect.fromCenter(center: Offset.zero, width: r, height: r * 1.12), Radius.circular(r * .5));
+      canvas.drawRRect(palm, Paint()..color = OrblingPalette.mitten);
+      canvas.drawOval(Rect.fromCenter(center: Offset(r * .45, r * .07), width: r * .42, height: r * .6), Paint()..color = OrblingPalette.mitten);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(0, r * .56), width: r * .82, height: r * .24), Radius.circular(r * .12)),
+        Paint()..color = OrblingPalette.bodyDeep,
+      );
+      canvas.restore();
+    }
+  }
+
+  void _motes(Canvas canvas, Size size, double u) {
+    if (mood == Mood.happy) {
+      for (final (x, y, r) in const [(.18, .2, .035), (.84, .18, .03), (.08, .55, .02), (.93, .5, .025)]) {
+        final k = u * r * (1 + .2 * _wave);
+        final c = Offset(size.width * x, size.height * y);
+        canvas.drawPath(
+          Path()
+            ..moveTo(c.dx, c.dy - k * 2)
+            ..quadraticBezierTo(c.dx, c.dy, c.dx + k * 2, c.dy)
+            ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy + k * 2)
+            ..quadraticBezierTo(c.dx, c.dy, c.dx - k * 2, c.dy)
+            ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy - k * 2),
+          Paint()..color = OrblingPalette.gold,
+        );
+      }
+      return;
+    }
+    if (mood == Mood.offline) return;
+    final count = switch (mood) {
+      Mood.thinking => math.max(3, jobs),
+      Mood.idle => 1,
+      _ => math.max(1, jobs),
+    }.clamp(1, 6);
+    final speed = mood == Mood.thinking ? 2.0 : mood == Mood.idle ? .5 : 1.0;
+    final color = OrblingPalette.mote(mood);
+    for (var i = 0; i < count; i++) {
+      // A wide flat ring around the head; only the front (lower) arc shows on the face.
+      final a = t * 2 * math.pi * speed + i * 2 * math.pi / count;
+      final front = math.sin(a);
+      if (front < -.15) continue;
+      final ringY = math.min(size.height * .8, size.height - 96);
+      final c = Offset(size.width * (.5 + math.cos(a) * .46), ringY + size.height * front * .05);
+      final r = u * .028 * (mood == Mood.waiting ? 1 + .25 * math.sin(t * 2 * math.pi * 3) : 1);
+      canvas.drawCircle(c, r, Paint()..color = color);
+      canvas.drawCircle(c + Offset(-r * .3, -r * .3), r * .3, Paint()..color = Colors.white.withValues(alpha: .85));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant OrblingFacePainter old) =>
+      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous;
 }

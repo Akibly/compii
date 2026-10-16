@@ -33,6 +33,7 @@ class ToolError(Exception):
 class ToolResult:
     text: str
     undo: dict[str, Any] | None = None
+    point: dict[str, Any] | None = None  # something on screen for the character to point at
 
 
 @dataclass
@@ -259,6 +260,25 @@ class Toolbox:
             f"was opened in the default mail app ({draft}); the user must press Send."
         )
 
+    def point_at(self, a: dict[str, Any]) -> ToolResult:
+        found = self._find(a["target"])
+        if found is None:
+            raise ToolError(
+                f"Couldn't find anything named “{a['target']}” in the open windows. "
+                "Try the exact label shown on screen."
+            )
+        point = {**found.as_event(), "message": a.get("message", "")}
+        return ToolResult(
+            f"Pointing at {found.role} “{found.name}” in “{found.window}” "
+            f"at x={point['x']}, y={point['y']} ({point['w']}x{point['h']}).",
+            point=point,
+        )
+
+    def _find(self, target: str):  # indirection so tests can stub the screen
+        from .screen import find_element
+
+        return find_element(target)
+
     def remember(self, a: dict[str, Any]) -> ToolResult:
         with self.memory_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"fact": a["fact"], "at": time.time()}) + "\n")
@@ -315,6 +335,12 @@ class Toolbox:
                  ["to", "subject", "body"], ActionKind.SEND, self.send_email,
                  lambda a: f"Email {', '.join(a['to'])}: “{a['subject']}”"
                  + (f" with {len(a.get('attachments', []))} attachment(s)" if a.get("attachments") else "")),
+            Tool("point_at", "Point at a button, menu, field or other item in the user's open windows, by its visible label, "
+                 "with a short message in a speech bubble. Use it when teaching or when showing the user where something is.",
+                 {"target": {**s, "description": "The item's visible label, e.g. 'Save', 'File', 'Search'."},
+                  "message": {**s, "description": "One short sentence for the speech bubble."}},
+                 ["target", "message"], ActionKind.READ, self.point_at,
+                 lambda a: f"Point at “{a['target']}”"),
             Tool("remember", "Save a durable fact about the user (preferences, people, projects) for future tasks.",
                  {"fact": s}, ["fact"], ActionKind.CREATE, self.remember, lambda a: f"Remember: {a['fact']}"),
             Tool("recall", "Look up facts previously saved about the user.", {"query": s}, ["query"],

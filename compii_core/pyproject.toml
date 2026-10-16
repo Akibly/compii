@@ -9,6 +9,7 @@ dependencies = [
   "uvicorn[standard]>=0.30",
   "openpyxl>=3.1",
   "pypdf>=5.0",
+  "uiautomation>=2.0 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

@@ -38,6 +38,9 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
   final _focus = FocusNode();
   String? _error;
 
+  /// Desktop preview of the phone's Face View; phones use it automatically.
+  bool _faceView = false;
+
   CoreClient get core => widget.core;
 
   @override
@@ -117,8 +120,21 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
         body: SafeArea(
           child: LayoutBuilder(
             builder: (context, box) {
+              final phone = box.biggest.shortestSide < 600;
+              if (phone || _faceView) {
+                return _FaceStage(
+                  mood: mood,
+                  bubble: _bubble(mood),
+                  core: core,
+                  input: _input,
+                  onSubmit: _submit,
+                  run: _run,
+                  onExit: phone ? null : () => setState(() => _faceView = false),
+                );
+              }
               final wide = box.maxWidth >= 900;
               final stage = _Stage(
+                onFaceView: () => setState(() => _faceView = true),
                 mood: mood,
                 bubble: _bubble(mood),
                 core: core,
@@ -155,6 +171,7 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
 
 class _Stage extends StatelessWidget {
   const _Stage({
+    required this.onFaceView,
     required this.mood,
     required this.bubble,
     required this.core,
@@ -171,6 +188,7 @@ class _Stage extends StatelessWidget {
   final FocusNode focus;
   final VoidCallback onSubmit;
   final VoidCallback onStopAll;
+  final VoidCallback onFaceView;
   final String? error;
 
   @override
@@ -192,6 +210,12 @@ class _Stage extends StatelessWidget {
               const SizedBox(width: 12),
               _StatusChip(core: core),
               const Spacer(),
+              IconButton(
+                tooltip: 'Phone face view',
+                onPressed: onFaceView,
+                icon: const Icon(Icons.smartphone_outlined),
+              ),
+              const SizedBox(width: 8),
               if (anyActive)
                 FilledButton.icon(
                   style: FilledButton.styleFrom(
@@ -602,4 +626,188 @@ class _ApprovalCard extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Phone Face View (Bluey-style): the screen is Compii's face. Status,
+/// speech, approvals and the controls float over it; tasks open in a sheet.
+class _FaceStage extends StatelessWidget {
+  const _FaceStage({
+    required this.mood,
+    required this.bubble,
+    required this.core,
+    required this.input,
+    required this.onSubmit,
+    required this.run,
+    required this.onExit,
+  });
+  final Mood mood;
+  final String bubble;
+  final CoreClient core;
+  final TextEditingController input;
+  final VoidCallback onSubmit;
+  final Future<void> Function(Future<void> Function()) run;
+  final VoidCallback? onExit;
+
+  @override
+  Widget build(BuildContext context) {
+    final online = core.status == CoreStatus.online;
+    final active = core.ordered.where((t) => t.active).length;
+    final waiting = core.ordered.where((t) => t.pendingApproval != null).toList();
+    const glass = Color(0xE6FFFFFF);
+    return ColoredBox(
+      color: const Color(0xFF1B1550),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: Semantics(
+              label: 'Compii, ${moodLabel(mood)}',
+              image: true,
+              child: Orbling(mood: mood, jobs: active, face: true),
+            ),
+          ),
+          Positioned(
+            top: 12,
+            left: 12,
+            child: _Pill(
+              icon: Icons.circle,
+              iconColor: switch (core.status) {
+                CoreStatus.online => const Color(0xFF2E9E5B),
+                CoreStatus.connecting => const Color(0xFFE0A100),
+                CoreStatus.offline => const Color(0xFFC0392B),
+              },
+              text: online ? moodLabel(mood) : (core.status == CoreStatus.offline ? 'Core offline' : 'Connecting…'),
+            ),
+          ),
+          if (onExit != null)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: IconButton.filledTonal(
+                tooltip: 'Back to desktop view',
+                onPressed: onExit,
+                icon: const Icon(Icons.close),
+              ),
+            ),
+          Positioned(
+            top: 56,
+            left: 16,
+            right: 16,
+            child: Center(
+              child: waiting.isNotEmpty
+                  ? ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      child: Material(
+                        color: glass,
+                        borderRadius: BorderRadius.circular(16),
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(12, 2, 12, 12),
+                          child: _ApprovalCard(approval: waiting.first.pendingApproval!, core: core, run: run),
+                        ),
+                      ),
+                    )
+                  : Container(
+                      constraints: const BoxConstraints(maxWidth: 460),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(color: glass, borderRadius: BorderRadius.circular(16)),
+                      child: Semantics(
+                        liveRegion: true,
+                        child: Text(
+                          bubble,
+                          textAlign: TextAlign.center,
+                          maxLines: 3,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.titleSmall,
+                        ),
+                      ),
+                    ),
+            ),
+          ),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: 12,
+            child: Row(
+              children: [
+                Badge(
+                  isLabelVisible: active > 0,
+                  label: Text('$active'),
+                  child: IconButton.filledTonal(
+                    tooltip: 'Tasks',
+                    onPressed: () => showModalBottomSheet<void>(
+                      context: context,
+                      isScrollControlled: true,
+                      showDragHandle: true,
+                      builder: (_) => SizedBox(
+                        height: MediaQuery.of(context).size.height * .7,
+                        child: ListenableBuilder(
+                          listenable: core,
+                          builder: (_, _) => _TaskCenter(core: core, run: run),
+                        ),
+                      ),
+                    ),
+                    icon: const Icon(Icons.checklist),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextField(
+                    controller: input,
+                    enabled: online,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => onSubmit(),
+                    decoration: InputDecoration(
+                      hintText: 'Tell Compii…',
+                      isDense: true,
+                      filled: true,
+                      fillColor: glass,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                const IconButton.filledTonal(
+                  tooltip: 'Voice (coming next)',
+                  onPressed: null,
+                  icon: Icon(Icons.mic_none),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  tooltip: 'Stop everything',
+                  style: IconButton.styleFrom(backgroundColor: const Color(0xFFC0392B)),
+                  onPressed: active > 0 ? () => run(core.stopAll) : null,
+                  icon: const Icon(Icons.stop),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  const _Pill({required this.icon, required this.iconColor, required this.text});
+  final IconData icon;
+  final Color iconColor;
+  final String text;
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    decoration: BoxDecoration(
+      color: const Color(0x99140F3D),
+      borderRadius: BorderRadius.circular(20),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 10, color: iconColor),
+        const SizedBox(width: 8),
+        Text(text, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+      ],
+    ),
+  );
 }

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,8 @@ from . import __version__
 from .agent import Agent, Brain, ClaudeBrain
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
-from .tools import Toolbox, default_roots
+from .screen import make_dpi_aware
+from .tools import Toolbox, ToolError, default_roots
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("COMPII_PORT", "8765"))
@@ -36,6 +39,17 @@ class Decision(BaseModel):
 class DialChange(BaseModel):
     kind: ActionKind
     level: Autonomy
+
+
+class PointRequest(BaseModel):
+    """Point at an item by its label, or at an exact screen rectangle (physical pixels)."""
+
+    target: str = ""
+    message: str = ""
+    x: int | None = None
+    y: int | None = None
+    w: int = 40
+    h: int = 40
 
 
 class Hub:
@@ -123,6 +137,25 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(404, "No pending approval with that id")
         return {"ok": True}
 
+    @app.post("/point", dependencies=[Depends(auth)])
+    async def point(body: PointRequest) -> dict[str, Any]:
+        """Point at something on screen directly (used by the phone and for testing)."""
+        if body.x is not None and body.y is not None:
+            point = {"name": body.target, "role": "", "window": "", "x": body.x, "y": body.y,
+                     "w": body.w, "h": body.h, "message": body.message}
+            await hub.emit({"type": "point", "task_id": "", "at": time.time(), **point})
+            return point
+        if not body.target.strip():
+            raise HTTPException(400, "Give a target label or x and y")
+        try:
+            result = await asyncio.to_thread(
+                toolbox.execute, "point_at", {"target": body.target, "message": body.message}
+            )
+        except ToolError as e:
+            raise HTTPException(404, str(e)) from e
+        await hub.emit({"type": "point", "task_id": "", "at": time.time(), **(result.point or {})})
+        return result.point or {}
+
     @app.get("/policy", dependencies=[Depends(auth)])
     def get_policy() -> dict[str, str]:
         return {k.value: v.value for k, v in agent.policy.dial.items()}
@@ -155,6 +188,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
 def main() -> None:
     import uvicorn
+
+    make_dpi_aware()
 
     uvicorn.run(build_app(), host=HOST, port=PORT, log_level="info")
 

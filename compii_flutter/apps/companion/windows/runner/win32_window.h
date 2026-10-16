@@ -36,6 +36,10 @@ class Win32Window {
   // |Show| is called. Returns true if the window was created successfully.
   bool Create(const std::wstring& title, const Point& origin, const Size& size);
 
+  // Borderless, always-on-top tool window (the desktop pointing overlay).
+  // Call before Create so the window never needs restyling or resizing.
+  void SetPopup(bool popup) { popup_ = popup; }
+
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();
 
@@ -91,6 +95,8 @@ class Win32Window {
   static void UpdateTheme(HWND const window);
 
   bool quit_on_close_ = false;
+
+  bool popup_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

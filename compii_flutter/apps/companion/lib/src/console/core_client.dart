@@ -128,8 +128,13 @@ class CoreClient extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Latest "point at this on screen" event, for the desktop overlay.
+  final ValueNotifier<Map<String, dynamic>?> lastPoint = ValueNotifier(null);
+
   void _onEvent(Map<String, dynamic> e) {
+    if (e['type'] == 'point') lastPoint.value = e;
     final id = e['task_id'] as String;
+    if (id.isEmpty) return; // not part of a task
     final task = tasks.putIfAbsent(
       id,
       () => TaskView(
