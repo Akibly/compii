@@ -244,3 +244,59 @@ def test_point_at_missing_item_is_a_recoverable_error(toolbox):
     toolbox._find = lambda target: None
     with pytest.raises(ToolError, match="Couldn't find"):
         toolbox.execute("point_at", {"target": "Nope", "message": ""})
+
+
+# ---- conversations, plans, files, memory ------------------------------------------
+
+
+async def test_follow_up_continues_the_same_conversation(toolbox, home, tmp_path):
+    brain = ScriptBrain([])
+    events: list[dict] = []
+
+    async def emit(e):
+        events.append(e)
+
+    agent = Agent(brain, toolbox, Policy(), Journal(tmp_path / "j.jsonl"), emit)
+    task = agent.start("first question")
+    await asyncio.wait_for(task.runner, 5)
+    agent.reply(task.id, "and a follow-up")
+    await asyncio.wait_for(task.runner, 5)
+    user_texts = [m["content"] for m in task.messages if m["role"] == "user"]
+    assert user_texts == ["first question", "and a follow-up"]
+    assert any(e["type"] == "user_message" and e["text"] == "and a follow-up" for e in events)
+    assert task.status == "done"
+
+
+async def test_stopped_turn_leaves_a_valid_history_for_follow_ups(toolbox, home, tmp_path):
+    src = home["downloads"] / "holiday.jpg"
+    brain = ScriptBrain([("move_file", {"source": str(src), "destination": str(home["workspace"])})])
+
+    async def stop(e, agent):
+        if e["type"] == "approval_needed":
+            agent.stop(e["task_id"])
+
+    task, _, _ = await run_agent(toolbox, tmp_path, brain, stop)
+    last = task.messages[-1]
+    assert last["role"] == "user" and last["content"][0]["type"] == "tool_result"
+
+
+async def test_plan_and_file_events_are_emitted(toolbox, home, tmp_path):
+    brain = ScriptBrain([
+        ("update_plan", {"steps": [{"title": "Write note", "status": "active"}]}),
+        ("write_text_file", {"path": str(home["workspace"] / "n.txt"), "content": "hi"}),
+    ])
+    _, events, _ = await run_agent(toolbox, tmp_path, brain)
+    plan = next(e for e in events if e["type"] == "plan")
+    assert plan["steps"] == [{"title": "Write note", "status": "active"}]
+    f = next(e for e in events if e["type"] == "file")
+    assert f["path"].endswith("n.txt") and f["action"] == "created"
+
+
+def test_memories_can_be_listed_and_forgotten(toolbox):
+    toolbox.execute("remember", {"fact": "Prefers short replies"})
+    toolbox.execute("remember", {"fact": "Works at Acme"})
+    mems = toolbox.memories()
+    assert [m["fact"] for m in mems] == ["Prefers short replies", "Works at Acme"]
+    assert toolbox.forget(mems[0]["id"])
+    assert [m["fact"] for m in toolbox.memories()] == ["Works at Acme"]
+    assert "Acme" in toolbox.execute("recall", {"query": "acme"}).text

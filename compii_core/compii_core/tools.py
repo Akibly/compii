@@ -15,7 +15,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -34,6 +34,8 @@ class ToolResult:
     text: str
     undo: dict[str, Any] | None = None
     point: dict[str, Any] | None = None  # something on screen for the character to point at
+    plan: list[dict[str, str]] | None = None  # the checklist the user watches
+    files: list[tuple[str, str]] = field(default_factory=list)  # (path, "created" | "changed" | "moved")
 
 
 @dataclass
@@ -151,13 +153,15 @@ class Toolbox:
             raise ToolError(f"{p} already exists. Set overwrite to true to replace it.")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(a["content"], encoding="utf-8")
-        return ToolResult(f"Wrote {p}", None if existed else {"op": "created", "path": str(p)})
+        return ToolResult(f"Wrote {p}", None if existed else {"op": "created", "path": str(p)},
+                          files=[(str(p), "changed" if existed else "created")])
 
     def create_folder(self, a: dict[str, Any]) -> ToolResult:
         p = self.path(a["path"])
         existed = p.exists()
         p.mkdir(parents=True, exist_ok=True)
-        return ToolResult(f"Folder ready: {p}", None if existed else {"op": "created", "path": str(p)})
+        return ToolResult(f"Folder ready: {p}", None if existed else {"op": "created", "path": str(p)},
+                          files=[] if existed else [(str(p), "created")])
 
     def move_file(self, a: dict[str, Any]) -> ToolResult:
         src, dst = self.path(a["source"]), self.path(a["destination"])
@@ -169,7 +173,8 @@ class Toolbox:
             raise ToolError(f"{dst} already exists; choose another name.")
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(src), dst)
-        return ToolResult(f"Moved {src} to {dst}", {"op": "move", "src": str(src), "dst": str(dst)})
+        return ToolResult(f"Moved {src} to {dst}", {"op": "move", "src": str(src), "dst": str(dst)},
+                          files=[(str(dst), "moved")])
 
     def create_spreadsheet(self, a: dict[str, Any]) -> ToolResult:
         from openpyxl import Workbook
@@ -194,7 +199,7 @@ class Toolbox:
                 ws.column_dimensions[col[0].column_letter].width = min(max(10, width + 2), 60)
         p.parent.mkdir(parents=True, exist_ok=True)
         wb.save(p)
-        return ToolResult(f"Saved spreadsheet {p}", {"op": "created", "path": str(p)})
+        return ToolResult(f"Saved spreadsheet {p}", {"op": "created", "path": str(p)}, files=[(str(p), "created")])
 
     def run_python(self, a: dict[str, Any]) -> ToolResult:
         script = self.workspace / "scripts" / f"run-{int(time.time() * 1000)}.py"
@@ -257,7 +262,8 @@ class Toolbox:
         self._open(str(draft))
         return ToolResult(
             f"No mail account is connected, so the email was NOT sent. A ready draft to {msg['To']} "
-            f"was opened in the default mail app ({draft}); the user must press Send."
+            f"was opened in the default mail app ({draft}); the user must press Send.",
+            files=[(str(draft), "drafted")],
         )
 
     def point_at(self, a: dict[str, Any]) -> ToolResult:
@@ -279,6 +285,37 @@ class Toolbox:
 
         return find_element(target)
 
+    def update_plan(self, a: dict[str, Any]) -> ToolResult:
+        steps = [
+            {"title": str(st.get("title", "")).strip(), "status": st.get("status", "pending")}
+            for st in a["steps"]
+            if str(st.get("title", "")).strip()
+        ]
+        for st in steps:
+            if st["status"] not in ("pending", "active", "done", "skipped"):
+                st["status"] = "pending"
+        return ToolResult("Plan shown to the user.", plan=steps)
+
+    def memories(self) -> list[dict[str, Any]]:
+        if not self.memory_path.exists():
+            return []
+        out = []
+        for i, line in enumerate(self.memory_path.read_text(encoding="utf-8").splitlines()):
+            if line.strip():
+                d = json.loads(line)
+                out.append({"id": i, "fact": d["fact"], "at": d.get("at")})
+        return out
+
+    def forget(self, memory_id: int) -> bool:
+        if not self.memory_path.exists():
+            return False
+        lines = self.memory_path.read_text(encoding="utf-8").splitlines()
+        if not 0 <= memory_id < len(lines) or not lines[memory_id].strip():
+            return False
+        lines[memory_id] = ""  # keep line numbers stable for the other ids
+        self.memory_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
+
     def remember(self, a: dict[str, Any]) -> ToolResult:
         with self.memory_path.open("a", encoding="utf-8") as f:
             f.write(json.dumps({"fact": a["fact"], "at": time.time()}) + "\n")
@@ -288,7 +325,7 @@ class Toolbox:
         if not self.memory_path.exists():
             return ToolResult("No memories saved yet.")
         words = [w for w in a.get("query", "").lower().split() if len(w) > 2]
-        facts = [json.loads(line)["fact"] for line in self.memory_path.read_text(encoding="utf-8").splitlines() if line]
+        facts = [m["fact"] for m in self.memories()]
         hits = [f for f in facts if not words or any(w in f.lower() for w in words)]
         return ToolResult("\n".join(f"- {f}" for f in hits[-50:]) or "Nothing relevant remembered.")
 
@@ -341,6 +378,15 @@ class Toolbox:
                   "message": {**s, "description": "One short sentence for the speech bubble."}},
                  ["target", "message"], ActionKind.READ, self.point_at,
                  lambda a: f"Point at “{a['target']}”"),
+            Tool("update_plan", "Show the user your plan as a checklist, and update it as you go. "
+                 "Call it before multi-step work and again when a step starts or finishes.",
+                 {"steps": {"type": "array", "items": {
+                     "type": "object",
+                     "properties": {"title": {"type": "string", "description": "Short step, under 8 words."},
+                                    "status": {"type": "string", "enum": ["pending", "active", "done", "skipped"]}},
+                     "required": ["title", "status"], "additionalProperties": False}}},
+                 ["steps"], ActionKind.READ, self.update_plan,
+                 lambda a: "Update plan"),
             Tool("remember", "Save a durable fact about the user (preferences, people, projects) for future tasks.",
                  {"fact": s}, ["fact"], ActionKind.CREATE, self.remember, lambda a: f"Remember: {a['fact']}"),
             Tool("recall", "Look up facts previously saved about the user.", {"query": s}, ["query"],

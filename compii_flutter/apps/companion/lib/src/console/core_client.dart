@@ -172,6 +172,27 @@ class CoreClient extends ChangeNotifier {
   Future<String> undo(String taskId) async =>
       (await _request('POST', '/tasks/$taskId/undo'))['result'] as String;
 
+  /// Start a conversation; returns its id.
+  Future<String> startConversation(String request) async =>
+      (await _request('POST', '/tasks', {'request': request}))['id'] as String;
+
+  /// Follow up in an existing conversation.
+  Future<void> reply(String taskId, String text) =>
+      _request('POST', '/tasks/$taskId/messages', {'text': text});
+
+  Future<List<Map<String, dynamic>>> memories() async =>
+      [for (final m in await _request('GET', '/memory') as List) Map<String, dynamic>.from(m as Map)];
+  Future<void> forget(int id) => _request('DELETE', '/memory/$id');
+
+  Future<void> openFile(String path) => _request('POST', '/files/open', {'path': path});
+  Future<void> revealFile(String path) => _request('POST', '/files/reveal', {'path': path});
+
+  /// The autonomy dial: action kind -> ask_every_time | ask_once_per_task | just_do_it.
+  Future<Map<String, String>> policy() async =>
+      Map<String, String>.from(await _request('GET', '/policy') as Map);
+  Future<Map<String, String>> setPolicy(String kind, String level) async =>
+      Map<String, String>.from(await _request('PUT', '/policy', {'kind': kind, 'level': level}) as Map);
+
   @override
   void dispose() {
     _disposed = true;

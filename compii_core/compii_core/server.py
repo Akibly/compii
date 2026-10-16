@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import os
 import secrets
+import subprocess
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -39,6 +41,14 @@ class Decision(BaseModel):
 class DialChange(BaseModel):
     kind: ActionKind
     level: Autonomy
+
+
+class Reply(BaseModel):
+    text: str
+
+
+class FileRequest(BaseModel):
+    path: str
 
 
 class PointRequest(BaseModel):
@@ -118,6 +128,53 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     @app.get("/tasks", dependencies=[Depends(auth)])
     def list_tasks() -> list[dict[str, Any]]:
         return [task_view(t) for t in sorted(agent.tasks.values(), key=lambda t: t.created, reverse=True)]
+
+    @app.post("/tasks/{task_id}/messages", dependencies=[Depends(auth)])
+    async def follow_up(task_id: str, body: Reply) -> dict[str, Any]:
+        if not body.text.strip():
+            raise HTTPException(400, "Empty message")
+        try:
+            return task_view(agent.reply(task_id, body.text.strip()))
+        except KeyError as e:
+            raise HTTPException(404, "No such conversation") from e
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.get("/memory", dependencies=[Depends(auth)])
+    def memory() -> list[dict[str, Any]]:
+        return toolbox.memories()
+
+    @app.delete("/memory/{memory_id}", dependencies=[Depends(auth)])
+    def forget(memory_id: int) -> dict[str, bool]:
+        if not toolbox.forget(memory_id):
+            raise HTTPException(404, "No such memory")
+        return {"ok": True}
+
+    @app.post("/files/open", dependencies=[Depends(auth)])
+    def open_file(body: FileRequest) -> dict[str, bool]:
+        try:
+            p = toolbox.path(body.path)
+        except ToolError as e:
+            raise HTTPException(403, str(e)) from e
+        if not p.exists():
+            raise HTTPException(404, "File not found")
+        toolbox._open(str(p))
+        return {"ok": True}
+
+    @app.post("/files/reveal", dependencies=[Depends(auth)])
+    def reveal_file(body: FileRequest) -> dict[str, bool]:
+        """Show the file selected in File Explorer."""
+        try:
+            p = toolbox.path(body.path)
+        except ToolError as e:
+            raise HTTPException(403, str(e)) from e
+        if not p.exists():
+            raise HTTPException(404, "File not found")
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer.exe", f"/select,{p}"])
+        else:
+            toolbox._open(str(p.parent))
+        return {"ok": True}
 
     @app.post("/tasks/{task_id}/stop", dependencies=[Depends(auth)])
     def stop_task(task_id: str) -> dict[str, bool]:
