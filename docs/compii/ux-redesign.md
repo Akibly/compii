@@ -55,3 +55,16 @@ Previews: `build-previews/v3/`.
 - **Talk to it:** click the Orbling, the mic (tap to start and tap to send, or hold and release), or press **Ctrl + Alt + Space** anywhere. Your words appear live in the message box with a level meter; release sends them to the open conversation or starts a new one.
 - **It talks back:** answers and approval questions are spoken. Clicking it, the mic or Stop interrupts at once (measured 0.36 s on the Windows voice).
 - **Alive:** eyes follow the mouse; it leans in and listens while you type; listening (mittens cupped, sound waves, motes pulsing with your voice) and speaking (mouth moving, gesture) moods.
+
+### Measured on this PC (16 October 2026)
+
+| Check | Result |
+|---|---|
+| Downloads through Settings' downloader | Both models in about 2 minutes (`~/Compii/models`) |
+| Listening, real speech in place of the mic | Live transcript grows while talking; final text word-perfect, 1.5 s after release |
+| Silence | Empty result, nothing invented (speech detection on) |
+| Natural voice | First words 1.4 s after a reply arrives; pauses 0.7 s over two sentences (pipelined); interrupt 0.22 s |
+| Windows voice | Instant; interrupt 0.36 s |
+| Full loop in the app | Listening and speaking moods shown live; approval question and answer spoken |
+
+Note: this laptop's microphone cancels its own speaker output, so playing speech through the speakers is not a valid microphone test; real voices are unaffected.

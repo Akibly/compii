@@ -47,6 +47,8 @@ class VoiceSettings:
     speak_replies: bool = True
     voice: str = "af_heart"
     speed: float = 1.05
+    # "natural" uses Kokoro when downloaded; "windows" is the instant built-in voice.
+    engine: str = "natural"
 
 
 class Voice:
@@ -61,6 +63,8 @@ class Voice:
         self._recorder_factory = recorder_factory or _MicStream
         self._stt = None
         self._stt_lock = threading.Lock()
+        self._stopped = threading.Event()
+        self._load_lock = threading.Lock()
         self._tts = None
         self._lock = threading.Lock()
         self._chunks: list[np.ndarray] = []
@@ -82,11 +86,24 @@ class Voice:
     def has_natural_voice(self) -> bool:
         return all((self.models / f).exists() for f in KOKORO_FILES)
 
+    def uses_natural_voice(self) -> bool:
+        return self.settings.engine == "natural" and self.has_natural_voice()
+
+    def warm_up(self) -> None:
+        """Load the voice model in the background so the first reply isn't slow."""
+        if self.has_natural_voice():
+            def run() -> None:
+                try:
+                    self._kokoro().create("Ready.", voice=self.settings.voice, lang="en-us")
+                except Exception:  # noqa: BLE001 - warm-up is best effort
+                    pass
+            threading.Thread(target=run, daemon=True).start()
+
     def status(self) -> dict[str, Any]:
         return {
             "listen_ready": self.can_listen(),
             "natural_voice": self.has_natural_voice(),
-            "engine": "kokoro" if self.has_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
+            "engine": "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
             "listening": self._listening,
             "speaking": self._speaker.speaking,
             "downloading": dict(self.downloading),
@@ -134,18 +151,35 @@ class Voice:
     # ---- listening ------------------------------------------------------------
 
     def _whisper(self):
-        with self._stt_lock:
-            if self._stt is None:
-                from faster_whisper import WhisperModel
+        if self._stt is None:
+            with self._load_lock:
+                if self._stt is None:
+                    from faster_whisper import WhisperModel
 
-                self._stt = WhisperModel(str(self.whisper_dir), device="cpu", compute_type="int8")
-            return self._stt
+                    self._stt = WhisperModel(str(self.whisper_dir), device="cpu", compute_type="int8")
+        return self._stt
 
-    def transcribe(self, audio: np.ndarray) -> str:
+    def transcribe(self, audio: np.ndarray, final: bool = True) -> str:
+        """Speech to text. Silence and noise give "" instead of invented words."""
         if audio.size < RATE * 0.3:
             return ""
-        segments, _ = self._whisper().transcribe(audio, language="en", beam_size=1, vad_filter=False)
-        return " ".join(s.text.strip() for s in segments).strip()
+        peak = float(np.abs(audio).max())
+        if peak < 0.003:  # nothing but silence
+            return ""
+        if peak < 0.5:  # quiet microphones: bring speech up to a useful level
+            audio = audio * (0.5 / peak)
+        with self._stt_lock:  # one transcription at a time; the final one never waits behind a stale preview
+            segments, _ = self._whisper().transcribe(
+                audio,
+                language="en",
+                beam_size=1,  # greedy: word-perfect in tests and fast on laptop CPUs
+                vad_filter=True,  # Silero speech detection: skip non-speech
+                vad_parameters={"min_silence_duration_ms": 400},
+                condition_on_previous_text=False,
+                no_speech_threshold=0.5,
+            )
+            words = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.6 and seg.avg_logprob > -1.2]
+        return " ".join(words).strip()
 
     def start_listening(self) -> None:
         if not self.can_listen():
@@ -156,6 +190,7 @@ class Voice:
                 return
             self._chunks = []
             self._listening = True
+            self._stopped.clear()
             self._stream = self._recorder_factory()
             self._stream.start(self._on_audio)
         self.emit({"type": "voice_listening", "on": True})
@@ -178,13 +213,14 @@ class Voice:
         last = ""
         started = time.monotonic()
         while self._listening:
-            time.sleep(PARTIAL_EVERY)
-            if not self._listening:
+            if self._stopped.wait(PARTIAL_EVERY):  # wakes at once when you release
                 break
             if time.monotonic() - started > MAX_SECONDS:
                 break
+            if self._stt_lock.locked():
+                continue  # still working on the previous preview
             try:
-                text = self.transcribe(self._audio())
+                text = self.transcribe(self._audio(), final=False)
             except Exception:  # noqa: BLE001 - a partial is best effort
                 continue
             if text and text != last and self._listening:
@@ -197,10 +233,13 @@ class Voice:
             if not self._listening:
                 return ""
             self._listening = False
+            self._stopped.set()
             stream, self._stream = self._stream, None
         if stream is not None:
             stream.stop()
         self.emit({"type": "voice_listening", "on": False})
+        if self._partial_thread is not None:
+            self._partial_thread.join(timeout=5)  # let any preview finish first
         text = self.transcribe(self._audio())
         self.emit({"type": "voice_final", "text": text})
         return text
@@ -208,6 +247,7 @@ class Voice:
     def cancel_listening(self) -> None:
         with self._lock:
             self._listening = False
+            self._stopped.set()
             stream, self._stream = self._stream, None
         if stream is not None:
             stream.stop()
@@ -225,6 +265,10 @@ class Voice:
         self._speaker.stop()
 
     def _kokoro(self):
+        with self._lock:
+            return self._load_kokoro()
+
+    def _load_kokoro(self):
         if self._tts is None:
             from kokoro_onnx import Kokoro
 
@@ -302,7 +346,7 @@ class _Speaker:
             generation = self._generation
             try:
                 self._set(True)
-                if self.voice.has_natural_voice():
+                if self.voice.uses_natural_voice():
                     self._speak_kokoro(text, generation)
                 elif sys.platform == "win32":
                     self._speak_windows(text, generation)
@@ -313,16 +357,28 @@ class _Speaker:
                     self._set(False)
 
     def _speak_kokoro(self, text: str, generation: int) -> None:
+        """Pipelined: the next phrase is generated while the current one plays,
+        so speech flows even when generation is close to real time."""
         import sounddevice as sd
 
         s = self.voice.settings
-        # Sentence by sentence, so speech starts quickly and stops promptly.
-        for sentence in _sentences(text):
-            if generation != self._generation:
+        ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=2)
+
+        def produce() -> None:
+            try:
+                for phrase in _phrases(text):
+                    if generation != self._generation:
+                        break
+                    ready.put(self.voice._kokoro().create(phrase, voice=s.voice, speed=s.speed, lang="en-us"))
+            finally:
+                ready.put(None)
+
+        threading.Thread(target=produce, daemon=True).start()
+        while True:
+            item = ready.get()
+            if item is None or generation != self._generation:
                 return
-            samples, rate = self.voice._kokoro().create(sentence, voice=s.voice, speed=s.speed, lang="en-us")
-            if generation != self._generation:
-                return
+            samples, rate = item
             sd.play(samples, rate)
             sd.wait()
 
@@ -344,3 +400,28 @@ def _sentences(text: str) -> list[str]:
 
     parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", text) if p.strip()]
     return parts or [text]
+
+
+def _phrases(text: str, longest: int = 90) -> list[str]:
+    """Sentences, with long ones split at commas so the first words come out sooner."""
+    import re
+
+    out: list[str] = []
+    for sentence in _sentences(text):
+        if len(sentence) <= longest:
+            out.append(sentence)
+            continue
+        chunk = ""
+        for part in re.split(r"(?<=[,;:])\s+", sentence):
+            if chunk and len(chunk) + len(part) > longest:
+                out.append(chunk)
+                chunk = part
+            else:
+                chunk = f"{chunk} {part}".strip()
+        if chunk:
+            out.append(chunk)
+    # A short first phrase gets the voice going quickly.
+    if out and len(out[0]) > 45 and "," in out[0]:
+        head, _, rest = out[0].partition(",")
+        out[0:1] = [head + ",", rest.strip()]
+    return out

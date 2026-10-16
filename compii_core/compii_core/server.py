@@ -50,6 +50,7 @@ class Reply(BaseModel):
 
 class VoiceSettingsBody(BaseModel):
     speak_replies: bool | None = None
+    engine: str | None = None
     voice: str | None = None
     speed: float | None = None
 
@@ -129,6 +130,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         hub.loop = asyncio.get_running_loop()
+        voice.warm_up()
         yield
         agent.stop_all()
         voice.cancel_listening()
@@ -220,6 +222,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 voice.stop_speaking()
         if body.voice is not None:
             voice.settings.voice = body.voice
+        if body.engine in ("natural", "windows"):
+            voice.stop_speaking()
+            voice.settings.engine = body.engine
         if body.speed is not None:
             voice.settings.speed = max(.7, min(1.4, body.speed))
         return voice.status()
