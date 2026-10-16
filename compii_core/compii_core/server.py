@@ -21,6 +21,7 @@ from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
 from .tools import Toolbox, ToolError, default_roots
+from .voice import Voice
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("COMPII_PORT", "8765"))
@@ -47,6 +48,16 @@ class Reply(BaseModel):
     text: str
 
 
+class VoiceSettingsBody(BaseModel):
+    speak_replies: bool | None = None
+    voice: str | None = None
+    speed: float | None = None
+
+
+class DownloadBody(BaseModel):
+    what: str
+
+
 class FileRequest(BaseModel):
     path: str
 
@@ -67,6 +78,12 @@ class Hub:
 
     def __init__(self) -> None:
         self.clients: set[WebSocket] = set()
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def emit_threadsafe(self, event: dict[str, Any]) -> None:
+        """For events from audio threads."""
+        if self.loop is not None and not self.loop.is_closed():
+            asyncio.run_coroutine_threadsafe(self.emit({"task_id": "", "at": time.time(), **event}), self.loop)
 
     async def emit(self, event: dict[str, Any]) -> None:
         for ws in list(self.clients):
@@ -77,7 +94,7 @@ class Hub:
 
 
 def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: list[Path] | None = None,
-              token: str | None = None) -> FastAPI:
+              token: str | None = None, voice: Voice | None = None) -> FastAPI:
     workspace = workspace or workspace_dir()
     workspace.mkdir(parents=True, exist_ok=True)
     token = token or secrets.token_urlsafe(24)
@@ -96,15 +113,30 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             brain = ClaudeBrain()
             mode = "claude"
     hub = Hub()
-    agent = Agent(brain, toolbox, Policy(), Journal(workspace / "journal.jsonl"), hub.emit)
+    voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
+
+    async def agent_emit(event: dict[str, Any]) -> None:
+        await hub.emit(event)
+        # Jarvis-style: Compii says its answers and its questions out loud.
+        if voice.settings.speak_replies:
+            if event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
+                voice.say(event.get("text", ""))
+            elif event["type"] == "approval_needed":
+                voice.say(f"I need your okay. {event.get('label', '')}")
+
+    agent = Agent(brain, toolbox, Policy(), Journal(workspace / "journal.jsonl"), agent_emit)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
+        hub.loop = asyncio.get_running_loop()
         yield
         agent.stop_all()
+        voice.cancel_listening()
+        voice.stop_speaking()
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
     app.state.agent = agent
+    app.state.voice = voice
 
     def auth(x_compii_token: str = Header("")) -> None:
         if not secrets.compare_digest(x_compii_token, token):
@@ -176,12 +208,67 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             toolbox._open(str(p.parent))
         return {"ok": True}
 
+    @app.get("/voice", dependencies=[Depends(auth)])
+    def voice_status() -> dict[str, Any]:
+        return voice.status()
+
+    @app.put("/voice/settings", dependencies=[Depends(auth)])
+    def voice_settings(body: VoiceSettingsBody) -> dict[str, Any]:
+        if body.speak_replies is not None:
+            voice.settings.speak_replies = body.speak_replies
+            if not body.speak_replies:
+                voice.stop_speaking()
+        if body.voice is not None:
+            voice.settings.voice = body.voice
+        if body.speed is not None:
+            voice.settings.speed = max(.7, min(1.4, body.speed))
+        return voice.status()
+
+    @app.post("/voice/download", dependencies=[Depends(auth)])
+    def voice_download(body: DownloadBody) -> dict[str, Any]:
+        try:
+            voice.download(body.what)
+        except ValueError as e:
+            raise HTTPException(400, "Unknown download") from e
+        return voice.status()
+
+    @app.post("/voice/listen/start", dependencies=[Depends(auth)])
+    def listen_start() -> dict[str, bool]:
+        try:
+            voice.start_listening()
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - e.g. no microphone
+            raise HTTPException(500, f"Couldn't open the microphone: {e}") from e
+        return {"listening": True}
+
+    @app.post("/voice/listen/stop", dependencies=[Depends(auth)])
+    async def listen_stop() -> dict[str, str]:
+        return {"text": await asyncio.to_thread(voice.stop_listening)}
+
+    @app.post("/voice/listen/cancel", dependencies=[Depends(auth)])
+    def listen_cancel() -> dict[str, bool]:
+        voice.cancel_listening()
+        return {"ok": True}
+
+    @app.post("/voice/say", dependencies=[Depends(auth)])
+    def say(body: Reply) -> dict[str, bool]:
+        voice.say(body.text)
+        return {"ok": True}
+
+    @app.post("/voice/quiet", dependencies=[Depends(auth)])
+    def quiet() -> dict[str, bool]:
+        voice.stop_speaking()
+        return {"ok": True}
+
     @app.post("/tasks/{task_id}/stop", dependencies=[Depends(auth)])
     def stop_task(task_id: str) -> dict[str, bool]:
+        voice.stop_speaking()
         return {"stopped": agent.stop(task_id)}
 
     @app.post("/stop", dependencies=[Depends(auth)])
     def stop_everything() -> dict[str, int]:
+        voice.stop_speaking()
         return {"stopped": agent.stop_all()}
 
     @app.post("/tasks/{task_id}/undo", dependencies=[Depends(auth)])

@@ -10,6 +10,10 @@ dependencies = [
   "openpyxl>=3.1",
   "pypdf>=5.0",
   "uiautomation>=2.0 ; sys_platform == 'win32'",
+  "faster-whisper>=1.2.1",
+  "sounddevice>=0.5.6",
+  "kokoro-onnx>=0.6.1",
+  "numpy>=2.4.6",
 ]
 
 [dependency-groups]

@@ -23,6 +23,14 @@ Then start the app (`flutter run -d windows` in `compii_flutter/apps/companion`)
 
 **Rehearsal mode** (`$env:COMPII_BRAIN = "rehearsal"`) replaces Claude with a scripted invoice run for testing the app without credentials. The app labels it clearly as not AI.
 
+## Voice (free, local)
+
+No paid voice service. Everything runs on this PC and audio never leaves it:
+
+- **Listening:** [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`base.en`, 145 MB). Push-to-talk with a live transcript (`/voice/listen/start`, `/voice/listen/stop`, events `voice_partial`, `voice_final`).
+- **Speaking:** [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) (Apache-2.0 open voice model, 120 MB) when downloaded; otherwise the voice built into Windows. Replies and approval questions are spoken; the mic, Stop, or `/voice/quiet` interrupt immediately.
+- Models download only when you press the buttons in the app's Settings → Voice (`POST /voice/download`), into `~/Compii/models`.
+
 ## Point at something
 
 `POST /point` with `{"target": "File", "message": "..."}` (or exact `x`, `y`, `w`, `h` in screen pixels) makes the character point at it. The app's desktop overlay draws this on Windows.

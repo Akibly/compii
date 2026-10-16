@@ -48,3 +48,10 @@ Agent-UX practice ([setproduct](https://www.setproduct.com/blog/ai-agent-ui-desi
 | Settings | Autonomy dial per action kind (spending can't be set to "just do it"), theme, shortcuts | Page rendered |
 
 Previews: `build-previews/v3/`.
+
+## Voice and interactivity (16 October 2026)
+
+- **Free, local speech:** faster-whisper for listening, Kokoro (or the built-in Windows voice) for speaking. No accounts or per-use costs; audio stays on the PC. Optional downloads (145 MB + 120 MB) start only from Settings → Voice.
+- **Talk to it:** click the Orbling, the mic (tap to start and tap to send, or hold and release), or press **Ctrl + Alt + Space** anywhere. Your words appear live in the message box with a level meter; release sends them to the open conversation or starts a new one.
+- **It talks back:** answers and approval questions are spoken. Clicking it, the mic or Stop interrupts at once (measured 0.36 s on the Windows voice).
+- **Alive:** eyes follow the mouse; it leans in and listens while you type; listening (mittens cupped, sound waves, motes pulsing with your voice) and speaking (mouth moving, gesture) moods.

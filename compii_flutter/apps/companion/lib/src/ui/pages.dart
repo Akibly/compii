@@ -4,6 +4,7 @@ import '../console/core_client.dart';
 import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'voice.dart';
 
 class _Page extends StatelessWidget {
   const _Page({required this.title, required this.subtitle, required this.children});
@@ -226,6 +227,10 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
         ),
         const SizedBox(height: 28),
+        if (widget.state.voice != null) ...[
+          VoiceSettings(voice: widget.state.voice!, run: widget.run),
+          const SizedBox(height: 28),
+        ],
         Text('Appearance', style: context.type.titleLarge),
         const SizedBox(height: 12),
         _Card(
@@ -259,6 +264,7 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               for (final (i, (keys, what)) in const [
                 ('Alt + Space', 'Open the quick bar from anywhere'),
+                ('Ctrl + Alt + Space', 'Talk to Compii from anywhere (press again to send)'),
                 ('Ctrl + N', 'New conversation'),
                 ('Enter / Shift + Enter', 'Send / new line'),
                 ('Esc', 'Close the quick bar'),
@@ -284,4 +290,127 @@ class _SettingsPageState extends State<SettingsPage> {
       ],
     );
   }
+}
+
+
+/// Voice: free and local. Nothing downloads until the user presses a button.
+class VoiceSettings extends StatelessWidget {
+  const VoiceSettings({super.key, required this.voice, required this.run});
+  final VoiceController voice;
+  final Run run;
+
+  @override
+  Widget build(BuildContext context) => ListenableBuilder(
+    listenable: voice,
+    builder: (context, _) {
+      final c = context.c;
+      final st = voice.status;
+      final sizes = Map<String, dynamic>.from(st?['download_sizes_mb'] as Map? ?? {});
+      final voices = Map<String, dynamic>.from(st?['voices'] as Map? ?? {});
+      final settings = Map<String, dynamic>.from(st?['settings'] as Map? ?? {});
+      Widget row(IconData icon, String title, String sub, Widget trailing) => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+        child: Row(
+          children: [
+            Icon(icon, color: c.accent),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [Text(title, style: context.type.titleSmall), Text(sub, style: context.type.bodySmall)],
+              ),
+            ),
+            const SizedBox(width: 12),
+            trailing,
+          ],
+        ),
+      );
+      Widget download(String what, String label) {
+        final progress = voice.downloading[what];
+        if (progress != null) {
+          return SizedBox(
+            width: 150,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                LinearProgressIndicator(value: (progress as num).toDouble() > 0 ? progress.toDouble() : null),
+                const SizedBox(height: 4),
+                Text('Downloading…', style: context.type.labelMedium),
+              ],
+            ),
+          );
+        }
+        return OutlinedButton.icon(
+          onPressed: () => run(() => voice.download(what)),
+          icon: const Icon(Icons.download_outlined, size: 18),
+          label: Text('$label · ${sizes[what] ?? '?'} MB'),
+        );
+      }
+
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Voice', style: context.type.titleLarge),
+          const SizedBox(height: 4),
+          Text(
+            'Free and private: speech runs on this PC with open models. No account, no per-use cost, and your audio never leaves your computer.',
+            style: context.type.bodySmall,
+          ),
+          const SizedBox(height: 12),
+          Container(
+            decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: BorderRadius.circular(14)),
+            child: st == null
+                ? const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
+                : Column(
+                    children: [
+                      row(
+                        Icons.mic_none,
+                        'Talk to Compii',
+                        voice.canListen
+                            ? 'Ready. Click Compii or the mic and speak; Ctrl + Alt + Space works from anywhere.'
+                            : 'Uses Whisper, an open speech model, running on your PC.',
+                        voice.canListen
+                            ? Icon(Icons.check_circle, color: c.success)
+                            : download('listen', 'Download'),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        Icons.record_voice_over_outlined,
+                        'Speak replies out loud',
+                        'Compii says its answers and questions. Click it, press the mic, or Stop to interrupt.',
+                        Switch(
+                          value: voice.speakReplies,
+                          onChanged: (v) => run(() => voice.set({'speak_replies': v})),
+                        ),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        Icons.graphic_eq,
+                        voice.naturalVoice ? 'Natural voice (Kokoro)' : 'Windows voice (built in)',
+                        voice.naturalVoice
+                            ? 'An open voice model on your PC. Pick how Compii sounds.'
+                            : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
+                        voice.naturalVoice
+                            ? DropdownButton<String>(
+                                value: '${settings['voice']}',
+                                underline: const SizedBox.shrink(),
+                                items: [
+                                  for (final e in voices.entries)
+                                    DropdownMenuItem(value: e.key, child: Text('${e.value}')),
+                                ],
+                                onChanged: (v) => run(() => voice.set({'voice': v})),
+                              )
+                            : download('speak', 'Get natural voice'),
+                      ),
+                    ],
+                  ),
+          ),
+          if (voice.error != null) ...[
+            const SizedBox(height: 8),
+            Text(voice.error!, style: context.type.bodySmall?.copyWith(color: c.danger)),
+          ],
+        ],
+      );
+    },
+  );
 }

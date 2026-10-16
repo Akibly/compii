@@ -131,8 +131,12 @@ class CoreClient extends ChangeNotifier {
   /// Latest "point at this on screen" event, for the desktop overlay.
   final ValueNotifier<Map<String, dynamic>?> lastPoint = ValueNotifier(null);
 
+  /// Voice events (listening, live transcript, speaking, downloads).
+  final StreamController<Map<String, dynamic>> voiceEvents = StreamController.broadcast();
+
   void _onEvent(Map<String, dynamic> e) {
     if (e['type'] == 'point') lastPoint.value = e;
+    if ('${e['type']}'.startsWith('voice_')) voiceEvents.add(e);
     final id = e['task_id'] as String;
     if (id.isEmpty) return; // not part of a task
     final task = tasks.putIfAbsent(
@@ -158,7 +162,7 @@ class CoreClient extends ChangeNotifier {
     final res = await req.close();
     final text = await res.transform(utf8.decoder).join();
     if (res.statusCode >= 400) {
-      throw HttpException('Core said ${res.statusCode}: $text');
+      throw CoreError(_detail(text, res.statusCode));
     }
     return jsonDecode(text);
   }
@@ -190,6 +194,18 @@ class CoreClient extends ChangeNotifier {
   /// The autonomy dial: action kind -> ask_every_time | ask_once_per_task | just_do_it.
   Future<Map<String, String>> policy() async =>
       Map<String, String>.from(await _request('GET', '/policy') as Map);
+  // ---- voice ----
+  Future<Map<String, dynamic>> voiceStatus() async =>
+      Map<String, dynamic>.from(await _request('GET', '/voice') as Map);
+  Future<Map<String, dynamic>> voiceSettings(Map<String, Object?> changes) async =>
+      Map<String, dynamic>.from(await _request('PUT', '/voice/settings', changes) as Map);
+  Future<Map<String, dynamic>> voiceDownload(String what) async =>
+      Map<String, dynamic>.from(await _request('POST', '/voice/download', {'what': what}) as Map);
+  Future<void> listenStart() => _request('POST', '/voice/listen/start');
+  Future<String> listenStop() async => (await _request('POST', '/voice/listen/stop'))['text'] as String;
+  Future<void> listenCancel() => _request('POST', '/voice/listen/cancel');
+  Future<void> quiet() => _request('POST', '/voice/quiet');
+
   Future<Map<String, String>> setPolicy(String kind, String level) async =>
       Map<String, String>.from(await _request('PUT', '/policy', {'kind': kind, 'level': level}) as Map);
 
@@ -202,4 +218,26 @@ class CoreClient extends ChangeNotifier {
     _http.close(force: true);
     super.dispose();
   }
+}
+
+
+/// An error from Compii Core, worded for people.
+class CoreError implements Exception {
+  CoreError(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+String _detail(String body, int status) {
+  try {
+    final d = jsonDecode(body);
+    if (d is Map && d['detail'] is String) return d['detail'] as String;
+  } catch (_) {}
+  return switch (status) {
+    401 => 'Compii Core didn’t accept this app. Restart both and try again.',
+    404 => 'That isn’t there any more.',
+    409 => 'Compii is busy with that right now.',
+    _ => 'Compii Core couldn’t do that (error $status).',
+  };
 }

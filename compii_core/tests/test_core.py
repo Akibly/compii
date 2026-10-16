@@ -206,7 +206,8 @@ async def test_tool_errors_go_back_to_the_model(toolbox, home, tmp_path):
 def test_service_requires_token_and_runs_rehearsal(home, monkeypatch):
     monkeypatch.delenv("COMPII_SMTP_HOST", raising=False)
     brain = RehearsalBrain(home["downloads"], home["workspace"])
-    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="tok")
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
     agent = app.state.agent
     agent.toolbox._open = lambda _t: None
     with TestClient(app) as client:
@@ -300,3 +301,86 @@ def test_memories_can_be_listed_and_forgotten(toolbox):
     assert toolbox.forget(mems[0]["id"])
     assert [m["fact"] for m in toolbox.memories()] == ["Works at Acme"]
     assert "Acme" in toolbox.execute("recall", {"query": "acme"}).text
+
+
+# ---- voice ------------------------------------------------------------------------
+
+import numpy as np  # noqa: E402
+
+from compii_core.voice import RATE, Voice  # noqa: E402
+
+
+class FakeSpeaker:
+    def __init__(self) -> None:
+        self.said: list[str] = []
+        self.stops = 0
+        self.speaking = False
+
+    def say(self, text: str) -> None:
+        self.said.append(text)
+        self.speaking = True
+
+    def stop(self) -> None:
+        self.stops += 1
+        self.speaking = False
+
+
+class FakeMic:
+    def __init__(self) -> None:
+        self.on_audio = None
+
+    def start(self, on_audio) -> None:
+        self.on_audio = on_audio
+        on_audio(np.full(RATE, 0.05, np.float32))  # one second of "speech"
+
+    def stop(self) -> None:
+        pass
+
+
+def quiet_voice(workspace: Path, events: list | None = None) -> Voice:
+    v = Voice(workspace / "models", (events.append if events is not None else lambda e: None), FakeMic, FakeSpeaker())
+    return v
+
+
+def test_push_to_talk_gives_a_final_transcript_and_interrupts_speech(tmp_path):
+    events: list[dict] = []
+    v = quiet_voice(tmp_path, events)
+    (v.whisper_dir).mkdir(parents=True)
+    (v.whisper_dir / "model.bin").write_bytes(b"x")
+    v.transcribe = lambda audio: "tidy my downloads" if audio.size >= RATE else ""
+    v.say("I was in the middle of saying something")
+    v.start_listening()
+    assert v._speaker.stops >= 1, "the mic interrupts Compii"
+    assert v.stop_listening() == "tidy my downloads"
+    kinds = [e["type"] for e in events]
+    assert kinds.count("voice_listening") == 2 and "voice_final" in kinds
+
+
+def test_listening_needs_the_model_first(tmp_path):
+    v = quiet_voice(tmp_path)
+    with pytest.raises(RuntimeError, match="Settings"):
+        v.start_listening()
+    assert v.status()["engine"] in ("windows", "none")
+
+
+def test_replies_and_questions_are_spoken_and_stop_silences(home, monkeypatch):
+    monkeypatch.delenv("COMPII_SMTP_HOST", raising=False)
+    voice = quiet_voice(home["workspace"])
+    brain = RehearsalBrain(home["downloads"], home["workspace"])
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="tok", voice=voice)
+    app.state.agent.toolbox._open = lambda _t: None
+    h = {"X-Compii-Token": "tok"}
+    with TestClient(app) as client, client.websocket_connect("/events?t=tok") as ws:
+        client.post("/tasks", json={"request": "invoices"}, headers=h)
+        while True:
+            e = ws.receive_json()
+            if e["type"] == "approval_needed":
+                client.post(f"/approvals/{e['approval_id']}", json={"approved": True}, headers=h)
+            if e["type"] == "task_finished":
+                break
+        assert any(s.startswith("I need your okay") for s in voice._speaker.said)
+        assert "spreadsheet is ready" in voice._speaker.said[-1]
+        client.post("/stop", headers=h)
+        assert voice._speaker.stops >= 1
+        client.put("/voice/settings", json={"speak_replies": False}, headers=h)
+        assert client.get("/voice", headers=h).json()["settings"]["speak_replies"] is False

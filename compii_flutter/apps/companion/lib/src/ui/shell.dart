@@ -6,6 +6,7 @@ import '../console/core_client.dart';
 import 'pages.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'voice.dart';
 
 enum Section { home, chat, memory, settings }
 
@@ -15,6 +16,26 @@ class AppState extends ChangeNotifier {
   String? selected;
   ThemeMode themeMode = ThemeMode.system;
   String? error;
+
+  /// Free local voice; set by the app at start.
+  VoiceController? voice;
+
+  /// The user is typing a message: the character leans in and listens.
+  bool typing = false;
+
+  void setTyping(bool v) {
+    if (v != typing) {
+      typing = v;
+      notifyListeners();
+    }
+  }
+
+  /// The character's mood right now: voice first, then typing, then tasks.
+  Mood moodWith(CoreClient core) {
+    final base = moodOf(core);
+    final withTyping = typing && (base == Mood.idle || base == Mood.happy) ? Mood.listening : base;
+    return voice?.moodOver(withTyping) ?? withTyping;
+  }
 
   void open(String taskId) {
     selected = taskId;
@@ -91,7 +112,7 @@ class Workspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([core, state]),
+    listenable: Listenable.merge([core, state, ?state.voice]),
     builder: (context, _) {
       final task = state.selected == null ? null : core.tasks[state.selected];
       return CallbackShortcuts(
@@ -114,7 +135,7 @@ class Workspace extends StatelessWidget {
                           child: switch (state.section) {
                             Section.memory => MemoryPage(core: core, run: _run),
                             Section.settings => SettingsPage(core: core, state: state, run: _run),
-                            Section.chat when task != null => _Conversation(task: task, core: core, run: _run),
+                            Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
                             _ => _Home(core: core, state: state, run: _run),
                           },
                         ),
@@ -141,8 +162,9 @@ class _Sidebar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final mood = moodOf(core);
+    final mood = state.moodWith(core);
     final tasks = core.ordered;
+    final voice = state.voice;
     return Container(
       width: 264,
       decoration: BoxDecoration(color: c.surface, border: Border(right: BorderSide(color: c.border))),
@@ -153,7 +175,10 @@ class _Sidebar extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(14, 16, 10, 10),
             child: Row(
               children: [
-                SizedBox.square(dimension: 34, child: Orbling(mood: mood, jobs: tasks.where((t) => t.active).length)),
+                if (voice != null)
+                  TalkableOrbling(voice: voice, mood: mood, jobs: tasks.where((t) => t.active).length, size: 38)
+                else
+                  SizedBox.square(dimension: 34, child: Orbling(mood: mood, jobs: tasks.where((t) => t.active).length)),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -388,8 +413,11 @@ class _StatusLine extends StatelessWidget {
 
 /// The message box. Enter sends; Shift+Enter adds a line.
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true});
+  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state});
   final CoreClient core;
+
+  /// App state, for voice and the "typing" reaction.
+  final AppState? state;
   final Future<void> Function(String text) onSend;
   final String hint;
 
@@ -409,7 +437,12 @@ class _ComposerState extends State<Composer> {
   @override
   void initState() {
     super.initState();
-    _text.addListener(() => setState(() {}));
+    _text.addListener(_changed);
+  }
+
+  void _changed() {
+    setState(() {});
+    widget.state?.setTyping(_text.text.trim().isNotEmpty);
   }
 
   @override
@@ -423,6 +456,7 @@ class _ComposerState extends State<Composer> {
     final t = _text.text.trim();
     if (t.isEmpty || widget.core.status != CoreStatus.online) return;
     _text.clear();
+    widget.state?.setTyping(false);
     await widget.onSend(t);
     _focus.requestFocus();
   }
@@ -432,6 +466,8 @@ class _ComposerState extends State<Composer> {
     final c = context.c;
     final online = widget.core.status == CoreStatus.online;
     final busy = widget.busyTask?.active ?? false;
+    final voice = widget.state?.voice;
+    final hearing = voice != null && (voice.listening || voice.busy);
     return Container(
       decoration: BoxDecoration(
         color: c.raised,
@@ -444,7 +480,9 @@ class _ComposerState extends State<Composer> {
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
           Expanded(
-            child: Focus(
+            child: hearing
+                ? LiveTranscript(voice: voice)
+                : Focus(
               onFocusChange: (_) => setState(() {}),
               onKeyEvent: (node, e) {
                 if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.enter && !HardwareKeyboard.instance.isShiftPressed) {
@@ -471,11 +509,10 @@ class _ComposerState extends State<Composer> {
               ),
             ),
           ),
-          const IconButton(
-            tooltip: 'Voice is coming next',
-            onPressed: null,
-            icon: Icon(Icons.mic_none, size: 20),
-          ),
+          if (voice != null)
+            MicButton(voice: voice, onSetup: () => widget.state?.go(Section.settings))
+          else
+            const SizedBox(width: 4),
           const SizedBox(width: 2),
           if (busy)
             IconButton.filled(
@@ -535,13 +572,21 @@ class _Home extends StatelessWidget {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              SizedBox.square(dimension: 150, child: Orbling(mood: moodOf(core), jobs: core.ordered.where((t) => t.active).length)),
+              if (state.voice != null)
+                TalkableOrbling(voice: state.voice!, mood: state.moodWith(core), jobs: core.ordered.where((t) => t.active).length)
+              else
+                SizedBox.square(dimension: 150, child: Orbling(mood: moodOf(core), jobs: core.ordered.where((t) => t.active).length)),
               const SizedBox(height: 8),
               Text(_greeting, style: context.type.headlineMedium),
               const SizedBox(height: 6),
-              Text('What should we get done?', style: context.type.bodyLarge?.copyWith(color: c.muted)),
+              Text(
+                state.voice?.canListen == true
+                    ? 'What should we get done? Type, or click me and just say it.'
+                    : 'What should we get done?',
+                style: context.type.bodyLarge?.copyWith(color: c.muted),
+              ),
               const SizedBox(height: 24),
-              Composer(core: core, onSend: _start),
+              Composer(core: core, onSend: _start, state: state),
               const SizedBox(height: 18),
               Wrap(
                 spacing: 10,
@@ -569,7 +614,8 @@ class _Home extends StatelessWidget {
 }
 
 class _Conversation extends StatelessWidget {
-  const _Conversation({required this.task, required this.core, required this.run});
+  const _Conversation({required this.task, required this.core, required this.run, required this.state});
+  final AppState state;
   final TaskView task;
   final CoreClient core;
   final Run run;
@@ -603,6 +649,7 @@ class _Conversation extends StatelessWidget {
             constraints: const BoxConstraints(maxWidth: 760),
             child: Composer(
               core: core,
+              state: state,
               hint: 'Follow up…',
               busyTask: task,
               run: run,

@@ -8,6 +8,7 @@ import 'package:compii/src/console/core_client.dart';
 import 'package:compii/src/ui/quick_bar.dart';
 import 'package:compii/src/ui/shell.dart';
 import 'package:compii/src/ui/tokens.dart';
+import 'package:compii/src/ui/voice.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -123,6 +124,9 @@ void main() {
       ('conversation-done-dark', const Size(1440, 900), Sample.done, Brightness.dark, 'workspace'),
       ('quick-bar', const Size(720, 520), Sample.needsYou, Brightness.light, 'quick'),
       ('phone-landscape-needs-you', const Size(844, 390), Sample.needsYou, Brightness.light, 'workspace'),
+      ('home-listening', const Size(1440, 900), Sample.empty, Brightness.light, 'listening'),
+      ('conversation-speaking-dark', const Size(1440, 900), Sample.done, Brightness.dark, 'speaking'),
+      ('settings-voice', const Size(1440, 900), Sample.empty, Brightness.light, 'settings'),
     ];
     for (final (name, size, sample, brightness, surface) in shots) {
       tester.view.physicalSize = size;
@@ -131,6 +135,25 @@ void main() {
       final core = sampleCore(sample);
       final state = AppState()..themeMode = brightness == Brightness.dark ? ThemeMode.dark : ThemeMode.light;
       if (sample != Sample.empty) state.open('t1');
+      final voice = VoiceController(core)
+        ..status = {
+          'listen_ready': surface != 'settings',
+          'natural_voice': false,
+          'engine': 'windows',
+          'downloading': <String, dynamic>{},
+          'download_sizes_mb': {'listen': 145, 'speak': 120},
+          'voices': {'af_heart': 'Heart (warm, US)'},
+          'settings': {'speak_replies': true, 'voice': 'af_heart', 'speed': 1.05},
+        };
+      state.voice = voice;
+      if (surface == 'listening') {
+        voice
+          ..listening = true
+          ..level = .7
+          ..partial = "find last month's invoices and put them in a";
+      }
+      if (surface == 'speaking') voice.speaking = true;
+      if (surface == 'settings') state.go(Section.settings);
       final quick = QuickMode(state)
         ..active = true
         ..task = 't1';

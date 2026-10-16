@@ -3,10 +3,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 /// What the companion is doing right now. Every character design must show each one.
-enum Mood { idle, thinking, acting, waiting, happy, problem, offline }
+enum Mood { idle, listening, thinking, acting, speaking, waiting, happy, problem, offline }
 
 String moodLabel(Mood mood) => switch (mood) {
   Mood.idle => 'Ready',
+  Mood.listening => 'Listening',
+  Mood.speaking => 'Speaking',
   Mood.thinking => 'Thinking',
   Mood.acting => 'Working',
   Mood.waiting => 'Needs you',
@@ -59,6 +61,7 @@ class OrblingPalette {
     Mood.waiting => const Color(0xFFFFA928),
     Mood.problem => const Color(0xFFFF6B6B),
     Mood.offline => const Color(0xFFB8BCC6),
+    Mood.listening => const Color(0xFF5CE1E6),
     _ => gold,
   };
 }
@@ -72,10 +75,18 @@ class Orbling extends StatefulWidget {
     this.phase = .25,
     this.face = false,
     this.reach,
+    this.level = 0,
+    this.followPointer = true,
   });
   final Mood mood;
   final int jobs;
   final bool animate;
+
+  /// Microphone level 0..1 while listening; makes the motes pulse with your voice.
+  final double level;
+
+  /// Eyes follow the mouse pointer when the character is free to look around.
+  final bool followPointer;
 
   /// Close-up: the face fills the whole area (the phone's Face View).
   final bool face;
@@ -129,21 +140,39 @@ class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
     }
     return RepaintBoundary(
       child: AnimatedBuilder(
-        animation: Listenable.merge([clock, blend]),
+        animation: Listenable.merge([clock, blend, if (widget.followPointer) pointer]),
         builder: (context, _) {
           final b = Curves.easeOutBack.transform(blend.value).clamp(0.0, 1.08);
           final t = still ? widget.phase : clock.value;
+          final look = widget.followPointer ? _look(context) : null;
           return CustomPaint(
             size: Size.infinite,
             painter: widget.face
-                ? OrblingFacePainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still)
-                : OrblingPainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, reach: widget.reach),
+                ? OrblingFacePainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, look: look, level: widget.level)
+                : OrblingPainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, reach: widget.reach, look: look, level: widget.level),
           );
         },
       ),
     );
   }
+
+  /// Direction from the character to the mouse, -1..1 on each axis.
+  Offset? _look(BuildContext context) {
+    final p = pointer.value;
+    final box = context.findRenderObject();
+    if (p == null || box is! RenderBox || !box.hasSize || !box.attached) return null;
+    final centre = box.localToGlobal(box.size.center(Offset.zero));
+    final d = p - centre;
+    final reach = box.size.shortestSide * 2.5;
+    return Offset((d.dx / reach).clamp(-1.0, 1.0), (d.dy / reach).clamp(-1.0, 1.0));
+  }
 }
+
+/// Last known mouse position in global coordinates, fed by the app root.
+final pointer = ValueNotifier<Offset?>(null);
+
+/// Moods where the character is free to look at you (and your pointer).
+bool _canLook(Mood m) => m == Mood.idle || m == Mood.listening || m == Mood.speaking || m == Mood.waiting;
 
 /// Pose = where everything sits for a mood, in unit coordinates.
 class _Pose {
@@ -166,6 +195,10 @@ class _Pose {
 
   static _Pose of(Mood mood) => switch (mood) {
     Mood.idle => const _Pose(left: Offset(.19, .71), right: Offset(.81, .71), gaze: Offset(0, .1), brow: 0, squash: 0),
+    // Mittens cupped by its sides, leaning in to hear you.
+    Mood.listening => const _Pose(left: Offset(.15, .56), right: Offset(.85, .56), gaze: Offset(0, .05), brow: .35, squash: -.04, leftTurn: .5, rightTurn: -.5),
+    // One mitten gestures while it talks.
+    Mood.speaking => const _Pose(left: Offset(.19, .72), right: Offset(.84, .6), gaze: Offset(0, .1), brow: .15, squash: 0, rightTurn: -.35),
     Mood.thinking => const _Pose(left: Offset(.18, .72), right: Offset(.63, .695), gaze: Offset(-.55, -.7), brow: .25, squash: -.02, rightTurn: -.6),
     Mood.acting => const _Pose(left: Offset(.37, .775), right: Offset(.63, .775), gaze: Offset(0, .8), brow: -.35, squash: .015, leftTurn: -.25, rightTurn: .25),
     Mood.waiting => const _Pose(left: Offset(.18, .71), right: Offset(.84, .44), gaze: Offset(0, .05), brow: .45, squash: -.03, rightTurn: -.4),
@@ -194,6 +227,8 @@ class OrblingPainter extends CustomPainter {
     required this.t,
     this.still = false,
     this.reach,
+    this.look,
+    this.level = 0,
   });
   final Mood mood;
   final Mood previous;
@@ -202,6 +237,10 @@ class OrblingPainter extends CustomPainter {
   final double t;
   final bool still;
   final Offset? reach;
+  final Offset? look;
+  final double level;
+
+  Offset _gaze(_Pose pose) => look != null && _canLook(mood) ? look! : pose.gaze;
 
   double get _wave => math.sin(t * 2 * math.pi);
 
@@ -351,7 +390,8 @@ class OrblingPainter extends CustomPainter {
         canvas.drawOval(Rect.fromCenter(center: c, width: w, height: h), Paint()..color = Colors.white);
         final pw = mood == Mood.problem ? .04 : .058;
         final ph = mood == Mood.problem ? .056 : .08;
-        final g = Offset(pose.gaze.dx * (w - pw) / 2 * .9, pose.gaze.dy * (h - ph) / 2 * .9);
+        final gz = _gaze(pose);
+        final g = Offset(gz.dx * (w - pw) / 2 * .9, gz.dy * (h - ph) / 2 * .9);
         final pc = c + g;
         canvas.drawOval(Rect.fromCenter(center: pc, width: pw, height: ph), ink);
         canvas.drawCircle(pc + Offset(-pw * .22, -ph * .22), pw * .24, Paint()..color = Colors.white);
@@ -391,6 +431,13 @@ class OrblingPainter extends CustomPainter {
         canvas.drawOval(Rect.fromCenter(center: m + const Offset(.016, .01), width: .018, height: .016), Paint()..color = OrblingPalette.cheek);
       case Mood.thinking:
         canvas.drawOval(Rect.fromCenter(center: m + const Offset(.012, 0), width: .02, height: .012), ink);
+      case Mood.listening:
+        canvas.drawOval(Rect.fromCenter(center: m, width: .022, height: .026), ink);
+      case Mood.speaking:
+        // Mouth opens and closes while it talks.
+        final open = .35 + .65 * (math.sin(t * 2 * math.pi * 24) * .5 + .5);
+        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .004), width: .05, height: .012 + .03 * open), ink);
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, .006 + .008 * open), width: .026, height: .008 + .008 * open), Paint()..color = OrblingPalette.cheek);
       case Mood.idle || Mood.offline:
         canvas.drawPath(
           Path()
@@ -443,6 +490,7 @@ class OrblingPainter extends CustomPainter {
     final count = switch (mood) {
       Mood.thinking => math.max(3, jobs),
       Mood.idle => 1,
+      Mood.listening => 3,
       _ => math.max(1, jobs),
     }.clamp(1, 6);
     final speed = switch (mood) {
@@ -457,7 +505,9 @@ class OrblingPainter extends CustomPainter {
       // Tilted ellipse around the body.
       final x = .5 + math.cos(a) * .4;
       final y = .6 + math.sin(a) * .2;
-      final pulse = mood == Mood.waiting ? 1 + .25 * math.sin(t * 2 * math.pi * 3) : 1.0;
+      final pulse = mood == Mood.waiting
+          ? 1 + .25 * math.sin(t * 2 * math.pi * 3)
+          : (mood == Mood.listening ? 1 + level * 1.2 : 1.0);
       out.add(_Mote(Offset(x, y), .03 * pulse, color, behind: math.sin(a) < 0, trail: true, angle: a, speed: speed));
     }
     return out;
@@ -546,6 +596,31 @@ class OrblingPainter extends CustomPainter {
             z,
           );
         }
+      case Mood.listening:
+        // Sound waves arriving, bigger when you speak louder.
+        final wave = Paint()
+          ..color = OrblingPalette.mote(Mood.listening).withValues(alpha: .8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .012
+          ..strokeCap = StrokeCap.round;
+        for (final side in [-1.0, 1.0]) {
+          for (var i = 0; i < 3; i++) {
+            final r = .05 + i * .035 + level * .03;
+            final c = Offset(.5 + side * .42, .5);
+            canvas.drawArc(Rect.fromCircle(center: c, radius: r), side < 0 ? math.pi - .6 : -.6, 1.2, false,
+                wave..color = wave.color.withValues(alpha: (.85 - i * .25) * (.4 + level * .6)));
+          }
+        }
+      case Mood.speaking:
+        final wave = Paint()
+          ..color = OrblingPalette.body.withValues(alpha: .5)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .01
+          ..strokeCap = StrokeCap.round;
+        for (var i = 0; i < 2; i++) {
+          final r = .04 + i * .03 + .01 * math.sin(t * 2 * math.pi * 12 + i);
+          canvas.drawArc(Rect.fromCircle(center: const Offset(.6, .66), radius: r), -.7, 1.4, false, wave);
+        }
       case Mood.idle || Mood.acting:
         break;
     }
@@ -553,7 +628,8 @@ class OrblingPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant OrblingPainter old) =>
-      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous;
+      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous ||
+      old.look != look || old.level != level;
 }
 
 class _Mote {
@@ -578,6 +654,8 @@ class OrblingFacePainter extends CustomPainter {
     required this.jobs,
     required this.t,
     this.still = false,
+    this.look,
+    this.level = 0,
   });
   final Mood mood;
   final Mood previous;
@@ -585,6 +663,10 @@ class OrblingFacePainter extends CustomPainter {
   final int jobs;
   final double t;
   final bool still;
+  final Offset? look;
+  final double level;
+
+  Offset _gaze(_Pose pose) => look != null && _canLook(mood) ? look! : pose.gaze;
 
   double get _wave => math.sin(t * 2 * math.pi);
 
@@ -678,7 +760,8 @@ class OrblingFacePainter extends CustomPainter {
         final small = mood == Mood.problem;
         final pw = eyeW * (small ? .42 : .6);
         final ph = eh * (small ? .42 : .6);
-        final g = Offset(pose.gaze.dx * (eyeW - pw) / 2 * .9, pose.gaze.dy * (eh - ph) / 2 * .9);
+        final gz = _gaze(pose);
+        final g = Offset(gz.dx * (eyeW - pw) / 2 * .9, gz.dy * (eh - ph) / 2 * .9);
         final pc = c + g;
         canvas.drawOval(Rect.fromCenter(center: pc, width: pw, height: ph), ink);
         canvas.drawCircle(pc + Offset(-pw * .22, -ph * .22), pw * .22, Paint()..color = Colors.white);
@@ -720,6 +803,12 @@ class OrblingFacePainter extends CustomPainter {
         canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .45, k * .3), width: k * .55, height: k * .45), Paint()..color = OrblingPalette.cheek);
       case Mood.thinking:
         canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .35, 0), width: k * .6, height: k * .36), ink);
+      case Mood.listening:
+        canvas.drawOval(Rect.fromCenter(center: m, width: k * .7, height: k * .8), ink);
+      case Mood.speaking:
+        final open = .35 + .65 * (math.sin(t * 2 * math.pi * 24) * .5 + .5);
+        canvas.drawOval(Rect.fromCenter(center: m, width: k * 1.6, height: k * (.3 + 1.1 * open)), ink);
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, k * .35 * open), width: k * .8, height: k * .35 * open + 1), Paint()..color = OrblingPalette.cheek);
       case Mood.idle || Mood.offline:
         canvas.drawPath(
           Path()
@@ -791,6 +880,7 @@ class OrblingFacePainter extends CustomPainter {
     final count = switch (mood) {
       Mood.thinking => math.max(3, jobs),
       Mood.idle => 1,
+      Mood.listening => 3,
       _ => math.max(1, jobs),
     }.clamp(1, 6);
     final speed = mood == Mood.thinking ? 2.0 : mood == Mood.idle ? .5 : 1.0;
@@ -810,5 +900,6 @@ class OrblingFacePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant OrblingFacePainter old) =>
-      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous;
+      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous ||
+      old.look != look || old.level != level;
 }

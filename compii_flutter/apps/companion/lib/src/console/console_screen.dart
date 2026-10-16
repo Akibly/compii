@@ -25,7 +25,7 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
       final phone = box.biggest.shortestSide < 600;
       if (phone || _faceView) {
         return ListenableBuilder(
-          listenable: widget.core,
+          listenable: Listenable.merge([widget.core, widget.state, ?widget.state.voice]),
           builder: (context, _) => FaceStage(
             core: widget.core,
             state: widget.state,
@@ -79,7 +79,8 @@ class FaceStage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final mood = moodOf(core);
+    final mood = state.moodWith(core);
+    final voice = state.voice;
     final online = core.status == CoreStatus.online;
     final active = core.ordered.where((t) => t.active).length;
     final waiting = core.ordered.where((t) => t.pendingApproval != null).toList();
@@ -93,7 +94,12 @@ class FaceStage extends StatelessWidget {
             child: Semantics(
               label: 'Compii, ${moodLabel(mood)}',
               image: true,
-              child: Orbling(mood: mood, jobs: active, face: true),
+              // Tap the face to talk; tap again to send, or to interrupt it.
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: voice == null ? null : () => voice.speaking ? voice.quiet() : voice.toggle(),
+                child: Orbling(mood: mood, jobs: active, face: true, level: voice?.level ?? 0, followPointer: false),
+              ),
             ),
           ),
           Positioned(
@@ -195,6 +201,7 @@ class FaceStage extends StatelessWidget {
                     Expanded(
                       child: Composer(
                         core: core,
+                        state: state,
                         autofocus: false,
                         hint: 'Tell Compii…',
                         busyTask: latest?.active == true ? latest : null,

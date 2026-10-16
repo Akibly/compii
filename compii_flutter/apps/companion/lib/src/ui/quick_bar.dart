@@ -8,6 +8,7 @@ import '../console/core_client.dart';
 import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'voice.dart';
 
 const _barSize = Size(720, 132);
 const _openSize = Size(720, 520);
@@ -102,11 +103,13 @@ class QuickBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([core, quick, quick.state]),
+    listenable: Listenable.merge([core, quick, quick.state, ?quick.state.voice]),
     builder: (context, _) {
       final c = context.c;
       final task = quick.task == null ? null : core.tasks[quick.task];
-      final mood = task == null ? moodOf(core) : _moodOf(task);
+      final voice = quick.state.voice;
+      final base = task == null ? quick.state.moodWith(core) : _moodOf(task);
+      final mood = voice?.moodOver(base) ?? base;
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.escape): () => quick.close(hide: true),
@@ -121,11 +124,15 @@ class QuickBar extends StatelessWidget {
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      SizedBox.square(dimension: 58, child: Orbling(mood: mood, jobs: task?.active == true ? 1 : 0)),
+                      if (voice != null)
+                        TalkableOrbling(voice: voice, mood: mood, jobs: task?.active == true ? 1 : 0, size: 58)
+                      else
+                        SizedBox.square(dimension: 58, child: Orbling(mood: mood, jobs: task?.active == true ? 1 : 0)),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Composer(
                           core: core,
+                          state: quick.state,
                           hint: task == null ? 'Ask Compii…' : 'Follow up…',
                           busyTask: task,
                           run: _run,
