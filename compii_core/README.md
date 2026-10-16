@@ -4,6 +4,9 @@ The local service that does the work behind Compii's character. The Flutter app 
 
 - **Agent loop** on Claude (`claude-opus-5-5`, adaptive thinking, server-side refusal fallback), with web search.
 - **Tools:** list/find/read files (text, PDF, Excel), write files, create folders, move (undoable), create Excel spreadsheets with formulas, run Python scripts in the workspace, open files/URLs/known apps, send email, remember/recall facts, and point at a button or menu on screen by its label (Windows UI Automation).
+- **Hands in your apps:** list and switch windows, read a window's text and controls, click buttons and menus by name, type into fields, press shortcuts (Windows UI Automation; uses the control itself, leaving your mouse alone where possible). Before clicking or typing on screen, the character points at the spot.
+- **Its own browser:** Microsoft Edge driven by Playwright with a separate profile in `~/Compii/browser-profile` (never your logins): open, read, click, fill. Submitting a form counts as *sending* and always asks.
+- **Never types secrets:** passwords, PINs, card or bank numbers and one-time codes are refused; Compii asks you to enter them yourself.
 - **Autonomy dial:** each action is `read`, `create`, `change`, `send`, `spend` or `delete`. Defaults: reads and creates just happen; changes ask once per task; sending, spending and deleting ask every time. Spending can never be set to "just do it".
 - **Journal + undo** of every action in `~/Compii/journal.jsonl`.
 - **Stop** a task or everything at any moment; nothing else runs after Stop.

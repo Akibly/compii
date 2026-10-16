@@ -384,3 +384,80 @@ def test_replies_and_questions_are_spoken_and_stop_silences(home, monkeypatch):
         assert voice._speaker.stops >= 1
         client.put("/voice/settings", json={"speak_replies": False}, headers=h)
         assert client.get("/voice", headers=h).json()["settings"]["speak_replies"] is False
+
+
+# ---- hands: apps and the browser ---------------------------------------------------
+
+from compii_core.screen import Found, ScreenError, keys_to_sendkeys  # noqa: E402
+
+
+class FakeScreen:
+    def __init__(self) -> None:
+        self.log: list[str] = []
+
+    def click(self, target, window=None, before=None):
+        f = Found(target, "ButtonControl", window or "Report - Word", 10, 20, 60, 40)
+        if before:
+            before(f)
+        self.log.append(f"click {target}")
+        return f
+
+    def type_text(self, text, target=None, window=None, before=None):
+        f = Found(target or "", "EditControl", "Notepad", 0, 0, 100, 20) if target else None
+        if f and before:
+            before(f)
+        self.log.append(f"type {text}")
+        return f
+
+    def read_window(self, window=None):
+        raise ScreenError("No open window has “Paint” in its title.")
+
+
+class FakeBrowser:
+    def __init__(self) -> None:
+        self.log: list[str] = []
+
+    def fill(self, field, value, submit=False):
+        self.log.append(f"fill {field}={value} submit={submit}")
+        return "Filled."
+
+
+def test_click_points_first_then_acts(toolbox):
+    screen = FakeScreen()
+    toolbox.screen = screen
+    order: list[str] = []
+    toolbox.on_point = lambda p: order.append(f"point {p['name']}")
+    screen.log = order
+    out = toolbox.execute("click_on", {"target": "Save"})
+    assert order == ["point Save", "click Save"]
+    assert "Save" in out.text
+
+
+def test_secrets_are_never_typed(toolbox):
+    toolbox.screen = FakeScreen()
+    toolbox._browser = FakeBrowser()
+    for name, args in [("type_into", {"text": "hunter2", "target": "Password"}),
+                       ("browser_fill", {"field": "Card number", "value": "4111 1111 1111 1111"})]:
+        with pytest.raises(ToolError, match="password, payment detail or one-time code"):
+            toolbox.execute(name, args)
+    assert toolbox._browser.log == [] and toolbox.screen.log == []
+
+
+def test_submitting_a_web_form_counts_as_sending(toolbox):
+    tool = toolbox.tools["browser_fill"]
+    assert tool.kind_for({"field": "Search", "value": "x"}) is ActionKind.CHANGE
+    assert tool.kind_for({"field": "Message", "value": "hi", "submit": True}) is ActionKind.SEND
+    assert Policy().needs_approval(ActionKind.SEND, {ActionKind.SEND})
+
+
+def test_screen_problems_are_recoverable_errors(toolbox):
+    toolbox.screen = FakeScreen()
+    with pytest.raises(ToolError, match="Paint"):
+        toolbox.execute("read_window", {"window": "Paint"})
+
+
+def test_shortcut_names_translate():
+    assert keys_to_sendkeys("ctrl+s") == "{Ctrl}s"
+    assert keys_to_sendkeys("Alt + F4") == "{Alt}{F4}"
+    with pytest.raises(ScreenError):
+        keys_to_sendkeys("hyper+x")

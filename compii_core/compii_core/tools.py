@@ -71,7 +71,22 @@ class Toolbox:
         self.roots = [r.resolve() for r in [*roots, workspace] if r.exists()]
         self._open = open_fn or _default_open
         self.memory_path = workspace / "memory.jsonl"
+        from . import screen
+
+        self.screen = screen  # swappable in tests
+        self._browser = None
+        # Called with a screen rectangle just before Compii clicks or types there,
+        # so the character can point at it ("watch me").
+        self.on_point: Callable[[dict[str, Any]], None] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
+
+    @property
+    def browser(self):
+        if self._browser is None:
+            from .browser import Browser
+
+            self._browser = Browser(self.workspace / "browser-profile")
+        return self._browser
 
     # ---- path safety -------------------------------------------------------
 
@@ -266,6 +281,72 @@ class Toolbox:
             files=[(str(draft), "drafted")],
         )
 
+    # ---- hands: Windows apps ------------------------------------------------------
+
+    def _show(self, found: Any, message: str) -> None:
+        if self.on_point:
+            self.on_point({**found.as_event(), "message": message})
+            time.sleep(0.7)  # let the user see where Compii is about to act
+
+    def _screen_call(self, fn: Callable[[], Any]) -> Any:
+        from .screen import ScreenError
+
+        try:
+            return fn()
+        except ScreenError as e:
+            raise ToolError(str(e)) from e
+
+    def list_windows(self, a: dict[str, Any]) -> ToolResult:
+        wins = self._screen_call(self.screen.list_windows)
+        return ToolResult("\n".join(f"- {w['title']}" for w in wins) or "No windows are open.")
+
+    def focus_window(self, a: dict[str, Any]) -> ToolResult:
+        title = self._screen_call(lambda: self.screen.focus_window(a["window"]))
+        return ToolResult(f"Switched to “{title}”.")
+
+    def read_window(self, a: dict[str, Any]) -> ToolResult:
+        return ToolResult(self._screen_call(lambda: self.screen.read_window(a.get("window"))))
+
+    def click_on(self, a: dict[str, Any]) -> ToolResult:
+        found = self._screen_call(lambda: self.screen.click(
+            a["target"], a.get("window"), before=lambda f: self._show(f, f"Clicking “{a['target']}”")))
+        return ToolResult(f"Clicked {found.role.replace('Control', '').lower()} “{found.name}” in “{found.window}”.")
+
+    def type_into(self, a: dict[str, Any]) -> ToolResult:
+        _refuse_secrets(a.get("target") or "", a["text"])
+        found = self._screen_call(lambda: self.screen.type_text(
+            a["text"], a.get("target"), a.get("window"),
+            before=lambda f: self._show(f, f"Typing into “{a.get('target')}”")))
+        where = f"“{found.name}” in “{found.window}”" if found else "the active window"
+        return ToolResult(f"Typed {len(a['text'])} characters into {where}.")
+
+    def press_keys(self, a: dict[str, Any]) -> ToolResult:
+        title = self._screen_call(lambda: self.screen.press_keys(a["keys"], a.get("window")))
+        return ToolResult(f"Pressed {a['keys']}" + (f" in “{title}”." if title else "."))
+
+    # ---- hands: the web (Compii's own Edge window) ---------------------------------
+
+    def _browser_call(self, fn: Callable[[], str]) -> ToolResult:
+        from .browser import BrowserError
+
+        try:
+            return ToolResult(fn())
+        except BrowserError as e:
+            raise ToolError(str(e)) from e
+
+    def browse(self, a: dict[str, Any]) -> ToolResult:
+        return self._browser_call(lambda: self.browser.open(a["url"]))
+
+    def read_page(self, a: dict[str, Any]) -> ToolResult:
+        return self._browser_call(self.browser.read)
+
+    def browser_click(self, a: dict[str, Any]) -> ToolResult:
+        return self._browser_call(lambda: self.browser.click(a["text"]))
+
+    def browser_fill(self, a: dict[str, Any]) -> ToolResult:
+        _refuse_secrets(a["field"], a["value"])
+        return self._browser_call(lambda: self.browser.fill(a["field"], a["value"], bool(a.get("submit"))))
+
     def point_at(self, a: dict[str, Any]) -> ToolResult:
         found = self._find(a["target"])
         if found is None:
@@ -372,6 +453,41 @@ class Toolbox:
                  ["to", "subject", "body"], ActionKind.SEND, self.send_email,
                  lambda a: f"Email {', '.join(a['to'])}: “{a['subject']}”"
                  + (f" with {len(a.get('attachments', []))} attachment(s)" if a.get("attachments") else "")),
+            Tool("list_windows", "List the windows open on the user's screen.", {}, [], ActionKind.READ,
+                 self.list_windows, lambda a: "Look at open windows"),
+            Tool("focus_window", "Bring a window to the front, by part of its title.",
+                 {"window": s}, ["window"], ActionKind.CREATE, self.focus_window,
+                 lambda a: f"Switch to {a['window']}"),
+            Tool("read_window", "Read the text, buttons, menus and fields of a window (the topmost one if no title given). "
+                 "Use it to see exact labels before clicking or typing.",
+                 {"window": {**s, "description": "Part of the window title, optional."}}, [], ActionKind.READ,
+                 self.read_window, lambda a: f"Read {a.get('window') or 'the window'}"),
+            Tool("click_on", "Click a button, menu, tab, link or checkbox in a Windows app by its visible label. "
+                 "The user sees Compii point at it first.",
+                 {"target": s, "window": {**s, "description": "Part of the window title, optional."}}, ["target"],
+                 ActionKind.CHANGE, self.click_on,
+                 lambda a: f"Click “{a['target']}”" + (f" in {a['window']}" if a.get("window") else "")),
+            Tool("type_into", "Type text into a field of a Windows app, found by its label; without a target, types where the cursor is. "
+                 "Never type passwords, card numbers or one-time codes.",
+                 {"text": s, "target": {**s, "description": "The field's label, optional."},
+                  "window": {**s, "description": "Part of the window title, optional."}}, ["text"],
+                 ActionKind.CHANGE, self.type_into,
+                 lambda a: f"Type into {a.get('target') or 'the active window'}"),
+            Tool("press_keys", "Press a key or shortcut, e.g. 'ctrl+s', 'enter', 'alt+tab', 'f5'.",
+                 {"keys": s, "window": {**s, "description": "Part of the window title to send them to, optional."}}, ["keys"],
+                 ActionKind.CHANGE, self.press_keys, lambda a: f"Press {a['keys']}"),
+            Tool("browse", "Open a web page in Compii's own browser window (separate from the user's browser) and read it.",
+                 {"url": s}, ["url"], ActionKind.READ, self.browse, lambda a: f"Open {a['url']}"),
+            Tool("read_page", "Read the page currently open in Compii's browser.", {}, [], ActionKind.READ,
+                 self.read_page, lambda a: "Read the page"),
+            Tool("browser_click", "Click a button, link or tab on the page in Compii's browser, by its visible text.",
+                 {"text": s}, ["text"], ActionKind.CHANGE, self.browser_click, lambda a: f"Click “{a['text']}” on the page"),
+            Tool("browser_fill", "Fill a field on the page in Compii's browser, by its label or placeholder; "
+                 "submit=true also presses Enter (this counts as sending and always asks the user). "
+                 "Never fill passwords, card numbers or one-time codes: ask the user to do that in the browser window.",
+                 {"field": s, "value": s, "submit": {"type": "boolean"}}, ["field", "value"],
+                 lambda a: ActionKind.SEND if a.get("submit") else ActionKind.CHANGE, self.browser_fill,
+                 lambda a: f"Fill “{a['field']}”" + (" and submit" if a.get("submit") else "")),
             Tool("point_at", "Point at a button, menu, field or other item in the user's open windows, by its visible label, "
                  "with a short message in a speech bubble. Use it when teaching or when showing the user where something is.",
                  {"target": {**s, "description": "The item's visible label, e.g. 'Save', 'File', 'Search'."},
@@ -435,3 +551,20 @@ def _default_open(target: str) -> None:
 def default_roots() -> list[Path]:
     home = Path.home()
     return [home / d for d in ("Downloads", "Documents", "Desktop", "Pictures")]
+
+
+_SECRET_FIELD = (
+    r"\b(password|passcode|passphrase|pin|cvv|cvc|otp|2fa|mfa)\b|card number|card no|security code|"
+    r"one[- ]time|verification code|sort code|iban|routing number|social security"
+)
+
+
+def _refuse_secrets(field: str, value: str) -> None:
+    """Compii never types passwords, payment details or one-time codes."""
+    import re
+
+    if re.search(_SECRET_FIELD, field.lower()) or re.fullmatch(r"[\d\s-]{13,23}", value.strip() or "x"):
+        raise ToolError(
+            "That looks like a password, payment detail or one-time code. Compii doesn't type those; "
+            "ask the user to enter it themselves, then continue."
+        )

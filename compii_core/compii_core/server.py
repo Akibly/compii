@@ -115,6 +115,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             mode = "claude"
     hub = Hub()
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
+    toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
 
     async def agent_emit(event: dict[str, Any]) -> None:
         await hub.emit(event)
@@ -135,6 +136,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         agent.stop_all()
         voice.cancel_listening()
         voice.stop_speaking()
+        if toolbox._browser is not None:
+            toolbox._browser.close()
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
     app.state.agent = agent
