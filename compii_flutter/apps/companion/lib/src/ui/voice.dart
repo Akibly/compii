@@ -23,6 +23,14 @@ class VoiceController extends ChangeNotifier {
   bool busy = false; // transcribing after release
   String partial = '';
   double level = 0;
+
+  /// What Compii is saying right now (live caption).
+  String caption = '';
+
+  /// The last short command handled by voice ("yes", "no", "stop"…), for a moment.
+  Map<String, dynamic>? intent;
+  DateTime? intentAt;
+  bool get showIntent => intent != null && intentAt != null && DateTime.now().difference(intentAt!) < const Duration(seconds: 4);
   String? error;
   Map<String, dynamic>? status;
   CoreStatus _last = CoreStatus.connecting;
@@ -62,6 +70,13 @@ class VoiceController extends ChangeNotifier {
         level = (e['level'] as num).toDouble();
       case 'voice_speaking':
         speaking = e['on'] == true;
+        if (!speaking) caption = '';
+      case 'voice_caption':
+        caption = '${e['text']}';
+      case 'voice_intent':
+        intent = e;
+        intentAt = DateTime.now();
+        Future<void>.delayed(const Duration(milliseconds: 4100), notifyListeners);
       case 'voice_wake_word':
         refresh();
       case 'voice_command':
@@ -122,6 +137,7 @@ class VoiceController extends ChangeNotifier {
 
   Future<void> quiet() async {
     speaking = false;
+    caption = '';
     notifyListeners();
     try {
       await core.quiet();

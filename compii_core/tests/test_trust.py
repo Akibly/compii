@@ -86,7 +86,7 @@ def test_cloud_brains_need_a_key_and_local_ones_do_not():
     keys = MemoryKeyStore()
     with pytest.raises(prov.NoKeyError):
         prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys)
-    assert isinstance(prov.make_brain(prov.BrainChoice("ollama"), keys), prov.OpenAICompatBrain)
+    assert isinstance(prov.make_brain(prov.BrainChoice("ollama"), keys), prov.OllamaBrain)
     keys.set("openrouter", "sk-or-test")
     assert prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys).api_key == "sk-or-test"
 

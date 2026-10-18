@@ -25,6 +25,7 @@ from .policy import Rule
 from . import providers as prov
 from .skills import Skills, from_task, skill_tools, suggest_name
 from .walkthrough import Walkthroughs
+from . import intents
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
@@ -192,9 +193,33 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
     voice_file = workspace / "voice.json"
 
+    async def act_on(text: str) -> bool:
+        """Short spoken commands ("yes", "no", "stop", "quiet") act at once,
+        without the AI. Returns True when the words were one of those."""
+        pending = list(agent._pending.items())
+        approval_id, info = pending[-1] if pending else (None, None)
+        intent = intents.parse(text, info[2].value if info else None)
+        if intent is None:
+            return False
+        if intent.kind == "quiet":
+            voice.stop_speaking()
+        elif intent.kind in ("approve", "decline") and approval_id:
+            agent.decide(approval_id, intent.kind == "approve")
+            audit.record("voice_answer", tool=info[0], answer=intent.kind)
+        elif intent.kind == "stop":
+            agent.stop_all()
+            voice.stop_speaking()
+        await hub.emit({"type": "voice_intent", "task_id": "", "at": time.time(), "kind": intent.kind,
+                        "text": text, "reply": intent.reply, "label": info[3] if info else ""})
+        if intent.reply and voice.settings.speak_replies and intent.kind != "stop":
+            voice.say(intent.reply)
+        return True
+
     async def hands_free(text: str) -> None:
         """A request heard after "Hey Compii": the app routes it (to the open
         conversation or a new one); with no app connected, Core starts one."""
+        if await act_on(text):
+            return
         if hub.clients:
             await hub.emit({"type": "voice_command", "task_id": "", "at": time.time(), "text": text})
         else:
@@ -232,7 +257,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             if event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
                 voice.say(event.get("text", ""))
             elif event["type"] == "approval_needed":
-                voice.say(f"I need your okay. {event.get('label', '')}")
+                answer = {"spend": " Press the button to pay.", "delete": " Say yes, delete it, or no."}.get(
+                    str(event.get("kind")), " Say yes or no.")
+                voice.say(f"I need your okay. {event.get('label', '')}.{answer if voice.status().get('listen_ready') else ''}")
 
     async def _finish_ai_watch(watch_id: str, text: str) -> None:
         w = plans.watches.get(watch_id)
@@ -377,6 +404,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     app.state.voice = voice
     app.state.plans = plans
     app.state.tick = tick
+    app.state.act_on = act_on
     _proactive_tools(toolbox, plans)
 
     def auth(x_compii_token: str = Header(""), x_compii_device: str = Header("")) -> None:
@@ -742,8 +770,11 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return {"listening": True}
 
     @app.post("/voice/listen/stop", dependencies=[Depends(auth)])
-    async def listen_stop() -> dict[str, str]:
-        return {"text": await asyncio.to_thread(voice.stop_listening)}
+    async def listen_stop() -> dict[str, Any]:
+        text = await asyncio.to_thread(voice.stop_listening)
+        if text and await act_on(text):
+            return {"text": "", "handled": True, "heard": text}  # done: nothing for the app to route
+        return {"text": text, "handled": False}
 
     @app.post("/voice/listen/cancel", dependencies=[Depends(auth)])
     def listen_cancel() -> dict[str, bool]:

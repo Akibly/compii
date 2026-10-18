@@ -23,7 +23,7 @@ from .keys import KeyStore
 
 PRESETS: dict[str, dict[str, str]] = {
     "claude": {"label": "Claude (Anthropic)", "base_url": "", "model": MODEL, "key": "anthropic", "where": "cloud"},
-    "ollama": {"label": "Ollama (free, on this PC)", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:8b",
+    "ollama": {"label": "Ollama (free, on this PC)", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:4b",
                "key": "", "where": "local"},
     "lmstudio": {"label": "LM Studio (free, on this PC)", "base_url": "http://127.0.0.1:1234/v1", "model": "",
                  "key": "", "where": "local"},
@@ -161,7 +161,7 @@ class OpenAICompatBrain:
             raise RuntimeError(f"{self.model} at {self.base_url} said {r.status_code}: {str(detail)[:300]}")
         choice = r.json()["choices"][0]
         msg = choice.get("message") or {}
-        text = msg.get("content") or ""
+        text = strip_thinking(msg.get("content") or "")
         blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
         calls = []
         for c in msg.get("tool_calls") or []:
@@ -171,6 +171,59 @@ class OpenAICompatBrain:
             blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
         finish = choice.get("finish_reason") or "stop"
         stop = "max_tokens" if finish == "length" else "tool_use" if calls else "end_turn"
+        return BrainReply(blocks, text, calls, stop)
+
+
+def strip_thinking(text: str) -> str:
+    """Local reasoning models may include their scratch thoughts; never show or speak them."""
+    import re
+
+    return re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+
+
+class OllamaBrain(OpenAICompatBrain):
+    """Ollama's own API: a context window big enough for Compii's tools, and
+    "thinking" off so replies come quickly on a home PC."""
+
+    def __init__(self, base_url: str, model: str, context: int | None = None, **kw: Any) -> None:
+        import os
+
+        super().__init__(base_url, model, **kw)
+        self.root = self.base_url.removesuffix("/v1")
+        self.context = context or int(os.environ.get("COMPII_OLLAMA_CTX", "16384"))
+
+    async def step(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> BrainReply:
+        import httpx
+
+        msgs = to_openai(system, messages)
+        for m in msgs:  # Ollama wants tool arguments as objects, not JSON text
+            for c in m.get("tool_calls") or []:
+                c["function"]["arguments"] = _args(c["function"]["arguments"])
+        body: dict[str, Any] = {
+            "model": self.model, "messages": msgs, "stream": False, "think": False, "keep_alive": "30m",
+            "options": {"num_ctx": self.context, "temperature": 0.3},
+        }
+        if tools:
+            body["tools"] = tools_to_openai(tools)
+        async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
+            r = await client.post(f"{self.root}/api/chat", json=body)
+        if r.status_code >= 400:
+            try:
+                detail = r.json().get("error", r.text)
+            except ValueError:
+                detail = r.text
+            raise RuntimeError(f"Ollama ({self.model}) said {r.status_code}: {str(detail)[:300]}")
+        data = r.json()
+        msg = data.get("message") or {}
+        text = strip_thinking(msg.get("content") or "")
+        blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
+        calls = []
+        for c in msg.get("tool_calls") or []:
+            fn = c.get("function") or {}
+            call = ToolCall(c.get("id") or f"call_{uuid.uuid4().hex[:12]}", fn.get("name", ""), _args(fn.get("arguments")))
+            calls.append(call)
+            blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
+        stop = "max_tokens" if data.get("done_reason") == "length" else "tool_use" if calls else "end_turn"
         return BrainReply(blocks, text, calls, stop)
 
 
@@ -206,6 +259,8 @@ def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
         return brain
     if preset["where"] == "cloud" and preset["key"] and not key:
         raise NoKeyError(f"Add your {preset['label']} key in Settings → Brain first.")
+    if c.provider == "ollama":
+        return OllamaBrain(c.base_url, c.model)
     return OpenAICompatBrain(c.base_url, c.model, key)
 
 

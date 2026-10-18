@@ -9,6 +9,7 @@ import 'thread.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'voice.dart';
+import 'voice_dock.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 
@@ -561,7 +562,7 @@ class _StatusLine extends StatelessWidget {
 
 /// The message box. Enter sends; Shift+Enter adds a line.
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state, this.large = false});
+  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state, this.large = false, this.seed = '', this.onVoice});
   final CoreClient core;
 
   /// App state, for voice and the "typing" reaction.
@@ -577,6 +578,12 @@ class Composer extends StatefulWidget {
   /// The big one on the home screen.
   final bool large;
 
+  /// Text to start with (the key that opened the box).
+  final String seed;
+
+  /// Back to talking (voice-first screens); replaces the mic button.
+  final VoidCallback? onVoice;
+
   @override
   State<Composer> createState() => _ComposerState();
 }
@@ -588,6 +595,10 @@ class _ComposerState extends State<Composer> {
   @override
   void initState() {
     super.initState();
+    if (widget.seed.isNotEmpty) {
+      _text.text = widget.seed;
+      _text.selection = TextSelection.collapsed(offset: widget.seed.length);
+    }
     _text.addListener(_changed);
   }
 
@@ -641,6 +652,10 @@ class _ComposerState extends State<Composer> {
                 : Focus(
               onFocusChange: (_) => setState(() {}),
               onKeyEvent: (node, e) {
+                if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape && widget.onVoice != null) {
+                  widget.onVoice!();
+                  return KeyEventResult.handled;
+                }
                 if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.enter && !HardwareKeyboard.instance.isShiftPressed) {
                   _send();
                   return KeyEventResult.handled;
@@ -669,7 +684,9 @@ class _ComposerState extends State<Composer> {
               ),
             ),
           ),
-          if (voice != null)
+          if (widget.onVoice != null)
+            IconButton(tooltip: 'Back to talking (Esc)', onPressed: widget.onVoice, icon: const Glyph(G.mic, size: 19))
+          else if (voice != null)
             MicButton(voice: voice, onSetup: () => widget.state?.go(Section.settings))
           else
             const SizedBox(width: 4),
@@ -783,89 +800,17 @@ class _Home extends StatelessWidget {
                     : SizedBox.square(dimension: 150, child: Orbling(mood: mood, jobs: jobs)),
               ),
               Text('$_greeting.', style: context.type.displaySmall, textAlign: TextAlign.center),
-              const SizedBox(height: 8),
-              Text(
-                state.voice?.canListen == true ? 'What should we get done? Type it, or click me and just say it.' : 'What should we get done?',
-                style: context.type.bodyLarge?.copyWith(color: c.muted),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 26),
-              Composer(core: core, onSend: _start, state: state, large: true),
+              const SizedBox(height: 6),
+              Text('What should we get done?', style: context.type.bodyLarge?.copyWith(color: c.muted), textAlign: TextAlign.center),
               const SizedBox(height: 22),
-              LayoutBuilder(
-                builder: (context, box) {
-                  final two = box.maxWidth >= 520;
-                  final w = two ? (box.maxWidth - 12) / 2 : box.maxWidth;
-                  return Wrap(
-                    spacing: 12,
-                    runSpacing: 12,
-                    children: [
-                      for (final (glyph, title, sub, prompt) in suggestions)
-                        SizedBox(width: w, child: _Suggestion(glyph: glyph, title: title, subtitle: sub, onTap: online ? () => _start(prompt) : null)),
-                    ],
-                  );
-                },
+              VoiceDock(core: core, state: state, onSend: _start, run: run),
+              const SizedBox(height: 26),
+              TrySaying(
+                items: [for (final (g, title, _, prompt) in suggestions) (g, title, prompt)],
+                onPick: online ? _start : null,
               ),
               const SizedBox(height: 22),
               BriefCard(core: core, run: run),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Suggestion extends StatefulWidget {
-  const _Suggestion({required this.glyph, required this.title, required this.subtitle, this.onTap});
-  final GlyphData glyph;
-  final String title;
-  final String subtitle;
-  final VoidCallback? onTap;
-  @override
-  State<_Suggestion> createState() => _SuggestionState();
-}
-
-class _SuggestionState extends State<_Suggestion> {
-  bool _hover = false;
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    return MouseRegion(
-      cursor: widget.onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.all(14),
-          transform: Matrix4.translationValues(0, _hover ? -2 : 0, 0),
-          decoration: BoxDecoration(
-            color: c.raised,
-            borderRadius: Shapes.r16,
-            border: Border.all(color: _hover ? c.accent.withValues(alpha: .35) : c.border),
-            boxShadow: _hover ? Shapes.float(c) : Shapes.card(c),
-          ),
-          child: Row(
-            children: [
-              GlyphTile(glyph: widget.glyph, size: 38),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(widget.title, style: context.type.titleSmall),
-                    const SizedBox(height: 2),
-                    Text(widget.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
-                  ],
-                ),
-              ),
-              AnimatedOpacity(
-                duration: const Duration(milliseconds: 140),
-                opacity: _hover ? 1 : 0,
-                child: Glyph(G.chevronRight, size: 16, color: c.accent),
-              ),
             ],
           ),
         ),
@@ -934,11 +879,11 @@ class _Conversation extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(24, 0, 24, 22),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
-            child: Composer(
+            child: VoiceDock(
               core: core,
               state: state,
               hint: 'Follow up…',
-              busyTask: task,
+              task: task,
               run: run,
               onSend: (text) => run(() => core.reply(task.id, text)),
             ),

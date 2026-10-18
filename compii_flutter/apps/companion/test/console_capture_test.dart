@@ -158,7 +158,11 @@ void main() {
           ..level = .7
           ..partial = "find last month's invoices and put them in a";
       }
-      if (surface == 'speaking') voice.speaking = true;
+      if (surface == 'speaking') {
+        voice
+          ..speaking = true
+          ..caption = 'Here’s the PDF copy, next to the spreadsheet.';
+      }
       if (surface == 'settings') state.go(Section.settings);
       if (surface == 'safety') state.go(Section.safety);
       if (surface == 'skills') state.go(Section.skills);

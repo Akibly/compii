@@ -416,6 +416,7 @@ class _Speaker:
                 return
             generation = self._generation
             try:
+                self.voice.emit({"type": "voice_caption", "text": text})  # live captions in the app
                 self._set(True)
                 if self.voice.uses_natural_voice():
                     self._speak_kokoro(text, generation)
