@@ -47,6 +47,7 @@ class Tool:
     kind: ActionKind | Callable[[dict[str, Any]], ActionKind]
     run: Callable[[dict[str, Any]], ToolResult]
     describe: Callable[[dict[str, Any]], str]  # one human sentence for approvals and the task log
+    long_running: bool = False  # gets a "_halt" event so it can stop with its task
 
     def kind_for(self, args: dict[str, Any]) -> ActionKind:
         return self.kind(args) if callable(self.kind) else self.kind
@@ -509,14 +510,14 @@ class Toolbox:
                  ActionKind.READ, self.recall, lambda a: f"Recall {a['query']}"),
         ]
 
-    def execute(self, name: str, args: dict[str, Any]) -> ToolResult:
+    def execute(self, name: str, args: dict[str, Any], halt: Any = None) -> ToolResult:
         tool = self.tools.get(name)
         if tool is None:
             raise ToolError(f"Unknown tool {name}.")
         missing = [r for r in tool.required if r not in args]
         if missing:
             raise ToolError(f"Missing required input(s): {', '.join(missing)}.")
-        result = tool.run(args)
+        result = tool.run({**args, "_halt": halt}) if tool.long_running else tool.run(args)
         if len(result.text) > MAX_RESULT_CHARS:
             result.text = result.text[:MAX_RESULT_CHARS] + f"\n[truncated: {len(result.text)} characters total]"
         return result

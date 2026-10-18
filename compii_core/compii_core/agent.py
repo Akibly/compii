@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import threading
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -13,7 +14,7 @@ from typing import Any, Protocol
 
 from . import guard
 from .journal import Entry, Journal
-from .policy import ActionKind, Policy
+from .policy import ActionKind, Gate, Policy
 from .tools import ToolError, Toolbox
 
 MAX_STEPS = 40
@@ -124,6 +125,11 @@ class Agent:
         self.tasks: dict[str, Task] = {}
         self.approvals: dict[str, asyncio.Future[bool]] = {}
         self._ids = itertools.count(1)
+        self.gate = Gate(policy)
+        self.audit = None  # AuditLog, set by the server
+        self.on_rules_changed: Callable[[], None] | None = None
+        self.extra_context: Callable[[], str] | None = None  # e.g. the user's saved skills
+        self._pending: dict[str, tuple[str, dict[str, Any], ActionKind, str]] = {}
 
     # ---- public API ---------------------------------------------------------
 
@@ -156,12 +162,40 @@ class Agent:
     def stop_all(self) -> int:
         return sum(self.stop(t) for t in list(self.tasks))
 
-    def decide(self, approval_id: str, approved: bool) -> bool:
-        fut = self.approvals.pop(approval_id, None)
+    def decide(self, approval_id: str, approved: bool, always: bool = False) -> bool:
+        """Answer an approval. `always` (only from the user's own click) saves a rule so
+        the same action on the same folder, site, window or recipients won't ask again."""
+        fut = self.approvals.get(approval_id)
         if fut is None or fut.done():
             return False
+        pending = self._pending.get(approval_id)
+        if approved and always and pending:
+            tool, args, kind, label = pending
+            rule = self.gate.add_rule(tool, args, kind, label)  # ValueError for payments
+            self._audit("rule_added", tool=tool, scope=rule.scope, kind=kind.value)
+            if self.on_rules_changed:
+                self.on_rules_changed()
+        self.approvals.pop(approval_id, None)
+        self._pending.pop(approval_id, None)
         fut.set_result(approved)
         return True
+
+    def kill(self) -> int:
+        """The kill switch: stop everything and ask before any action until lifted."""
+        self.gate.lockdown = True
+        for fut in list(self.approvals.values()):
+            if not fut.done():
+                fut.set_result(False)
+        stopped = self.stop_all()
+        self._audit("kill_switch", stopped=stopped)
+        return stopped
+
+    def _audit(self, event: str, **data: Any) -> None:
+        if self.audit is not None:
+            try:
+                self.audit.record(event, **data)
+            except OSError:
+                pass
 
     # ---- loop ---------------------------------------------------------------
 
@@ -181,6 +215,10 @@ class Agent:
             roots=", ".join(str(r) for r in self.toolbox.roots),
             workspace=self.toolbox.workspace,
         )
+        if self.extra_context:
+            extra = self.extra_context()
+            if extra:
+                system += "\n" + extra
         schemas = [t.schema() for t in self.toolbox.tools.values()]
         messages = task.messages
         messages.append({"role": "user", "content": text})
@@ -238,30 +276,52 @@ class Agent:
         if blocked:
             self.journal.record(Entry(task.id, call.name, kind.value, call.input, False, f"Blocked: {blocked}"))
             await self.emit(task, "action_blocked", tool=call.name, label=label, reason=blocked)
+            self._audit("blocked", task=task.id, tool=call.name, args=call.input, reason=blocked)
             return result(f"Blocked by Compii's safety rules: {blocked} Tell the user and carry on without it.", True)
 
-        if self.policy.needs_approval(kind, task.approved_kinds):
+        rule = None if self.gate.lockdown else self.gate.rule_for(call.name, call.input)
+        if self.gate.needs_approval(kind, task.approved_kinds, call.name, call.input, task.warned_injection):
             approval_id = uuid.uuid4().hex[:10]
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self.approvals[approval_id] = fut
+            self._pending[approval_id] = (call.name, dict(call.input), kind, label)
             task.status = "waiting"
+            fresh = task.warned_injection and kind in (ActionKind.SEND, ActionKind.DELETE, ActionKind.SPEND)
+            why = ("Compii is in lockdown (kill switch), so it asks before everything." if self.gate.lockdown
+                   else "This task read text that looked like instructions to an AI, so this needs a fresh okay."
+                   if fresh else "")
             await self.emit(task, "approval_needed", approval_id=approval_id, kind=kind.value,
-                            label=label, tool=call.name, input=call.input, status="waiting")
+                            label=label, tool=call.name, input=call.input, status="waiting",
+                            can_always=kind is not ActionKind.SPEND and not self.gate.lockdown and not fresh, why=why)
+            self._audit("asked", task=task.id, tool=call.name, kind=kind.value, args=call.input)
             try:
                 approved = await self._until_stopped(task, fut)
             finally:
                 self.approvals.pop(approval_id, None)
+                self._pending.pop(approval_id, None)
             task.status = "running"
             await self.emit(task, "approval_resolved", approval_id=approval_id, approved=approved, status="running")
+            self._audit("approved" if approved else "declined", task=task.id, tool=call.name)
             if not approved:
                 self.journal.record(Entry(task.id, call.name, kind.value, call.input, False, "Declined by user"))
                 return result(f"The user declined: {label}. Do not retry this action.", True)
             task.approved_kinds.add(kind)
+        elif rule is not None and kind is not ActionKind.READ:
+            await self.emit(task, "rule_used", rule_id=rule.id, label=label)
 
         await self.emit(task, "action_started", tool=call.name, kind=kind.value, label=label)
+        halt = threading.Event()  # long tools (walkthroughs) watch this to stop with their task
         try:
-            out = await asyncio.to_thread(self.toolbox.execute, call.name, call.input)
+            try:
+                out = await self._until_stopped(task, asyncio.to_thread(self.toolbox.execute, call.name, call.input, halt))
+            except Stopped:
+                halt.set()
+                self._audit("stopped", task=task.id, tool=call.name)
+                raise
+        except Stopped:
+            raise
         except ToolError as e:
+            self._audit("failed", task=task.id, tool=call.name, args=call.input, error=str(e)[:200])
             self.journal.record(Entry(task.id, call.name, kind.value, call.input, False, str(e)[:500]))
             await self.emit(task, "action_done", tool=call.name, label=label, ok=False, detail=str(e)[:300])
             return result(str(e), True)
@@ -271,6 +331,9 @@ class Agent:
             await self.emit(task, "action_done", tool=call.name, label=label, ok=False, detail=msg[:300])
             return result(msg, True)
         self.journal.record(Entry(task.id, call.name, kind.value, call.input, True, out.text[:500], out.undo))
+        if kind is not ActionKind.READ:
+            self._audit("done", task=task.id, tool=call.name, kind=kind.value, args=call.input,
+                        by="rule" if rule else "approval or dial")
         await self.emit(task, "action_done", tool=call.name, label=label, ok=True, detail=out.text[:300],
                         undoable=out.undo is not None)
         if out.point:

@@ -18,7 +18,13 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, W
 from pydantic import BaseModel
 
 from . import __version__
-from .agent import Agent, Brain, ClaudeBrain
+from .agent import Agent, Brain
+from .audit import AuditLog
+from .keys import KeyStore, KeyStoreError
+from .policy import Rule
+from . import providers as prov
+from .skills import Skills, from_task, skill_tools, suggest_name
+from .walkthrough import Walkthroughs
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
@@ -44,6 +50,7 @@ class NewTask(BaseModel):
 
 class Decision(BaseModel):
     approved: bool
+    always: bool = False  # "Always allow": saves a rule (only from this PC)
 
 
 class DialChange(BaseModel):
@@ -58,6 +65,33 @@ class ClaimBody(BaseModel):
 
 class Reply(BaseModel):
     text: str
+
+
+class Choice(BaseModel):
+    provider: str = "claude"
+    model: str = ""
+    base_url: str = ""
+
+
+class BrainBody(BaseModel):
+    primary: Choice
+    fallback: Choice | None = None
+    fallback_enabled: bool = False
+
+
+class KeyBody(BaseModel):
+    value: str
+
+
+class SkillBody(BaseModel):
+    name: str = ""
+
+
+class SkillRoutineBody(BaseModel):
+    schedule: dict[str, Any]
+
+
+KEY_NAMES = {"anthropic", "openrouter", "openai", "custom"}
 
 
 class RoutineBody(BaseModel):
@@ -134,7 +168,7 @@ class Hub:
 
 
 def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: list[Path] | None = None,
-              token: str | None = None, voice: Voice | None = None) -> FastAPI:
+              token: str | None = None, voice: Voice | None = None, keys: KeyStore | None = None) -> FastAPI:
     workspace = workspace or workspace_dir()
     workspace.mkdir(parents=True, exist_ok=True)
     token = token or secrets.token_urlsafe(24)
@@ -144,14 +178,15 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     # Rehearsal never opens windows on the user's desktop.
     open_fn = (lambda _target: None) if mode == "rehearsal" else None
     toolbox = Toolbox(roots if roots is not None else default_roots(), workspace, open_fn)
-    if brain is None:
-        if mode == "rehearsal":
-            from .rehearsal import RehearsalBrain
+    keys = keys or KeyStore()
+    brain_file = workspace / "brain.json"
+    brain_settings = prov.BrainSettings.load(brain_file)
+    fixed_brain = brain is not None or mode == "rehearsal"  # tests and rehearsal keep their brain
+    if brain is None and mode == "rehearsal":
+        from .rehearsal import RehearsalBrain
 
-            brain = RehearsalBrain(Path.home() / "Downloads", workspace)
-        else:
-            brain = ClaudeBrain()
-            mode = "claude"
+        brain = RehearsalBrain(Path.home() / "Downloads", workspace)
+    brain_state: dict[str, Any] = {"probe": None, "fallback_note": None, "problem": None}
     hub = Hub()
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
@@ -254,7 +289,60 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 pass
             await asyncio.sleep(20)
 
+    def make_current_brain() -> Brain:
+        """The brain the user chose in Settings, with their opt-in backup."""
+        try:
+            main = prov.make_brain(brain_settings.primary, keys)
+        except (prov.NoKeyError, ValueError) as e:
+            main = None
+            brain_state["problem"] = str(e)
+        else:
+            brain_state["problem"] = None
+        backup = None
+        if brain_settings.fallback_enabled and brain_settings.fallback:
+            try:
+                backup = prov.make_brain(brain_settings.fallback, keys)
+            except (prov.NoKeyError, ValueError):
+                backup = None
+        if main is None:
+            return backup or prov.MissingBrain(brain_state["problem"] or "No AI chosen yet.")
+
+        def fell_back(why: str) -> None:
+            brain_state["fallback_note"] = f"Used your backup AI because the main one failed: {why}"
+            audit.record("brain_fallback", why=why)
+
+        return prov.FallbackBrain(main, backup, fell_back) if backup else main
+
+    audit = AuditLog(workspace / "audit" / "audit.jsonl")
+    if brain is None:
+        brain = make_current_brain()
+        mode = brain_settings.primary.provider
     agent = Agent(brain, toolbox, Policy(), Journal(workspace / "journal.jsonl"), agent_emit)
+    agent.audit = audit
+
+    rules_file = workspace / "rules.json"
+    try:
+        agent.gate.rules = [Rule(**r) for r in json.loads(rules_file.read_text(encoding="utf-8-sig"))]
+    except (OSError, ValueError, TypeError):
+        pass
+
+    def save_rules() -> None:
+        rules_file.write_text(json.dumps([vars(r) for r in agent.gate.rules], indent=1), encoding="utf-8")
+
+    agent.on_rules_changed = save_rules
+
+    skills = Skills(workspace / "skills.json")
+    agent.extra_context = skills.context
+    for t in skill_tools(skills):
+        toolbox.tools[t.name] = t
+
+    def say_step(text: str) -> None:
+        if voice.settings.speak_replies:
+            voice.say(text)
+
+    walks = Walkthroughs(toolbox, workspace / "walkthrough.json",
+                         notify=lambda e: hub.emit_threadsafe({"task_id": "", "at": time.time(), **e}), say=say_step)
+    toolbox.tools["start_walkthrough"] = walks.tool()
 
     pairing = Pairing(workspace / "devices")
     remote: RemoteHost | None = None
@@ -310,9 +398,170 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.get("/health")
     def health() -> dict[str, Any]:
-        has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
-        return {"ok": True, "version": __version__, "brain": mode,
-                "credentials": "found" if has_key or mode != "claude" else "not_found"}
+        has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")) \
+            or keys.has("anthropic")
+        return {"ok": True, "version": __version__, "brain": "rehearsal" if mode == "rehearsal" else mode,
+                "credentials": "found" if has_key or mode != "claude" else "not_found",
+                "lockdown": agent.gate.lockdown}
+
+    # ---- brain: which AI thinks, and its keys ----
+
+    def brain_view() -> dict[str, Any]:
+        return {
+            "settings": prov.asdict(brain_settings),
+            "presets": {k: {"label": v["label"], "where": v["where"], "needs_key": bool(v["key"]),
+                            "model": v["model"], "base_url": v["base_url"]} for k, v in prov.PRESETS.items()},
+            "keys": {n: keys.has(n) for n in sorted(KEY_NAMES)},
+            "active": "rehearsal" if mode == "rehearsal" else brain_settings.primary.provider,
+            "fixed": fixed_brain, "local": brain_settings.primary.local,
+            "problem": None if fixed_brain else brain_state["problem"],
+            "probe": brain_state["probe"], "fallback_note": brain_state["fallback_note"],
+        }
+
+    @app.get("/brain", dependencies=[Depends(auth)])
+    def get_brain() -> dict[str, Any]:
+        return brain_view()
+
+    @app.put("/brain", dependencies=[Depends(auth_local)])
+    def set_brain(body: BrainBody) -> dict[str, Any]:
+        nonlocal brain_settings, mode
+        if body.primary.provider not in prov.PRESETS:
+            raise HTTPException(400, "Unknown AI provider")
+        brain_settings = prov.BrainSettings(
+            prov.BrainChoice(**body.primary.model_dump()),
+            prov.BrainChoice(**body.fallback.model_dump()) if body.fallback else None,
+            body.fallback_enabled,
+        )
+        brain_settings.save(brain_file)
+        brain_state.update(probe=None, fallback_note=None)
+        audit.record("brain_changed", provider=body.primary.provider, model=body.primary.model,
+                     fallback=body.fallback.provider if body.fallback and body.fallback_enabled else "")
+        if not fixed_brain:
+            agent.brain = make_current_brain()
+            mode = brain_settings.primary.provider
+        return brain_view()
+
+    @app.put("/keys/{name}", dependencies=[Depends(auth_local)])
+    def set_key(name: str, body: KeyBody) -> dict[str, Any]:
+        """Write-only: the key goes to Windows Credential Manager and is never sent back."""
+        if name not in KEY_NAMES:
+            raise HTTPException(404, "Unknown key")
+        try:
+            keys.set(name, body.value)
+        except KeyStoreError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("key_saved", name=name)
+        if not fixed_brain:
+            agent.brain = make_current_brain()
+        return brain_view()
+
+    @app.delete("/keys/{name}", dependencies=[Depends(auth_local)])
+    def delete_key(name: str) -> dict[str, Any]:
+        if name not in KEY_NAMES:
+            raise HTTPException(404, "Unknown key")
+        keys.delete(name)
+        audit.record("key_removed", name=name)
+        if not fixed_brain:
+            agent.brain = make_current_brain()
+        return brain_view()
+
+    @app.post("/brain/test", dependencies=[Depends(auth_local)])
+    async def test_brain() -> dict[str, Any]:
+        result = await prov.probe(agent.brain)
+        brain_state["probe"] = {**result, "at": time.time()}
+        return brain_view()
+
+    @app.get("/brain/models", dependencies=[Depends(auth_local)])
+    async def brain_models(base_url: str = Query("http://127.0.0.1:11434/v1")) -> dict[str, Any]:
+        try:
+            return {"models": await prov.local_models(base_url), "running": True}
+        except Exception as e:  # noqa: BLE001 - server not running
+            return {"models": [], "running": False, "error": str(e)[:200]}
+
+    # ---- safety: rules, kill switch, audit log ----
+
+    def safety_view() -> dict[str, Any]:
+        return {"lockdown": agent.gate.lockdown, "rules": [vars(r) for r in agent.gate.rules],
+                "audit": audit.verify()}
+
+    @app.get("/safety", dependencies=[Depends(auth)])
+    def get_safety() -> dict[str, Any]:
+        return safety_view()
+
+    @app.delete("/rules/{rule_id}", dependencies=[Depends(auth)])
+    def remove_rule(rule_id: str) -> dict[str, Any]:
+        if not agent.gate.remove_rule(rule_id):
+            raise HTTPException(404, "No such rule")
+        save_rules()
+        audit.record("rule_removed", rule=rule_id)
+        return safety_view()
+
+    @app.post("/killswitch", dependencies=[Depends(auth)])
+    async def kill_switch() -> dict[str, Any]:
+        """Stop everything now; until lifted on this PC, every action asks first."""
+        stopped = agent.kill()
+        voice.stop_speaking()
+        voice.cancel_listening()
+        await hub.emit({"type": "lockdown", "task_id": "", "at": time.time(), "on": True, "stopped": stopped})
+        return {**safety_view(), "stopped": stopped}
+
+    @app.delete("/killswitch", dependencies=[Depends(auth_local)])
+    async def lift_kill_switch() -> dict[str, Any]:
+        agent.gate.lockdown = False
+        audit.record("lockdown_lifted")
+        await hub.emit({"type": "lockdown", "task_id": "", "at": time.time(), "on": False})
+        return safety_view()
+
+    @app.get("/audit", dependencies=[Depends(auth_local)])
+    def get_audit(limit: int = Query(200)) -> dict[str, Any]:
+        return {"entries": audit.entries(max(1, min(limit, 2000))), "verify": audit.verify()}
+
+    # ---- skills and walkthroughs ----
+
+    @app.get("/skills", dependencies=[Depends(auth)])
+    def list_skills() -> list[dict[str, Any]]:
+        return skills.view()
+
+    @app.post("/tasks/{task_id}/skill", dependencies=[Depends(auth)])
+    def save_as_skill(task_id: str, body: SkillBody) -> dict[str, Any]:
+        task = agent.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(404, "No such conversation")
+        if task.status != "done":
+            raise HTTPException(409, "Save a conversation as a skill once it has finished successfully.")
+        instruction, steps = from_task(task)
+        skill = skills.add(body.name.strip() or suggest_name(task.request), instruction, steps, task.id)
+        audit.record("skill_saved", name=skill.name, task=task.id)
+        return prov.asdict(skill)
+
+    @app.delete("/skills/{skill_id}", dependencies=[Depends(auth)])
+    def delete_skill(skill_id: str) -> list[dict[str, Any]]:
+        if not skills.remove(skill_id):
+            raise HTTPException(404, "No such skill")
+        return skills.view()
+
+    @app.post("/skills/{skill_id}/run", dependencies=[Depends(auth)])
+    async def run_skill(skill_id: str) -> dict[str, Any]:
+        skill = skills.items.get(skill_id)
+        if skill is None:
+            raise HTTPException(404, "No such skill")
+        skills.used(skill)
+        return task_view(agent.start(f"Do my skill “{skill.name}” now.\n\n{skill.as_prompt()}"))
+
+    @app.post("/skills/{skill_id}/routine", dependencies=[Depends(auth)])
+    def skill_to_routine(skill_id: str, body: SkillRoutineBody) -> dict[str, Any]:
+        skill = skills.items.get(skill_id)
+        if skill is None:
+            raise HTTPException(404, "No such skill")
+        try:
+            plans.add_routine(skill.name, f"Do my skill “{skill.name}”.\n\n{skill.as_prompt()}", body.schedule)
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e)) from e
+        return plans.view()
+
+    @app.get("/walkthrough", dependencies=[Depends(auth)])
+    def walkthrough_state() -> dict[str, Any]:
+        return walks.current() or {}
 
     @app.post("/tasks", dependencies=[Depends(auth)])
     async def create_task(body: NewTask) -> dict[str, Any]:
@@ -526,8 +775,14 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return {"result": agent.journal.undo_last(task_id)}
 
     @app.post("/approvals/{approval_id}", dependencies=[Depends(auth)])
-    def decide(approval_id: str, body: Decision) -> dict[str, bool]:
-        if not agent.decide(approval_id, body.approved):
+    def decide(approval_id: str, body: Decision, x_compii_token: str = Header("")) -> dict[str, bool]:
+        if body.always and not secrets.compare_digest(x_compii_token, token):
+            raise HTTPException(403, "“Always allow” can only be set on your PC.")
+        try:
+            ok = agent.decide(approval_id, body.approved, always=body.always)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if not ok:
             raise HTTPException(404, "No pending approval with that id")
         return {"ok": True}
 
@@ -560,6 +815,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             agent.policy.set(body.kind, body.level)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
+        audit.record("dial_changed", kind=body.kind.value, level=body.level.value)
         return get_policy()
 
     @app.post("/pair/start", dependencies=[Depends(auth_local)])
