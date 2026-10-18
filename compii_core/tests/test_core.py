@@ -624,3 +624,72 @@ def test_damaged_or_bom_settings_never_stop_core(tmp_path):
     broken.write_text("{not json", encoding="utf-8")
     plans = pro.Proactive(broken)
     assert plans.routines == {} and any(p.name.startswith("b.broken-") for p in tmp_path.iterdir())
+
+
+# ---- phone pairing ------------------------------------------------------------------------
+
+
+@pytest.fixture
+def paired_app(home):
+    app = build_app(brain=ScriptBrain([], final="Done from the phone."), workspace=home["workspace"],
+                    roots=[home["downloads"]], token="tok", voice=quiet_voice(home["workspace"]))
+
+    async def no_listener():  # tests don't open a network port
+        return None
+
+    app.state.remote.start = no_listener
+    return app
+
+
+def test_phone_pairs_with_a_one_time_code_and_can_work(paired_app):
+    pc = {"X-Compii-Token": "tok"}
+    with TestClient(paired_app) as client:
+        start = client.post("/pair/start", headers=pc).json()
+        assert start["link"].startswith("compii://pair?") and len(start["fingerprint"]) == 64
+        claim = client.post("/pair/claim", json={"code": start["code"].lower(), "name": "Pixel"}).json()
+        phone = {"X-Compii-Device": claim["token"]}
+        # The same code can't be used twice.
+        assert client.post("/pair/claim", json={"code": start["code"], "name": "Other"}).status_code == 403
+        # The phone can start a conversation and follow events.
+        with client.websocket_connect(f"/events?d={claim['token']}") as ws:
+            tid = client.post("/tasks", json={"request": "hello"}, headers=phone).json()["id"]
+            e = ws.receive_json()
+            while e["type"] != "task_finished":
+                e = ws.receive_json()
+            assert e["task_id"] == tid
+        # A phone can't pair more phones or manage the list.
+        assert client.post("/pair/start", headers=phone).status_code == 403
+        assert client.get("/devices", headers=phone).status_code == 403
+        devices = client.get("/devices", headers=pc).json()["devices"]
+        assert [d["name"] for d in devices] == ["Pixel"] and "token_hash" not in devices[0]
+        # Removing it cuts it off.
+        client.delete(f"/devices/{devices[0]['id']}", headers=pc)
+        assert client.get("/tasks", headers=phone).status_code == 401
+
+
+def test_wrong_codes_lock_out_after_five_tries(paired_app):
+    with TestClient(paired_app) as client:
+        code = client.post("/pair/start", headers={"X-Compii-Token": "tok"}).json()["code"]
+        for _ in range(5):
+            assert client.post("/pair/claim", json={"code": "AAAA-AAAA"}).status_code == 403
+        r = client.post("/pair/claim", json={"code": code})
+        assert r.status_code == 403 and "Too many" in r.json()["detail"]
+
+
+def test_codes_expire(paired_app, monkeypatch):
+    from compii_core import remote
+
+    with TestClient(paired_app) as client:
+        code = client.post("/pair/start", headers={"X-Compii-Token": "tok"}).json()["code"]
+        real = time.time
+        monkeypatch.setattr(remote.time, "time", lambda: real() + remote.CODE_SECONDS + 1)
+        r = client.post("/pair/claim", json={"code": code})
+        assert r.status_code == 403 and "expired" in r.json()["detail"]
+
+
+def test_device_keys_are_stored_hashed(paired_app, home):
+    with TestClient(paired_app) as client:
+        code = client.post("/pair/start", headers={"X-Compii-Token": "tok"}).json()["code"]
+        token = client.post("/pair/claim", json={"code": code}).json()["token"]
+    stored = (home["workspace"] / "devices" / "devices.json").read_text()
+    assert token not in stored

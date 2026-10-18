@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import time
@@ -23,12 +24,14 @@ from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
 from .tools import Toolbox, ToolError, default_roots
 from .voice import Voice
+from .remote import Pairing, RemoteHost, lan_ip, pairing_link
 from . import proactive as pro
 from .tools import Tool
 from .policy import ActionKind as AK
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("COMPII_PORT", "8765"))
+REMOTE_PORT = int(os.environ.get("COMPII_REMOTE_PORT", "8766"))
 
 
 def workspace_dir() -> Path:
@@ -46,6 +49,11 @@ class Decision(BaseModel):
 class DialChange(BaseModel):
     kind: ActionKind
     level: Autonomy
+
+
+class ClaimBody(BaseModel):
+    code: str
+    name: str = "Phone"
 
 
 class Reply(BaseModel):
@@ -248,14 +256,24 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     agent = Agent(brain, toolbox, Policy(), Journal(workspace / "journal.jsonl"), agent_emit)
 
+    pairing = Pairing(workspace / "devices")
+    remote: RemoteHost | None = None
+
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         hub.loop = asyncio.get_running_loop()
+        if pairing.devices and remote is not None and os.environ.get("COMPII_REMOTE", "1") != "0":
+            try:
+                await remote.start()  # phones already paired: be reachable for them
+            except Exception:  # noqa: BLE001 - shown in /health; the PC side still works
+                pass
         _restore_voice(voice, voice_file)
         voice.warm_up()
         ticker = asyncio.create_task(loop())
         yield
         ticker.cancel()
+        if remote is not None:
+            await remote.stop()
         agent.stop_all()
         voice.cancel_listening()
         voice.stop_speaking()
@@ -265,14 +283,26 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
     app.state.agent = agent
+    remote = RemoteHost(app, pairing, REMOTE_PORT)
+    app.state.pairing = pairing
+    app.state.remote = remote
     app.state.voice = voice
     app.state.plans = plans
     app.state.tick = tick
     _proactive_tools(toolbox, plans)
 
-    def auth(x_compii_token: str = Header("")) -> None:
+    def auth(x_compii_token: str = Header(""), x_compii_device: str = Header("")) -> None:
+        """This PC's app (token from disk) or a paired phone (its own key)."""
+        if x_compii_token and secrets.compare_digest(x_compii_token, token):
+            return
+        if pairing.device_for(x_compii_device):
+            return
+        raise HTTPException(401, "Missing or wrong Compii token")
+
+    def auth_local(x_compii_token: str = Header("")) -> None:
+        """Only the app on this PC: pairing and removing phones."""
         if not secrets.compare_digest(x_compii_token, token):
-            raise HTTPException(401, "Missing or wrong Compii token")
+            raise HTTPException(403, "Only Compii on this PC can do that")
 
     def task_view(t: Any) -> dict[str, Any]:
         return {"id": t.id, "request": t.request, "status": t.status, "created": t.created, "events": t.events,
@@ -532,9 +562,41 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(400, str(e)) from e
         return get_policy()
 
+    @app.post("/pair/start", dependencies=[Depends(auth_local)])
+    async def pair_start() -> dict[str, Any]:
+        """Show a QR code on this PC that a phone can scan to pair."""
+        try:
+            await remote.start()
+        except RuntimeError as e:
+            raise HTTPException(500, str(e)) from e
+        code, expires = pairing.new_code()
+        host, fp, pc = lan_ip(), pairing.ensure_certificate(), socket.gethostname()
+        return {"link": pairing_link(host, REMOTE_PORT, code, fp, pc), "host": host, "port": REMOTE_PORT,
+                "code": code, "fingerprint": fp, "pc": pc, "expires": expires}
+
+    @app.post("/pair/claim")
+    async def pair_claim(body: ClaimBody) -> dict[str, Any]:
+        try:
+            device, device_token = pairing.claim(body.code, body.name)
+        except PermissionError as e:
+            raise HTTPException(403, str(e)) from e
+        await hub.emit({"type": "device_paired", "task_id": "", "at": time.time(), "name": device.name, "id": device.id})
+        return {"token": device_token, "device_id": device.id, "pc": socket.gethostname()}
+
+    @app.get("/devices", dependencies=[Depends(auth_local)])
+    def devices() -> dict[str, Any]:
+        return {"devices": pairing.view(), "listening": remote.running, "error": remote.error,
+                "host": lan_ip(), "port": REMOTE_PORT}
+
+    @app.delete("/devices/{device_id}", dependencies=[Depends(auth_local)])
+    def unpair(device_id: str) -> dict[str, Any]:
+        if not pairing.remove(device_id):
+            raise HTTPException(404, "No such phone")
+        return devices()
+
     @app.websocket("/events")
-    async def events(ws: WebSocket, t: str = Query("")) -> None:
-        if not secrets.compare_digest(t, token):
+    async def events(ws: WebSocket, t: str = Query(""), d: str = Query("")) -> None:
+        if not (t and secrets.compare_digest(t, token)) and not pairing.device_for(d):
             await ws.close(code=4401)
             return
         await ws.accept()

@@ -15,6 +15,7 @@ dependencies = [
   "kokoro-onnx>=0.6.1",
   "numpy>=2.4.6",
   "playwright>=1.64.0",
+  "cryptography>=50.0.2",
 ]
 
 [dependency-groups]
