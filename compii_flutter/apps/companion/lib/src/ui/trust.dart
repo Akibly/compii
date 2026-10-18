@@ -185,7 +185,9 @@ class _BrainCardState extends State<BrainCard> {
     setState(() {
       _v = v;
       _provider = p['provider'] as String? ?? 'claude';
-      _model.text = p['model'] as String? ?? '';
+      final presets = Map<String, dynamic>.from(v['presets'] as Map? ?? {});
+      final model = p['model'] as String? ?? '';
+      _model.text = model.isNotEmpty ? model : '${(presets[_provider] as Map?)?['model'] ?? ''}';
       _url.text = p['base_url'] as String? ?? '';
       _fallback = s['fallback_enabled'] == true;
       final fb = s['fallback'] as Map?;
@@ -319,6 +321,7 @@ class _BrainCardState extends State<BrainCard> {
                     : 'LM Studio’s server isn’t running. Start it from LM Studio’s Developer tab.',
                 style: context.type.bodySmall?.copyWith(color: c.warning),
               ),
+            if (_localRunning == false) const SizedBox(height: 10),
             if (_local.isNotEmpty) ...[
               Text('Installed models', style: context.type.labelMedium),
               const SizedBox(height: 6),
@@ -479,11 +482,33 @@ class SafetyPage extends StatefulWidget {
 class _SafetyPageState extends State<SafetyPage> {
   Map<String, dynamic>? _s;
   Map<String, dynamic>? _audit;
+  Timer? _poll;
 
   @override
   void initState() {
     super.initState();
     _load();
+    // Stay current when the kill switch is pressed elsewhere (hotkey, phone).
+    _poll = Timer.periodic(const Duration(seconds: 4), (_) => _refresh());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _refresh() async {
+    try {
+      final s = await TrustApi.map('GET', '/safety');
+      final a = await TrustApi.map('GET', '/audit?limit=150');
+      if (mounted) {
+        setState(() {
+          _s = s;
+          _audit = a;
+        });
+      }
+    } catch (_) {}
   }
 
   Future<void> _load() => widget.run(() async {
@@ -1009,9 +1034,15 @@ class SaveSkillButton extends StatelessWidget {
     },
   );
 
+  static const _small = {'a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'and', 'my', 'me', 'it', 'from', 'with', 'into', 'at'};
+
   static String _suggest(String request) {
-    final words = request.replaceAll(RegExp(r'[^\w\s\x27-]'), '').split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(5).join(' ');
-    return words.isEmpty ? 'My skill' : words[0].toUpperCase() + words.substring(1);
+    final words = request.replaceAll(RegExp(r'[^\w\s\x27-]'), '').split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(5).toList();
+    while (words.length > 1 && _small.contains(words.last.toLowerCase())) {
+      words.removeLast();
+    }
+    final name = words.join(' ');
+    return name.isEmpty ? 'My skill' : name[0].toUpperCase() + name.substring(1);
   }
 }
 

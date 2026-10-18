@@ -112,8 +112,13 @@ def from_task(task: Any) -> tuple[str, list[str]]:
 
 
 def suggest_name(text: str) -> str:
-    words = re.sub(r"[^\w\s'-]", "", text).split()
-    return " ".join(words[:6]).capitalize() or "My skill"
+    words = re.sub(r"[^\w\s'-]", "", text).split()[:6]
+    while len(words) > 1 and words[-1].lower() in _SMALL:
+        words.pop()
+    return " ".join(words).capitalize() or "My skill"
+
+
+_SMALL = {"a", "an", "the", "in", "on", "of", "to", "for", "and", "my", "me", "it", "from", "with", "into", "at"}
 
 
 def skill_tools(skills: Skills) -> list[Tool]:
