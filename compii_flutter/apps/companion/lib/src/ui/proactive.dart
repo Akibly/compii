@@ -9,7 +9,10 @@ import 'tokens.dart';
 /// Loads Compii's routines, watches, brief settings and inbox, and reloads
 /// when something new arrives.
 class _Plans extends StatefulWidget {
-  const _Plans({required this.core, required this.run, required this.builder});
+  const _Plans({required this.core, required this.run, required this.builder, this.quiet = false});
+
+  /// Show nothing (instead of a spinner) until loaded.
+  final bool quiet;
   final CoreClient core;
   final Run run;
   final Widget Function(BuildContext, Map<String, dynamic>, void Function(Map<String, dynamic>)) builder;
@@ -20,24 +23,37 @@ class _Plans extends StatefulWidget {
 class _PlansState extends State<_Plans> {
   Map<String, dynamic>? _v;
   StreamSubscription<Map<String, dynamic>>? _sub;
+  CoreStatus _last = CoreStatus.connecting;
 
   @override
   void initState() {
     super.initState();
     _load();
     _sub = widget.core.updates.stream.listen((_) => _load());
+    widget.core.addListener(_onCore);
   }
 
   @override
   void dispose() {
     _sub?.cancel();
+    widget.core.removeListener(_onCore);
     super.dispose();
   }
 
-  Future<void> _load() => widget.run(() async {
-    final v = await widget.core.proactive();
-    if (mounted) setState(() => _v = v);
-  });
+  /// Reload once Core is reachable again (e.g. the app started first).
+  void _onCore() {
+    final now = widget.core.status;
+    if (now == CoreStatus.online && _last != CoreStatus.online) _load();
+    _last = now;
+  }
+
+  /// Background load: quiet on failure; it retries when Core comes back.
+  Future<void> _load() async {
+    try {
+      final v = await widget.core.proactive();
+      if (mounted) setState(() => _v = v);
+    } catch (_) {}
+  }
 
   void _set(Map<String, dynamic> v) {
     if (mounted) setState(() => _v = v);
@@ -46,7 +62,7 @@ class _PlansState extends State<_Plans> {
   @override
   Widget build(BuildContext context) {
     final v = _v;
-    if (v == null) return const Center(child: CircularProgressIndicator());
+    if (v == null) return widget.quiet ? const SizedBox.shrink() : const Center(child: CircularProgressIndicator());
     return widget.builder(context, v, _set);
   }
 }
@@ -598,6 +614,7 @@ class BriefCard extends StatelessWidget {
   Widget build(BuildContext context) => _Plans(
     core: core,
     run: run,
+    quiet: true,
     builder: (context, v, set) {
       final today = DateTime.now();
       final brief = [for (final u in v['inbox'] as List) Map<String, dynamic>.from(u as Map)]

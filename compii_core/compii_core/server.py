@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import secrets
 import subprocess
@@ -79,6 +80,7 @@ class ReadBody(BaseModel):
 
 class VoiceSettingsBody(BaseModel):
     speak_replies: bool | None = None
+    wake_word: bool | None = None
     engine: str | None = None
     voice: str | None = None
     speed: float | None = None
@@ -145,6 +147,17 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     hub = Hub()
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
+    voice_file = workspace / "voice.json"
+
+    async def hands_free(text: str) -> None:
+        """A request heard after "Hey Compii": the app routes it (to the open
+        conversation or a new one); with no app connected, Core starts one."""
+        if hub.clients:
+            await hub.emit({"type": "voice_command", "task_id": "", "at": time.time(), "text": text})
+        else:
+            agent.start(text)
+
+    voice.on_command = lambda text: hub.loop and asyncio.run_coroutine_threadsafe(hands_free(text), hub.loop)
 
     plans = pro.Proactive(workspace / "proactive.json")
 
@@ -238,6 +251,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         hub.loop = asyncio.get_running_loop()
+        _restore_voice(voice, voice_file)
         voice.warm_up()
         ticker = asyncio.create_task(loop())
         yield
@@ -245,6 +259,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         agent.stop_all()
         voice.cancel_listening()
         voice.stop_speaking()
+        voice.close()
         if toolbox._browser is not None:
             toolbox._browser.close()
 
@@ -417,8 +432,16 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if body.engine in ("natural", "windows"):
             voice.stop_speaking()
             voice.settings.engine = body.engine
+        if body.wake_word is not None:
+            try:
+                voice.set_wake(body.wake_word)
+            except RuntimeError as e:
+                raise HTTPException(409, str(e)) from e
+            except Exception as e:  # noqa: BLE001 - e.g. no microphone
+                raise HTTPException(500, f"Couldn't open the microphone: {e}") from e
         if body.speed is not None:
             voice.settings.speed = max(.7, min(1.4, body.speed))
+        voice_file.write_text(json.dumps(vars(voice.settings)), encoding="utf-8")
         return voice.status()
 
     @app.post("/voice/download", dependencies=[Depends(auth)])
@@ -613,3 +636,21 @@ def _proactive_tools(toolbox, plans: "pro.Proactive") -> None:
 def _downloads(toolbox) -> Path | None:
     """The Downloads folder Compii is allowed to look in, if any."""
     return next((r for r in toolbox.roots if r.name.lower() == "downloads"), None)
+
+
+def _restore_voice(voice: Voice, path: Path) -> None:
+    """Bring back the user's voice choices, including hands-free listening."""
+    if not path.exists():
+        return
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8-sig"))
+    except ValueError:
+        return
+    for key in ("speak_replies", "voice", "speed", "engine"):
+        if key in saved:
+            setattr(voice.settings, key, saved[key])
+    if saved.get("wake_word") and voice.can_listen():
+        try:
+            voice.set_wake(True)
+        except Exception:  # noqa: BLE001 - no microphone right now; the setting stays saved
+            voice.settings.wake_word = True

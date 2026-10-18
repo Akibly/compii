@@ -154,7 +154,12 @@ class Proactive:
     def _load(self) -> None:
         if not self.path.exists():
             return
-        d = json.loads(self.path.read_text(encoding="utf-8"))
+        try:
+            d = json.loads(self.path.read_text(encoding="utf-8-sig"))  # tolerate a byte-order mark
+        except ValueError:
+            # Never refuse to start over a damaged file: keep a copy and start fresh.
+            self.path.replace(self.path.with_suffix(f".broken-{int(time.time())}.json"))
+            return
         self.routines = {r["id"]: Routine(**r) for r in d.get("routines", [])}
         self.watches = {w["id"]: Watch(**w) for w in d.get("watches", [])}
         self.inbox = [Update(**u) for u in d.get("inbox", [])]

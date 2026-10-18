@@ -188,7 +188,19 @@ class _Sidebar extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text('Compii', style: context.type.titleMedium),
-                      Text(moodLabel(mood), style: context.type.labelMedium),
+                      if (voice?.wakeListening == true && mood == Mood.idle)
+                        Row(
+                          children: [
+                            Icon(Icons.hearing, size: 13, color: c.accent),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text('Say “Hey Compii”', overflow: TextOverflow.ellipsis,
+                                  style: context.type.labelMedium?.copyWith(color: c.accent)),
+                            ),
+                          ],
+                        )
+                      else
+                        Text(moodLabel(mood), style: context.type.labelMedium),
                     ],
                   ),
                 ),

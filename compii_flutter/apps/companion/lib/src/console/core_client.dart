@@ -171,7 +171,12 @@ class CoreClient extends ChangeNotifier {
   }
 
   Future<dynamic> _request(String method, String path, [Object? body]) async {
-    final req = await _http.openUrl(method, Uri.http('$host:$port', path));
+    final HttpClientRequest req;
+    try {
+      req = await _http.openUrl(method, Uri.http('$host:$port', path));
+    } on SocketException {
+      throw CoreError('Compii Core isn’t reachable right now. It reconnects by itself once Core is running.');
+    }
     if (_token != null) req.headers.set('X-Compii-Token', _token!);
     if (body != null) {
       req.headers.contentType = ContentType.json;

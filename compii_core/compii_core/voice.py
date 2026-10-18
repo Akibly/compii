@@ -49,6 +49,8 @@ class VoiceSettings:
     speed: float = 1.05
     # "natural" uses Kokoro when downloaded; "windows" is the instant built-in voice.
     engine: str = "natural"
+    # "Hey Compii": off until the user turns it on (the mic stays open while it's on).
+    wake_word: bool = False
 
 
 class Voice:
@@ -72,6 +74,9 @@ class Voice:
         self._listening = False
         self._partial_thread: threading.Thread | None = None
         self._speaker = speaker or _Speaker(self)
+        self._wake = None
+        # Called with a spoken request heard hands-free.
+        self.on_command: Callable[[str], None] | None = None
         self.downloading: dict[str, float] = {}  # what -> progress 0..1
 
     # ---- status ------------------------------------------------------------
@@ -105,6 +110,7 @@ class Voice:
             "natural_voice": self.has_natural_voice(),
             "engine": "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
             "listening": self._listening,
+            "wake_listening": bool(self._wake and self._wake.running),
             "speaking": self._speaker.speaking,
             "downloading": dict(self.downloading),
             "download_sizes_mb": DOWNLOAD_SIZES_MB,
@@ -149,6 +155,65 @@ class Voice:
             self.downloading.pop(what, None)
 
     # ---- listening ------------------------------------------------------------
+
+    # ---- "Hey Compii" ------------------------------------------------------------------
+
+    def set_wake(self, on: bool) -> None:
+        """Turn hands-free listening on or off."""
+        if on and not self.can_listen():
+            raise RuntimeError("Download speech recognition first (Settings → Voice).")
+        self.settings.wake_word = on
+        if on:
+            if self._wake is None:
+                from .wake import WakeListener
+
+                self._wake = WakeListener(
+                    transcribe=self._transcribe_hint,
+                    on_wake=self._woke,
+                    on_command=self._heard_command,
+                    on_level=lambda lv: self.emit({"type": "voice_level", "level": lv}),
+                    paused=lambda: self._listening or self._speaker.speaking,
+                    mic_factory=self._recorder_factory,
+                )
+            self._wake.start()
+            threading.Thread(target=self._warm_listen, daemon=True).start()
+        elif self._wake is not None:
+            self._wake.stop()
+        self.emit({"type": "voice_wake_word", "on": on})
+
+    def _transcribe_hint(self, audio: np.ndarray, hint: str) -> str:
+        """Short reads for the wake phrase, primed to expect the name."""
+        if audio.size < RATE * 0.3 or float(np.abs(audio).max()) < 0.003:
+            return ""
+        peak = float(np.abs(audio).max())
+        if peak < 0.5:
+            audio = audio * (0.5 / peak)
+        with self._stt_lock:
+            segments, _ = self._whisper().transcribe(
+                # No speech detector here: the wake listener's loudness gate already
+                # cut out the burst, and the detector clips short words like "Hey".
+                audio, language="en", beam_size=1, vad_filter=False,
+                condition_on_previous_text=False, initial_prompt=hint or None,
+            )
+            words = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.6 and seg.avg_logprob > -1.2]
+        return " ".join(words).strip()
+
+    def _woke(self) -> None:
+        self.emit({"type": "voice_wake"})
+        self.emit({"type": "voice_listening", "on": True})
+        if self.settings.speak_replies:  # muted: the app shows it's listening instead
+            self.say("Yes?")
+
+    def _heard_command(self, text: str) -> None:
+        self.emit({"type": "voice_listening", "on": False})
+        if text.strip():
+            self.emit({"type": "voice_final", "text": text, "hands_free": True})
+            if self.on_command:
+                self.on_command(text)
+
+    def close(self) -> None:
+        if self._wake is not None:
+            self._wake.stop()
 
     def _warm_listen(self) -> None:
         try:

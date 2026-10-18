@@ -33,6 +33,7 @@ No paid voice service. Everything runs on this PC and audio never leaves it:
 - **Listening:** [faster-whisper](https://github.com/SYSTRAN/faster-whisper) (`base.en`, 145 MB). Push-to-talk with a live transcript (`/voice/listen/start`, `/voice/listen/stop`, events `voice_partial`, `voice_final`).
 - **Speaking:** [Kokoro](https://github.com/thewh1teagle/kokoro-onnx) (Apache-2.0 open voice model, 120 MB) when downloaded; otherwise the voice built into Windows. Replies and approval questions are spoken; the mic, Stop, or `/voice/quiet` interrupt immediately.
 - Models download only when you press the buttons in the app's Settings → Voice (`POST /voice/download`), into `~/Compii/models`.
+- **Hands-free "Hey Compii"** (off until you turn it on in Settings → Voice): while idle only the microphone's loudness is measured; short bursts of speech are read by the same local Whisper model, primed for the name, and loosely matched ("hey / hi / ok Compii", "Compy"…). Say the request in one go ("Hey Compii, tidy my Downloads") or wait for "Yes?" and talk; it sends when you stop. Nothing is recorded or stored, and it pauses while Compii speaks. Measured here: 5 of 5 wake phrases, 0 of 12 look-alike sentences, about 3% of one CPU core while idle.
 
 ## Thinking ahead
 

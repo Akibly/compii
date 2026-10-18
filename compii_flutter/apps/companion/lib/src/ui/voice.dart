@@ -29,6 +29,9 @@ class VoiceController extends ChangeNotifier {
   bool get canListen => status?['listen_ready'] == true;
   bool get naturalVoice => status?['natural_voice'] == true;
   bool get speakReplies => (status?['settings'] as Map?)?['speak_replies'] != false;
+
+  /// "Hey Compii" is on and the mic is listening for it.
+  bool get wakeListening => status?['wake_listening'] == true;
   Map<String, dynamic> get downloading => Map<String, dynamic>.from(status?['downloading'] as Map? ?? {});
 
   /// Called with the final transcript; the screen decides where it goes.
@@ -58,6 +61,11 @@ class VoiceController extends ChangeNotifier {
         level = (e['level'] as num).toDouble();
       case 'voice_speaking':
         speaking = e['on'] == true;
+      case 'voice_wake_word':
+        refresh();
+      case 'voice_command':
+        // Heard hands-free after "Hey Compii": route it like a typed request.
+        onHeard?.call('${e['text']}');
       case 'voice_ready':
         refresh();
       case 'voice_error':

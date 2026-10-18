@@ -579,3 +579,48 @@ def test_run_now_starts_the_routine(home):
                           headers=h).json()["routines"][0]["id"]
         r = client.post(f"/routines/{rid}/run", headers=h)
         assert r.status_code == 200 and r.json()["origin"]["routine"] == rid
+
+
+# ---- hands-free -------------------------------------------------------------------------
+
+
+def test_voice_choices_survive_a_restart(home):
+    h = {"X-Compii-Token": "tok"}
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    with TestClient(app) as client:
+        client.put("/voice/settings", json={"speak_replies": False, "engine": "windows"}, headers=h)
+    again = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                      voice=quiet_voice(home["workspace"]))
+    with TestClient(again) as client:
+        settings = client.get("/voice", headers=h).json()["settings"]
+    assert settings["speak_replies"] is False and settings["engine"] == "windows"
+
+
+def test_hands_free_request_reaches_the_app(home):
+    voice = quiet_voice(home["workspace"])
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok", voice=voice)
+    with TestClient(app) as client, client.websocket_connect("/events?t=tok") as ws:
+        voice.on_command("tidy my downloads")
+        e = ws.receive_json()
+        while e["type"] != "voice_command":
+            e = ws.receive_json()
+        assert e["text"] == "tidy my downloads"
+
+
+def test_hands_free_needs_speech_recognition_first(home):
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    with TestClient(app) as client:
+        r = client.put("/voice/settings", json={"wake_word": True}, headers={"X-Compii-Token": "tok"})
+        assert r.status_code == 409 and "Download speech recognition" in r.json()["detail"]
+
+
+def test_damaged_or_bom_settings_never_stop_core(tmp_path):
+    bom = tmp_path / "a.json"
+    bom.write_text('﻿{"brief": {"enabled": false, "at": "07:00", "last": null}}', encoding="utf-8")
+    assert pro.Proactive(bom).brief["at"] == "07:00"
+    broken = tmp_path / "b.json"
+    broken.write_text("{not json", encoding="utf-8")
+    plans = pro.Proactive(broken)
+    assert plans.routines == {} and any(p.name.startswith("b.broken-") for p in tmp_path.iterdir())

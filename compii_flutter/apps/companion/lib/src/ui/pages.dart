@@ -375,6 +375,19 @@ class VoiceSettings extends StatelessWidget {
                       ),
                       Divider(height: 1, color: c.border),
                       row(
+                        Icons.hearing,
+                        'Hands-free: “Hey Compii”',
+                        voice.canListen
+                            ? 'Say “Hey Compii” and your request. The mic stays open while this is on, but nothing is recorded or sent anywhere: '
+                                'only short bursts of speech are checked on this PC. Pauses while Compii talks.'
+                            : 'Needs speech recognition first (above).',
+                        Switch(
+                          value: voice.wakeListening,
+                          onChanged: voice.canListen ? (v) => run(() => voice.set({'wake_word': v})) : null,
+                        ),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
                         Icons.record_voice_over_outlined,
                         'Speak replies out loud',
                         'Compii says its answers and questions. Click it, press the mic, or Stop to interrupt.',
