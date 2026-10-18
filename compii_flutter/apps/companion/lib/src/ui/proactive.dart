@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import '../console/core_client.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'chrome.dart';
+import 'glyphs.dart';
 
 /// Loads Compii's routines, watches, brief settings and inbox, and reloads
 /// when something new arrives.
@@ -75,38 +77,12 @@ class _Page extends StatelessWidget {
   final Widget? action;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
-    children: [
-      Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 760),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(title, style: context.type.headlineMedium),
-                        const SizedBox(height: 6),
-                        Text(subtitle, style: context.type.bodyLarge?.copyWith(color: context.c.muted)),
-                      ],
-                    ),
-                  ),
-                  ?action,
-                ],
-              ),
-              const SizedBox(height: 24),
-              ...children,
-            ],
-          ),
-        ),
-      ),
-    ],
+  Widget build(BuildContext context) => PageScaffold(
+    glyph: pageGlyph(title),
+    title: title,
+    subtitle: subtitle,
+    trailing: action,
+    children: children,
   );
 }
 
@@ -117,11 +93,11 @@ class _Card extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     return Container(
-      decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: BorderRadius.circular(14)),
+      decoration: Shapes.panel(c),
       child: Column(
         children: [
           for (final (i, w) in children.indexed) ...[
-            if (i > 0) Divider(height: 1, color: c.border),
+            if (i > 0) Divider(height: 1, indent: 16, endIndent: 16, color: c.border),
             w,
           ],
         ],
@@ -179,7 +155,7 @@ class RoutinesPage extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
                 child: Row(
                   children: [
-                    Icon(Icons.wb_sunny_outlined, color: c.accent),
+                    GlyphTile(glyph: G.sun, size: 34, color: c.accent),
                     const SizedBox(width: 14),
                     Expanded(
                       child: Column(
@@ -210,7 +186,7 @@ class RoutinesPage extends StatelessWidget {
                     IconButton(
                       tooltip: 'Brief me now',
                       onPressed: () => run(core.briefNow),
-                      icon: const Icon(Icons.play_circle_outline),
+                      icon: const Glyph(G.play),
                     ),
                   ],
                 ),
@@ -223,14 +199,14 @@ class RoutinesPage extends StatelessWidget {
               Expanded(child: Text('Scheduled', style: context.type.titleLarge)),
               OutlinedButton.icon(
                 onPressed: () => _newRoutine(context, core, run, set),
-                icon: const Icon(Icons.add, size: 18),
+                icon: const Glyph(G.plus, size: 18),
                 label: const Text('New routine'),
               ),
             ],
           ),
           const SizedBox(height: 10),
           if (routines.isEmpty)
-            _Empty(icon: Icons.event_repeat, text: 'No routines yet. Try asking: “Every weekday at 8, summarise my new Downloads.”')
+            _Empty(icon: G.routine, text: 'No routines yet. Try asking: “Every weekday at 8, summarise my new Downloads.”')
           else
             _Card(
               children: [
@@ -239,7 +215,7 @@ class RoutinesPage extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
                     child: Row(
                       children: [
-                        Icon(Icons.event_repeat, color: r['enabled'] == true ? c.accent : c.faint),
+                        GlyphTile(glyph: G.routine, size: 34, color: r['enabled'] == true ? c.accent : c.faint),
                         const SizedBox(width: 14),
                         Expanded(
                           child: Column(
@@ -253,9 +229,9 @@ class RoutinesPage extends StatelessWidget {
                             ],
                           ),
                         ),
-                        IconButton(tooltip: 'Run now', onPressed: () => run(() => core.runRoutine('${r['id']}')), icon: const Icon(Icons.play_arrow_rounded)),
+                        IconButton(tooltip: 'Run now', onPressed: () => run(() => core.runRoutine('${r['id']}')), icon: const Glyph(G.play)),
                         Switch(value: r['enabled'] == true, onChanged: (on) => apply(() => core.setEnabled('${r['id']}', on))),
-                        IconButton(tooltip: 'Delete', onPressed: () => apply(() => core.removePlan('${r['id']}')), icon: const Icon(Icons.delete_outline)),
+                        IconButton(tooltip: 'Delete', onPressed: () => apply(() => core.removePlan('${r['id']}')), icon: const Glyph(G.trash)),
                       ],
                     ),
                   ),
@@ -267,14 +243,14 @@ class RoutinesPage extends StatelessWidget {
               Expanded(child: Text('Watching', style: context.type.titleLarge)),
               OutlinedButton.icon(
                 onPressed: () => _newWatch(context, core, run, set),
-                icon: const Icon(Icons.add, size: 18),
+                icon: const Glyph(G.plus, size: 18),
                 label: const Text('New watch'),
               ),
             ],
           ),
           const SizedBox(height: 10),
           if (watches.isEmpty)
-            _Empty(icon: Icons.visibility_outlined, text: 'Nothing watched yet. Try: “Tell me when an invoice lands in Downloads.”')
+            _Empty(icon: G.eye, text: 'Nothing watched yet. Try: “Tell me when an invoice lands in Downloads.”')
           else
             _Card(
               children: [
@@ -283,11 +259,11 @@ class RoutinesPage extends StatelessWidget {
                     padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
                     child: Row(
                       children: [
-                        Icon(switch ('${w['kind']}') {
-                          'folder' => Icons.folder_outlined,
-                          'web' => Icons.public,
-                          _ => Icons.auto_awesome_outlined,
-                        }, color: w['enabled'] == true ? c.accent : c.faint),
+                        GlyphTile(glyph: switch ('${w['kind']}') {
+                          'folder' => G.folder,
+                          'web' => G.globe,
+                          _ => G.memory,
+                        }, size: 34, color: w['enabled'] == true ? c.accent : c.faint),
                         const SizedBox(width: 14),
                         Expanded(
                           child: Column(
@@ -305,7 +281,7 @@ class RoutinesPage extends StatelessWidget {
                           ),
                         ),
                         Switch(value: w['enabled'] == true, onChanged: (on) => apply(() => core.setEnabled('${w['id']}', on))),
-                        IconButton(tooltip: 'Delete', onPressed: () => apply(() => core.removePlan('${w['id']}')), icon: const Icon(Icons.delete_outline)),
+                        IconButton(tooltip: 'Delete', onPressed: () => apply(() => core.removePlan('${w['id']}')), icon: const Glyph(G.trash)),
                       ],
                     ),
                   ),
@@ -328,7 +304,7 @@ String _watchWhat(Map<String, dynamic> w) {
 
 class _Empty extends StatelessWidget {
   const _Empty({required this.icon, required this.text});
-  final IconData icon;
+  final GlyphData icon;
   final String text;
   @override
   Widget build(BuildContext context) => _Card(
@@ -337,7 +313,7 @@ class _Empty extends StatelessWidget {
         padding: const EdgeInsets.all(20),
         child: Row(
           children: [
-            Icon(icon, color: context.c.faint),
+            GlyphTile(glyph: icon, size: 44, color: context.c.faint),
             const SizedBox(width: 14),
             Expanded(child: Text(text, style: context.type.bodyMedium?.copyWith(color: context.c.muted))),
           ],
@@ -403,7 +379,7 @@ Future<void> _newRoutine(BuildContext context, CoreClient core, Run run, void Fu
                   final t = await showTimePicker(context: context, initialTime: at);
                   if (t != null) setLocal(() => at = t);
                 },
-                icon: const Icon(Icons.schedule),
+                icon: const Glyph(G.clock),
                 label: Text('At ${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}'),
               ),
             ],
@@ -449,8 +425,8 @@ Future<void> _newWatch(BuildContext context, CoreClient core, Run run, void Func
               SegmentedButton<String>(
                 showSelectedIcon: false,
                 segments: const [
-                  ButtonSegment(value: 'folder', label: Text('New files'), icon: Icon(Icons.folder_outlined)),
-                  ButtonSegment(value: 'web', label: Text('A web page'), icon: Icon(Icons.public)),
+                  ButtonSegment(value: 'folder', label: Text('New files'), icon: Glyph(G.folder)),
+                  ButtonSegment(value: 'web', label: Text('A web page'), icon: Glyph(G.globe)),
                 ],
                 selected: {kind},
                 onSelectionChanged: (s) => setLocal(() => kind = s.first),
@@ -519,7 +495,7 @@ class UpdatesPage extends StatelessWidget {
             : null,
         children: [
           if (inbox.isEmpty)
-            const _Empty(icon: Icons.notifications_none, text: 'Nothing yet. Your morning brief and anything your watches catch will show up here.')
+            const _Empty(icon: G.bell, text: 'Nothing yet. Your morning brief and anything your watches catch will show up here.')
           else
             for (final u in inbox)
               Padding(
@@ -546,11 +522,11 @@ class UpdateCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final kind = '${update['kind']}';
-    final (IconData icon, Color color) = switch (kind) {
-      'brief' => (Icons.wb_sunny_outlined, c.accent),
-      'watch' => (Icons.visibility_outlined, c.success),
-      'needs_you' => (Icons.front_hand_outlined, c.warning),
-      _ => (Icons.event_repeat, c.accent),
+    final (GlyphData icon, Color color) = switch (kind) {
+      'brief' => (G.sun, c.accent),
+      'watch' => (G.eye, c.success),
+      'needs_you' => (G.hand, c.warning),
+      _ => (G.routine, c.accent),
     };
     final sections = [for (final s in update['sections'] as List? ?? const []) Map<String, dynamic>.from(s as Map)];
     final unread = update['read'] != true;
@@ -566,12 +542,12 @@ class UpdateCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, color: color, size: 20),
+              GlyphTile(glyph: icon, size: 34, color: color),
               const SizedBox(width: 10),
               Expanded(child: Text('${update['title']}', style: context.type.titleSmall)),
               Text(_ago(update['at']), style: context.type.labelMedium),
               if (onRead != null)
-                IconButton(tooltip: 'Mark read', visualDensity: VisualDensity.compact, onPressed: onRead, icon: const Icon(Icons.check, size: 18)),
+                IconButton(tooltip: 'Mark read', visualDensity: VisualDensity.compact, onPressed: onRead, icon: const Glyph(G.check, size: 18)),
             ],
           ),
           const SizedBox(height: 6),
@@ -586,7 +562,7 @@ class UpdateCard extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Padding(padding: const EdgeInsets.only(top: 7), child: Icon(Icons.circle, size: 5, color: c.faint)),
+                    Padding(padding: const EdgeInsets.only(top: 7), child: Glyph(G.dot, size: 5, color: c.faint)),
                     const SizedBox(width: 8),
                     Expanded(child: Text('$item', style: context.type.bodyMedium)),
                   ],
@@ -596,7 +572,7 @@ class UpdateCard extends StatelessWidget {
           if (onOpenTask != null)
             Align(
               alignment: Alignment.centerLeft,
-              child: TextButton.icon(onPressed: onOpenTask, icon: const Icon(Icons.forum_outlined, size: 16), label: const Text('Open conversation')),
+              child: TextButton.icon(onPressed: onOpenTask, icon: const Glyph(G.chat, size: 16), label: const Text('Open conversation')),
             ),
         ],
       ),
@@ -713,7 +689,7 @@ class _UpdateNoticesState extends State<UpdateNotices> {
                                 IconButton(
                                   tooltip: 'Dismiss',
                                   onPressed: () => setState(() => _current = null),
-                                  icon: const Icon(Icons.close, size: 18),
+                                  icon: const Glyph(G.close, size: 18),
                                 ),
                               ],
                             ),

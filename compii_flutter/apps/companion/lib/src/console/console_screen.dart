@@ -5,6 +5,7 @@ import '../ui/thread.dart';
 import '../ui/tokens.dart';
 import 'character.dart';
 import 'core_client.dart';
+import '../ui/glyphs.dart';
 
 /// Root screen: phones get the Face View, desktops the workspace (which can
 /// preview the Face View).
@@ -111,7 +112,7 @@ class FaceStage extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.circle, size: 10, color: switch (core.status) {
+                  Glyph(G.dot, size: 10, color: switch (core.status) {
                     CoreStatus.online => const Color(0xFF5BD18B),
                     CoreStatus.connecting => const Color(0xFFF2B24B),
                     CoreStatus.offline => const Color(0xFFFF7A6E),
@@ -129,7 +130,7 @@ class FaceStage extends StatelessWidget {
             Positioned(
               top: 8,
               right: 8,
-              child: IconButton.filledTonal(tooltip: 'Back to desktop view', onPressed: onExit, icon: const Icon(Icons.close)),
+              child: IconButton.filledTonal(tooltip: 'Back to desktop view', onPressed: onExit, icon: const Glyph(G.close)),
             ),
           Positioned(
             top: 56,
@@ -194,7 +195,7 @@ class FaceStage extends StatelessWidget {
                                   ),
                                 ),
                               ),
-                        icon: const Icon(Icons.forum_outlined),
+                        icon: const Glyph(G.chat),
                       ),
                     ),
                     const SizedBox(width: 8),

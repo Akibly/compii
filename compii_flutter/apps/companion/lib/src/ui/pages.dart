@@ -6,6 +6,8 @@ import 'thread.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'voice.dart';
+import 'chrome.dart';
+import 'glyphs.dart';
 
 class _Page extends StatelessWidget {
   const _Page({required this.title, required this.subtitle, required this.children});
@@ -14,25 +16,11 @@ class _Page extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
-    children: [
-      Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: context.type.headlineMedium),
-              const SizedBox(height: 6),
-              Text(subtitle, style: context.type.bodyLarge?.copyWith(color: context.c.muted)),
-              const SizedBox(height: 24),
-              ...children,
-            ],
-          ),
-        ),
-      ),
-    ],
+  Widget build(BuildContext context) => PageScaffold(
+    glyph: pageGlyph(title),
+    title: title,
+    subtitle: subtitle,
+    children: children,
   );
 }
 
@@ -41,11 +29,8 @@ class _Card extends StatelessWidget {
   final Widget child;
   @override
   Widget build(BuildContext context) => Container(
-    decoration: BoxDecoration(
-      color: context.c.raised,
-      border: Border.all(color: context.c.border),
-      borderRadius: BorderRadius.circular(14),
-    ),
+    decoration: Shapes.panel(context.c),
+    clipBehavior: Clip.antiAlias,
     child: child,
   );
 }
@@ -89,7 +74,7 @@ class _MemoryPageState extends State<MemoryPage> {
               padding: const EdgeInsets.all(24),
               child: Row(
                 children: [
-                  Icon(Icons.auto_awesome_outlined, color: c.accent),
+                  GlyphTile(glyph: G.memory, size: 34, color: c.accent),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Text(
@@ -108,12 +93,12 @@ class _MemoryPageState extends State<MemoryPage> {
                 for (final (i, m) in items.indexed) ...[
                   if (i > 0) Divider(height: 1, color: c.border),
                   ListTile(
-                    leading: Icon(Icons.bookmark_outline, color: c.accent),
+                    leading: GlyphTile(glyph: G.bookmark, size: 34, color: c.accent),
                     title: Text('${m['fact']}', style: context.type.bodyMedium),
                     subtitle: m['at'] == null ? null : Text('Saved ${ago((m['at'] as num).toDouble())} ago', style: context.type.labelMedium),
                     trailing: IconButton(
                       tooltip: 'Forget this',
-                      icon: const Icon(Icons.delete_outline),
+                      icon: const Glyph(G.trash),
                       onPressed: () => widget.run(() async {
                         await widget.core.forget(m['id'] as int);
                         await _load();
@@ -130,12 +115,12 @@ class _MemoryPageState extends State<MemoryPage> {
 }
 
 const _kinds = [
-  ('read', 'Look at things', 'Read files, pages and settings', Icons.visibility_outlined),
-  ('create', 'Create things', 'New files, folders and drafts', Icons.note_add_outlined),
-  ('change', 'Change things', 'Move or edit files, run scripts, open apps', Icons.edit_outlined),
-  ('send', 'Send things', 'Emails and messages to other people', Icons.send_outlined),
-  ('delete', 'Delete things', 'Remove files or data', Icons.delete_outline),
-  ('spend', 'Spend money', 'Purchases and payments — always asks', Icons.payments_outlined),
+  ('read', 'Look at things', 'Read files, pages and settings', G.eye),
+  ('create', 'Create things', 'New files, folders and drafts', G.note),
+  ('change', 'Change things', 'Move or edit files, run scripts, open apps', G.edit),
+  ('send', 'Send things', 'Emails and messages to other people', G.send),
+  ('delete', 'Delete things', 'Remove files or data', G.trash),
+  ('spend', 'Spend money', 'Purchases and payments — always asks', G.money),
 ];
 
 const _levels = [
@@ -196,7 +181,7 @@ class _SettingsPageState extends State<SettingsPage> {
                         padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
                         child: Row(
                           children: [
-                            Icon(icon, color: tierColors(context, kind).$1),
+                            GlyphTile(glyph: icon, size: 34, color: tierColors(context, kind).$1),
                             const SizedBox(width: 14),
                             Expanded(
                               child: Column(
@@ -246,7 +231,7 @@ class _SettingsPageState extends State<SettingsPage> {
             padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
             child: Row(
               children: [
-                Icon(Icons.contrast, color: c.muted),
+                GlyphTile(glyph: G.contrast, size: 34, color: c.muted),
                 const SizedBox(width: 14),
                 Expanded(child: Text('Theme', style: context.type.titleSmall)),
                 SegmentedButton<ThemeMode>(
@@ -316,11 +301,11 @@ class VoiceSettings extends StatelessWidget {
       final sizes = Map<String, dynamic>.from(st?['download_sizes_mb'] as Map? ?? {});
       final voices = Map<String, dynamic>.from(st?['voices'] as Map? ?? {});
       final settings = Map<String, dynamic>.from(st?['settings'] as Map? ?? {});
-      Widget row(IconData icon, String title, String sub, Widget trailing) => Padding(
+      Widget row(GlyphData icon, String title, String sub, Widget trailing) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
         child: Row(
           children: [
-            Icon(icon, color: c.accent),
+            GlyphTile(glyph: icon, size: 34, color: c.accent),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
@@ -350,7 +335,7 @@ class VoiceSettings extends StatelessWidget {
         }
         return OutlinedButton.icon(
           onPressed: () => run(() => voice.download(what)),
-          icon: const Icon(Icons.download_outlined, size: 18),
+          icon: const Glyph(G.download, size: 18),
           label: Text('$label · ${sizes[what] ?? '?'} MB'),
         );
       }
@@ -372,18 +357,18 @@ class VoiceSettings extends StatelessWidget {
                 : Column(
                     children: [
                       row(
-                        Icons.mic_none,
+                        G.mic,
                         'Talk to Compii',
                         voice.canListen
                             ? 'Ready. Click Compii or the mic and speak; Ctrl + Alt + Space works from anywhere.'
                             : 'Uses Whisper, an open speech model, running on your PC.',
                         voice.canListen
-                            ? Icon(Icons.check_circle, color: c.success)
+                            ? Glyph(G.checkCircle, color: c.success)
                             : download('listen', 'Download'),
                       ),
                       Divider(height: 1, color: c.border),
                       row(
-                        Icons.hearing,
+                        G.ear,
                         'Hands-free: “Hey Compii”',
                         voice.canListen
                             ? 'Say “Hey Compii” and your request. The mic stays open while this is on, but nothing is recorded or sent anywhere: '
@@ -396,7 +381,7 @@ class VoiceSettings extends StatelessWidget {
                       ),
                       Divider(height: 1, color: c.border),
                       row(
-                        Icons.record_voice_over_outlined,
+                        G.speakingHead,
                         'Speak replies out loud',
                         'Compii says its answers and questions. Click it, press the mic, or Stop to interrupt.',
                         Switch(
@@ -406,7 +391,7 @@ class VoiceSettings extends StatelessWidget {
                       ),
                       Divider(height: 1, color: c.border),
                       row(
-                        Icons.graphic_eq,
+                        G.wave,
                         voice.naturalVoice ? 'Natural voice (Kokoro)' : 'Windows voice (built in)',
                         voice.naturalVoice
                             ? 'An open voice model on your PC. Pick how Compii sounds.'

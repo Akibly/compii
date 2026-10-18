@@ -27,6 +27,8 @@ Future<void> main(List<String> args) async {
   if (Platform.isWindows) {
     await windowManager.ensureInitialized();
     await windowManager.setMinimumSize(const Size(380, 120));
+    // Compii draws its own title bar (drag area and window buttons).
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
     quick = QuickMode(state);
     try {
       await quick.registerHotkey();

@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import '../console/core_client.dart';
 import 'thread.dart' show Run;
 import 'tokens.dart';
+import 'chrome.dart';
+import 'glyphs.dart';
 
 /// Calls to Compii Core on this PC for the brain, safety and skills screens.
 /// Uses this PC's token, so key changes, "Always allow" and lifting the kill
@@ -62,43 +64,20 @@ class TrustPage extends StatelessWidget {
   final List<Widget> children;
 
   @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
-    children: [
-      Center(
-        child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 720),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: context.type.headlineMedium),
-              const SizedBox(height: 6),
-              Text(subtitle, style: context.type.bodyLarge?.copyWith(color: context.c.muted)),
-              const SizedBox(height: 24),
-              ...children,
-            ],
-          ),
-        ),
-      ),
-    ],
+  Widget build(BuildContext context) => PageScaffold(
+    glyph: pageGlyph(title),
+    title: title,
+    subtitle: subtitle,
+    children: children,
   );
 }
 
 class TrustCard extends StatelessWidget {
-  const TrustCard({super.key, required this.child, this.padding = const EdgeInsets.all(16)});
+  const TrustCard({super.key, required this.child, this.padding = const EdgeInsets.all(18)});
   final Widget child;
   final EdgeInsets padding;
   @override
-  Widget build(BuildContext context) => Container(
-    width: double.infinity,
-    padding: padding,
-    decoration: BoxDecoration(
-      color: context.c.raised,
-      border: Border.all(color: context.c.border),
-      borderRadius: BorderRadius.circular(14),
-    ),
-    child: child,
-  );
+  Widget build(BuildContext context) => Panel(padding: padding, child: child);
 }
 
 Widget _heading(BuildContext context, String title, String sub) => Padding(
@@ -113,13 +92,13 @@ Widget _heading(BuildContext context, String title, String sub) => Padding(
   ),
 );
 
-Widget _chip(BuildContext context, String text, Color fg, Color bg, {IconData? icon}) => Container(
+Widget _chip(BuildContext context, String text, Color fg, Color bg, {GlyphData? icon}) => Container(
   padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
   decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
   child: Row(
     mainAxisSize: MainAxisSize.min,
     children: [
-      if (icon != null) ...[Icon(icon, size: 14, color: fg), const SizedBox(width: 4)],
+      if (icon != null) ...[Glyph(icon, size: 14, color: fg), const SizedBox(width: 4)],
       Text(text, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w600)),
     ],
   ),
@@ -282,7 +261,7 @@ class _BrainCardState extends State<BrainCard> {
               for (final p in _presets.keys)
                 ChoiceChip(
                   label: Text('${_preset(p)['label']}'),
-                  avatar: Icon(_preset(p)['where'] == 'local' ? Icons.computer : Icons.cloud_outlined, size: 16),
+                  avatar: Glyph(_preset(p)['where'] == 'local' ? G.monitor : G.cloud, size: 16),
                   selected: _provider == p,
                   onSelected: (_) {
                     setState(() {
@@ -302,7 +281,7 @@ class _BrainCardState extends State<BrainCard> {
           if (_isLocal) ...[
             Row(
               children: [
-                Icon(Icons.savings_outlined, size: 18, color: c.success),
+                Glyph(G.coin, size: 18, color: c.success),
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
@@ -369,7 +348,7 @@ class _BrainCardState extends State<BrainCard> {
             if (_hasKey)
               Row(
                 children: [
-                  _chip(context, 'Key saved in Windows Credential Manager', c.success, c.sunken, icon: Icons.lock_outline),
+                  _chip(context, 'Key saved in Windows Credential Manager', c.success, c.sunken, icon: G.lock),
                   const Spacer(),
                   TextButton(onPressed: _removeKey, child: const Text('Remove key')),
                 ],
@@ -433,11 +412,11 @@ class _BrainCardState extends State<BrainCard> {
               child: Row(
                 children: [
                   if (probe['ok'] != true)
-                    _chip(context, 'Didn’t answer', c.danger, c.dangerSoft, icon: Icons.error_outline)
+                    _chip(context, 'Didn’t answer', c.danger, c.dangerSoft, icon: G.alert)
                   else if (probe['tools'] == true)
-                    _chip(context, 'Works · can do tasks · ${probe['ms']} ms', c.success, c.sunken, icon: Icons.check_circle_outline)
+                    _chip(context, 'Works · can do tasks · ${probe['ms']} ms', c.success, c.sunken, icon: G.checkCircle)
                   else
-                    _chip(context, 'Chat only · can’t use tools', c.warning, c.warningSoft, icon: Icons.info_outline),
+                    _chip(context, 'Chat only · can’t use tools', c.warning, c.warningSoft, icon: G.info),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text('${probe['error'] ?? probe['note'] ?? ''}',
@@ -459,7 +438,7 @@ class _BrainCardState extends State<BrainCard> {
                 onPressed: _testing ? null : _test,
                 icon: _testing
                     ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.bolt, size: 18),
+                    : const Glyph(G.bolt, size: 18),
                 label: const Text('Test'),
               ),
             ],
@@ -528,11 +507,11 @@ class _SafetyPageState extends State<SafetyPage> {
   });
 
   static const _blocked = [
-    (Icons.password, 'Typing passwords, card or bank numbers and one-time codes'),
-    (Icons.lock_outline, 'Locking, signing out or shutting down the PC'),
-    (Icons.install_desktop, 'Installing software or editing the registry'),
-    (Icons.shield_outlined, 'Opening security, privacy or firewall settings'),
-    (Icons.payments_outlined, 'Pressing pay, buy or checkout buttons'),
+    (G.password, 'Typing passwords, card or bank numbers and one-time codes'),
+    (G.lock, 'Locking, signing out or shutting down the PC'),
+    (G.box, 'Installing software or editing the registry'),
+    (G.shield, 'Opening security, privacy or firewall settings'),
+    (G.money, 'Pressing pay, buy or checkout buttons'),
   ];
 
   @override
@@ -550,7 +529,7 @@ class _SafetyPageState extends State<SafetyPage> {
         TrustCard(
           child: Row(
             children: [
-              Icon(lockdown ? Icons.gpp_maybe : Icons.power_settings_new, color: lockdown ? c.danger : c.muted, size: 28),
+              GlyphTile(glyph: lockdown ? G.shieldAlert : G.power, size: 44, color: lockdown ? c.danger : c.muted),
               const SizedBox(width: 14),
               Expanded(
                 child: Column(
@@ -592,7 +571,7 @@ class _SafetyPageState extends State<SafetyPage> {
                     for (final (i, r) in rules.indexed) ...[
                       if (i > 0) Divider(height: 1, color: c.border),
                       ListTile(
-                        leading: Icon(Icons.verified_outlined, color: c.success),
+                        leading: GlyphTile(glyph: G.shieldCheck, size: 34, color: c.success),
                         title: Text('${r['label']}'.isEmpty ? '${r['tool']}' : '${r['label']}'),
                         subtitle: Text(
                           '${r['tool']}${'${r['scope']}'.isEmpty ? ' · anywhere' : ' · ${r['scope']}'} · ${_ago(r['created'] as num?)}',
@@ -601,7 +580,7 @@ class _SafetyPageState extends State<SafetyPage> {
                         ),
                         trailing: IconButton(
                           tooltip: 'Remove rule',
-                          icon: const Icon(Icons.close),
+                          icon: const Glyph(G.close),
                           onPressed: () => _do(() => TrustApi.call('DELETE', '/rules/${r['id']}')),
                         ),
                       ),
@@ -618,7 +597,7 @@ class _SafetyPageState extends State<SafetyPage> {
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 5),
                   child: Row(children: [
-                    Icon(icon, size: 18, color: c.danger),
+                    GlyphTile(glyph: icon, size: 28, color: c.danger),
                     const SizedBox(width: 10),
                     Expanded(child: Text(text, style: context.type.bodyMedium)),
                   ]),
@@ -642,8 +621,8 @@ class _SafetyPageState extends State<SafetyPage> {
               Padding(
                 padding: const EdgeInsets.only(bottom: 14),
                 child: verify['ok'] == true
-                    ? _chip(context, 'Intact · ${verify['count']} entries', c.success, c.sunken, icon: Icons.verified_user_outlined)
-                    : _chip(context, 'Tampered at line ${verify['broken_at']}', c.danger, c.dangerSoft, icon: Icons.report_outlined),
+                    ? _chip(context, 'Intact · ${verify['count']} entries', c.success, c.sunken, icon: G.shieldCheck)
+                    : _chip(context, 'Tampered at line ${verify['broken_at']}', c.danger, c.dangerSoft, icon: G.flag),
               ),
           ],
         ),
@@ -747,7 +726,7 @@ class _LockdownBannerState extends State<LockdownBanner> {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         child: Row(
           children: [
-            Icon(Icons.gpp_maybe, color: c.danger, size: 20),
+            Glyph(G.shieldAlert, color: c.danger, size: 20),
             const SizedBox(width: 10),
             Expanded(
               child: Text('Lockdown: everything was stopped, and Compii asks before every action.',
@@ -810,7 +789,7 @@ class _WalkthroughBarState extends State<WalkthroughBar> {
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
         child: Row(
           children: [
-            Icon(Icons.school_outlined, color: c.accent, size: 20),
+            Glyph(G.skill, color: c.accent, size: 20),
             const SizedBox(width: 10),
             Text('${w['goal']} · step ${i + 1} of ${steps.length}', style: context.type.labelLarge?.copyWith(color: c.accent)),
             const SizedBox(width: 10),
@@ -877,7 +856,7 @@ class _SkillsPageState extends State<SkillsPage> {
               ),
               const SizedBox(height: 10),
               OutlinedButton.icon(
-                icon: const Icon(Icons.schedule, size: 18),
+                icon: const Glyph(G.clock, size: 18),
                 label: Text('At ${time.format(context)}'),
                 onPressed: () async {
                   final t = await showTimePicker(context: context, initialTime: time);
@@ -915,7 +894,7 @@ class _SkillsPageState extends State<SkillsPage> {
           TrustCard(
             child: Row(
               children: [
-                Icon(Icons.school_outlined, color: c.accent, size: 28),
+                GlyphTile(glyph: G.skill, size: 48, color: c.accent),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
@@ -935,7 +914,7 @@ class _SkillsPageState extends State<SkillsPage> {
                 children: [
                   Row(
                     children: [
-                      Icon(Icons.auto_fix_high, color: c.accent, size: 20),
+                      GlyphTile(glyph: G.wand, size: 34, color: c.accent),
                       const SizedBox(width: 10),
                       Expanded(child: Text('${s['name']}', style: context.type.titleMedium)),
                       Text(
@@ -959,7 +938,7 @@ class _SkillsPageState extends State<SkillsPage> {
                     spacing: 8,
                     children: [
                       FilledButton.icon(
-                        icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                        icon: const Glyph(G.play, size: 18),
                         label: const Text('Do it now'),
                         onPressed: () => widget.run(() async {
                           final t = await TrustApi.map('POST', '/skills/${s['id']}/run');
@@ -967,7 +946,7 @@ class _SkillsPageState extends State<SkillsPage> {
                         }),
                       ),
                       OutlinedButton.icon(
-                        icon: const Icon(Icons.event_repeat, size: 18),
+                        icon: const Glyph(G.routine, size: 18),
                         label: const Text('Make routine'),
                         onPressed: () => _routine(s),
                       ),
@@ -998,7 +977,7 @@ class SaveSkillButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => TextButton.icon(
-    icon: const Icon(Icons.school_outlined, size: 18),
+    icon: const Glyph(G.skill, size: 18),
     label: const Text('Save as skill'),
     onPressed: () async {
       final name = TextEditingController(text: _suggest(task.request));
@@ -1063,11 +1042,11 @@ class SafetyNotes extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(switch (e['type']) {
-                  'action_blocked' => Icons.block,
-                  'injection_warning' => Icons.gpp_maybe_outlined,
-                  'redacted' => Icons.visibility_off_outlined,
-                  _ => Icons.verified_outlined,
+                Glyph(switch (e['type']) {
+                  'action_blocked' => G.block,
+                  'injection_warning' => G.shieldAlert,
+                  'redacted' => G.eyeOff,
+                  _ => G.shieldCheck,
                 }, size: 16, color: switch (e['type']) {
                   'action_blocked' || 'injection_warning' => c.danger,
                   'redacted' => c.warning,

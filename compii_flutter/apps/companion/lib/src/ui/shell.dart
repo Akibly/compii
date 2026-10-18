@@ -9,6 +9,8 @@ import 'thread.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'voice.dart';
+import 'chrome.dart';
+import 'glyphs.dart';
 
 enum Section { home, chat, updates, routines, skills, memory, safety, settings }
 
@@ -112,16 +114,23 @@ class Workspace extends StatelessWidget {
     }
   }
 
+  String? _title(TaskView? task) => switch (state.section) {
+    Section.chat when task != null => null, // the conversation has its own header
+    _ => null,
+  };
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([core, state, ?state.voice]),
     builder: (context, _) {
+      final c = context.c;
       final task = state.selected == null ? null : core.tasks[state.selected];
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => state.go(Section.home),
         },
         child: Scaffold(
+          backgroundColor: c.canvas,
           body: LayoutBuilder(
             builder: (context, box) {
               final showProgress = task != null && box.maxWidth >= 1180;
@@ -132,20 +141,27 @@ class Workspace extends StatelessWidget {
                   Expanded(
                     child: Column(
                       children: [
+                        TitleBar(title: _title(task)),
                         _StatusLine(core: core, state: state),
                         LockdownBanner(run: _run),
                         const WalkthroughBar(),
                         Expanded(
-                          child: switch (state.section) {
-                            Section.memory => MemoryPage(core: core, run: _run),
-                            Section.routines => RoutinesPage(core: core, run: _run),
-                            Section.skills => SkillsPage(run: _run, onOpenTask: state.open),
-                            Section.safety => SafetyPage(run: _run),
-                            Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
-                            Section.settings => SettingsPage(core: core, state: state, run: _run),
-                            Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
-                            _ => _Home(core: core, state: state, run: _run),
-                          },
+                          child: AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 180),
+                            child: KeyedSubtree(
+                              key: ValueKey('${state.section}-${state.selected}'),
+                              child: switch (state.section) {
+                                Section.memory => MemoryPage(core: core, run: _run),
+                                Section.routines => RoutinesPage(core: core, run: _run),
+                                Section.skills => SkillsPage(run: _run, onOpenTask: state.open),
+                                Section.safety => SafetyPage(run: _run),
+                                Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
+                                Section.settings => SettingsPage(core: core, state: state, run: _run),
+                                Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
+                                _ => _Home(core: core, state: state, run: _run),
+                              },
+                            ),
+                          ),
                         ),
                       ],
                     ),
@@ -173,130 +189,115 @@ class _Sidebar extends StatelessWidget {
     final mood = state.moodWith(core);
     final tasks = core.ordered;
     final voice = state.voice;
+    final jobs = tasks.where((t) => t.active).length;
+    final (String status, Color statusColor) = switch (mood) {
+      Mood.offline => ('Offline', c.danger),
+      Mood.waiting => ('Needs you', c.warning),
+      Mood.listening => ('Listening', c.listen),
+      Mood.thinking || Mood.acting => (jobs > 1 ? 'Working on $jobs things' : 'Working', c.accent),
+      Mood.speaking => ('Speaking', c.accent),
+      _ => (voice?.wakeListening == true ? 'Say “Hey Compii”' : 'Ready', c.success),
+    };
     return Container(
-      width: 264,
+      width: 272,
       decoration: BoxDecoration(color: c.surface, border: Border(right: BorderSide(color: c.border))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 16, 10, 10),
-            child: Row(
-              children: [
-                if (voice != null)
-                  TalkableOrbling(voice: voice, mood: mood, jobs: tasks.where((t) => t.active).length, size: 38)
-                else
-                  SizedBox.square(dimension: 34, child: Orbling(mood: mood, jobs: tasks.where((t) => t.active).length)),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Compii', style: context.type.titleMedium),
-                      if (voice?.wakeListening == true && mood == Mood.idle)
+          DragStrip(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 18, 10, 14),
+              child: Row(
+                children: [
+                  if (voice != null)
+                    TalkableOrbling(voice: voice, mood: mood, jobs: jobs, size: 40)
+                  else
+                    SizedBox.square(dimension: 38, child: Orbling(mood: mood, jobs: jobs)),
+                  const SizedBox(width: 11),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Compii', style: context.type.titleLarge?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -.4)),
+                        const SizedBox(height: 2),
                         Row(
                           children: [
-                            Icon(Icons.hearing, size: 13, color: c.accent),
-                            const SizedBox(width: 4),
+                            Container(width: 7, height: 7, decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle,
+                                boxShadow: [BoxShadow(color: statusColor.withValues(alpha: .5), blurRadius: 6)])),
+                            const SizedBox(width: 6),
                             Flexible(
-                              child: Text('Say “Hey Compii”', overflow: TextOverflow.ellipsis,
-                                  style: context.type.labelMedium?.copyWith(color: c.accent)),
+                              child: Text(status, maxLines: 1, overflow: TextOverflow.ellipsis,
+                                  style: context.type.labelMedium?.copyWith(color: mood == Mood.idle ? c.muted : statusColor)),
                             ),
                           ],
-                        )
-                      else
-                        Text(moodLabel(mood), style: context.type.labelMedium),
-                    ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-                if (onFaceView != null)
-                  IconButton(
-                    tooltip: 'Phone face view',
-                    onPressed: onFaceView,
-                    icon: const Icon(Icons.smartphone_outlined, size: 19),
-                  ),
-              ],
+                  if (onFaceView != null)
+                    IconButton(tooltip: 'Face view (for a phone or second screen)', onPressed: onFaceView, icon: const Glyph(G.pip, size: 18)),
+                ],
+              ),
             ),
           ),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: _NavButton(
-              icon: Icons.add,
-              label: 'New conversation',
-              trailing: 'Ctrl N',
-              selected: state.section == Section.home,
-              onTap: () => state.go(Section.home),
-              strong: true,
+            child: _NewButton(selected: state.section == Section.home, onTap: () => state.go(Section.home)),
+          ),
+          const SizedBox(height: 14),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Column(
+              children: [
+                _NavButton(glyph: G.bell, label: 'Updates', selected: state.section == Section.updates,
+                    onTap: () => state.go(Section.updates), badge: core.unread),
+                _NavButton(glyph: G.routine, label: 'Routines', selected: state.section == Section.routines,
+                    onTap: () => state.go(Section.routines)),
+                _NavButton(glyph: G.skill, label: 'Skills', selected: state.section == Section.skills,
+                    onTap: () => state.go(Section.skills)),
+                _NavButton(glyph: G.memory, label: 'Memory', selected: state.section == Section.memory,
+                    onTap: () => state.go(Section.memory)),
+              ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 16, 6),
-            child: Text('Conversations', style: context.type.labelMedium),
+            padding: const EdgeInsets.fromLTRB(24, 18, 16, 8),
+            child: Text('RECENT', style: context.type.labelSmall),
           ),
           Expanded(
             child: tasks.isEmpty
                 ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Text('Your conversations will show up here.', style: context.type.bodySmall),
+                    padding: const EdgeInsets.symmetric(horizontal: 24),
+                    child: Text('Conversations you start appear here.', style: context.type.bodySmall?.copyWith(color: c.faint)),
                   )
                 : ListView(
-                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    padding: const EdgeInsets.symmetric(horizontal: 10),
                     children: [
                       for (final t in tasks) _ConversationTile(task: t, selected: state.selected == t.id, onTap: () => state.open(t.id)),
                     ],
                   ),
           ),
-          Divider(height: 1, color: c.border),
-          Padding(
-            padding: const EdgeInsets.all(12),
+          Container(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
             child: Column(
               children: [
-                _NavButton(
-                  icon: Icons.notifications_none,
-                  label: 'Updates',
-                  selected: state.section == Section.updates,
-                  onTap: () => state.go(Section.updates),
-                  badge: core.unread,
-                ),
-                _NavButton(
-                  icon: Icons.event_repeat,
-                  label: 'Routines',
-                  selected: state.section == Section.routines,
-                  onTap: () => state.go(Section.routines),
-                ),
-                _NavButton(
-                  icon: Icons.school_outlined,
-                  label: 'Skills',
-                  selected: state.section == Section.skills,
-                  onTap: () => state.go(Section.skills),
-                ),
-                _NavButton(
-                  icon: Icons.auto_awesome_outlined,
-                  label: 'Memory',
-                  selected: state.section == Section.memory,
-                  onTap: () => state.go(Section.memory),
-                ),
-                _NavButton(
-                  icon: Icons.shield_outlined,
-                  label: 'Safety',
-                  selected: state.section == Section.safety,
-                  onTap: () => state.go(Section.safety),
-                ),
-                _NavButton(
-                  icon: Icons.tune,
-                  label: 'Settings',
-                  selected: state.section == Section.settings,
-                  onTap: () => state.go(Section.settings),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Icon(Icons.keyboard_outlined, size: 15, color: c.faint),
-                    const SizedBox(width: 6),
-                    Expanded(
-                      child: Text('Alt + Space opens the quick bar', style: context.type.labelMedium?.copyWith(color: c.faint)),
-                    ),
-                  ],
+                _NavButton(glyph: G.shield, label: 'Safety', selected: state.section == Section.safety,
+                    onTap: () => state.go(Section.safety)),
+                _NavButton(glyph: G.sliders, label: 'Settings', selected: state.section == Section.settings,
+                    onTap: () => state.go(Section.settings)),
+                const SizedBox(height: 10),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text('Quick bar', maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: context.type.labelMedium?.copyWith(color: c.faint)),
+                      ),
+                      const Kbd('Alt + Space'),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -307,40 +308,105 @@ class _Sidebar extends StatelessWidget {
   }
 }
 
-class _NavButton extends StatelessWidget {
-  const _NavButton({required this.icon, required this.label, required this.selected, required this.onTap, this.trailing, this.strong = false, this.badge = 0});
-  final int badge;
-  final IconData icon;
-  final String label;
+/// The main call to action at the top of the sidebar.
+class _NewButton extends StatefulWidget {
+  const _NewButton({required this.selected, required this.onTap});
   final bool selected;
   final VoidCallback onTap;
-  final String? trailing;
-  final bool strong;
+  @override
+  State<_NewButton> createState() => _NewButtonState();
+}
 
+class _NewButtonState extends State<_NewButton> {
+  bool _hover = false;
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    return Material(
-      color: selected ? c.raised : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          height: 42,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: c.raised,
+            borderRadius: Shapes.r12,
+            border: Border.all(color: _hover || widget.selected ? c.accent.withValues(alpha: .45) : c.border),
+            boxShadow: Shapes.card(c),
+          ),
           child: Row(
             children: [
-              Icon(icon, size: 18, color: strong ? c.accent : c.muted),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(label, style: context.type.labelLarge?.copyWith(color: strong ? c.accent : c.text)),
+              Container(
+                width: 24,
+                height: 24,
+                decoration: BoxDecoration(color: c.accent, borderRadius: Shapes.r6),
+                alignment: Alignment.center,
+                child: Glyph(G.plus, size: 15, color: c.onAccent, weight: 2.2),
               ),
-              if (trailing != null) Text(trailing!, style: context.type.labelMedium?.copyWith(color: c.faint)),
-              if (badge > 0)
+              const SizedBox(width: 10),
+              Expanded(child: Text('New conversation', style: context.type.labelLarge)),
+              const Kbd('Ctrl + N'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NavButton extends StatefulWidget {
+  const _NavButton({required this.glyph, required this.label, required this.selected, required this.onTap, this.badge = 0});
+  final int badge;
+  final GlyphData glyph;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  State<_NavButton> createState() => _NavButtonState();
+}
+
+class _NavButtonState extends State<_NavButton> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final on = widget.selected;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          margin: const EdgeInsets.only(bottom: 2),
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          decoration: BoxDecoration(
+            color: on ? c.raised : (_hover ? c.hover.withValues(alpha: .7) : Colors.transparent),
+            borderRadius: Shapes.r10,
+            border: Border.all(color: on ? c.border : Colors.transparent),
+            boxShadow: on ? Shapes.card(c) : null,
+          ),
+          child: Row(
+            children: [
+              Glyph(widget.glyph, size: 18, color: on ? c.accent : c.muted, duo: on),
+              const SizedBox(width: 11),
+              Expanded(
+                child: Text(widget.label,
+                    style: context.type.labelLarge?.copyWith(color: on ? c.text : c.muted, fontWeight: on ? FontWeight.w600 : FontWeight.w500)),
+              ),
+              if (widget.badge > 0)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 1),
-                  decoration: BoxDecoration(color: c.accent, borderRadius: BorderRadius.circular(10)),
-                  child: Text('$badge', style: TextStyle(color: c.onAccent, fontSize: 11.5, fontWeight: FontWeight.w700)),
+                  constraints: const BoxConstraints(minWidth: 20),
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
+                  decoration: BoxDecoration(color: c.warning, borderRadius: BorderRadius.circular(10)),
+                  child: Text('${widget.badge}', textAlign: TextAlign.center,
+                      style: TextStyle(color: c.dark ? c.canvas : Colors.white, fontSize: 11, fontWeight: FontWeight.w800)),
                 ),
             ],
           ),
@@ -350,15 +416,24 @@ class _NavButton extends StatelessWidget {
   }
 }
 
-class _ConversationTile extends StatelessWidget {
+class _ConversationTile extends StatefulWidget {
   const _ConversationTile({required this.task, required this.selected, required this.onTap});
   final TaskView task;
   final bool selected;
   final VoidCallback onTap;
 
   @override
+  State<_ConversationTile> createState() => _ConversationTileState();
+}
+
+class _ConversationTileState extends State<_ConversationTile> {
+  bool _hover = false;
+
+  @override
   Widget build(BuildContext context) {
     final c = context.c;
+    final task = widget.task;
+    final selected = widget.selected;
     final waiting = task.pendingApproval != null;
     final at = (task.last?['at'] as num?)?.toDouble() ?? task.events.firstOrNull?['at'] as double? ?? 0;
     final (String label, Color color) = waiting
@@ -367,58 +442,69 @@ class _ConversationTile extends StatelessWidget {
             'running' => ('Working', c.accent),
             'failed' => ('Problem', c.danger),
             'stopped' => ('Stopped', c.faint),
-            _ => ('Done', c.faint),
+            _ => ('Done', c.success),
           };
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 2),
-      child: Material(
-        color: selected ? c.raised : Colors.transparent,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(10),
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          if (task.fromRoutine) ...[
-                            Icon(Icons.event_repeat, size: 14, color: c.accent),
-                            const SizedBox(width: 4),
-                          ],
-                          Expanded(
-                            child: Text(
-                              task.fromRoutine ? '${task.origin!['title']}' : titleOf(task),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: context.type.bodyMedium?.copyWith(fontWeight: FontWeight.w500),
-                            ),
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 120),
+          margin: const EdgeInsets.only(bottom: 2),
+          padding: const EdgeInsets.fromLTRB(12, 9, 12, 9),
+          decoration: BoxDecoration(
+            color: selected ? c.raised : (_hover ? c.hover.withValues(alpha: .7) : Colors.transparent),
+            borderRadius: Shapes.r10,
+            border: Border.all(color: selected ? c.border : Colors.transparent),
+            boxShadow: selected ? Shapes.card(c) : null,
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 3,
+                height: 30,
+                decoration: BoxDecoration(color: waiting || task.active ? color : Colors.transparent, borderRadius: BorderRadius.circular(2)),
+              ),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        if (task.fromRoutine) ...[
+                          Glyph(G.routine, size: 13, color: c.accent),
+                          const SizedBox(width: 5),
+                        ],
+                        Expanded(
+                          child: Text(
+                            task.fromRoutine ? '${task.origin!['title']}' : titleOf(task),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.type.bodyMedium?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500, height: 1.3),
                           ),
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          if (task.active && !waiting)
-                            SizedBox.square(dimension: 9, child: CircularProgressIndicator(strokeWidth: 1.6, color: color))
-                          else
-                            Icon(Icons.circle, size: 7, color: color),
-                          const SizedBox(width: 6),
-                          Text(label, style: context.type.labelMedium?.copyWith(color: waiting ? c.warning : c.muted)),
-                          const Spacer(),
-                          Text(ago(at), style: context.type.labelMedium?.copyWith(color: c.faint)),
-                        ],
-                      ),
-                    ],
-                  ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        if (task.active && !waiting)
+                          SizedBox.square(dimension: 9, child: CircularProgressIndicator(strokeWidth: 1.6, color: color))
+                        else
+                          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+                        const SizedBox(width: 6),
+                        Text(label, style: context.type.labelMedium?.copyWith(color: waiting ? c.warning : c.muted, fontSize: 11.5)),
+                        const Spacer(),
+                        Text(ago(at), style: context.type.labelMedium?.copyWith(color: c.faint, fontSize: 11.5)),
+                      ],
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
@@ -426,7 +512,7 @@ class _ConversationTile extends StatelessWidget {
   }
 }
 
-/// Slim line for connection problems; nothing when all is well.
+/// Slim notices for connection problems and errors; nothing when all is well.
 class _StatusLine extends StatelessWidget {
   const _StatusLine({required this.core, required this.state});
   final CoreClient core;
@@ -435,44 +521,39 @@ class _StatusLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final (IconData, String, Color)? line = switch (core.status) {
-      CoreStatus.offline => (Icons.power_off_outlined, 'Compii Core isn’t running. In compii_core run: uv run compii-core — I’ll reconnect by myself.', c.danger),
-      CoreStatus.connecting => (Icons.sync, 'Connecting to Compii Core…', c.muted),
-      CoreStatus.online when core.brain == 'rehearsal' => (Icons.theater_comedy_outlined, 'Rehearsal mode: scripted test runs, not AI.', c.warning),
-      CoreStatus.online when !core.credentialsFound => (Icons.key_off_outlined, 'No Anthropic API key found. Set ANTHROPIC_API_KEY and restart Compii Core.', c.warning),
+    final (GlyphData, String, Color)? line = switch (core.status) {
+      CoreStatus.offline => (G.power, 'Compii Core isn’t running. Start it with “uv run compii-core” in compii_core — I’ll reconnect by myself.', c.danger),
+      CoreStatus.connecting => (G.sync, 'Connecting to Compii Core…', c.muted),
+      CoreStatus.online when core.brain == 'rehearsal' => (G.flask, 'Rehearsal mode — scripted test runs, not AI.', c.warning),
+      CoreStatus.online when !core.credentialsFound => (G.key, 'No AI chosen yet. Pick a free local model or add a key in Settings → Brain.', c.warning),
       _ => null,
     };
     final error = state.error;
     if (line == null && error == null) return const SizedBox.shrink();
+    Widget notice(GlyphData g, String text, Color color, {VoidCallback? onClose}) => Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+      child: Container(
+        padding: EdgeInsets.fromLTRB(12, 8, onClose == null ? 12 : 4, 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: c.dark ? .14 : .09),
+          borderRadius: Shapes.r12,
+          border: Border.all(color: color.withValues(alpha: .25)),
+        ),
+        child: Row(
+          children: [
+            Glyph(g, size: 16, color: color, duo: true),
+            const SizedBox(width: 10),
+            Expanded(child: Text(text, maxLines: 2, overflow: TextOverflow.ellipsis, style: context.type.bodySmall?.copyWith(color: c.text))),
+            if (onClose != null)
+              IconButton(onPressed: onClose, icon: const Glyph(G.close, size: 14), tooltip: 'Dismiss', visualDensity: VisualDensity.compact),
+          ],
+        ),
+      ),
+    );
     return Column(
       children: [
-        if (line != null)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            color: line.$3.withValues(alpha: .1),
-            child: Row(
-              children: [
-                Icon(line.$1, size: 16, color: line.$3),
-                const SizedBox(width: 8),
-                Expanded(child: Text(line.$2, style: context.type.bodySmall?.copyWith(color: c.text))),
-              ],
-            ),
-          ),
-        if (error != null)
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(16, 6, 6, 6),
-            color: c.dangerSoft,
-            child: Row(
-              children: [
-                Icon(Icons.error_outline, size: 16, color: c.danger),
-                const SizedBox(width: 8),
-                Expanded(child: Text(error, maxLines: 2, overflow: TextOverflow.ellipsis, style: context.type.bodySmall?.copyWith(color: c.text))),
-                IconButton(onPressed: () => state.fail(null), icon: const Icon(Icons.close, size: 16), tooltip: 'Dismiss'),
-              ],
-            ),
-          ),
+        if (line != null) notice(line.$1, line.$2, line.$3),
+        if (error != null) notice(G.alert, error, c.danger, onClose: () => state.fail(null)),
       ],
     );
   }
@@ -480,7 +561,7 @@ class _StatusLine extends StatelessWidget {
 
 /// The message box. Enter sends; Shift+Enter adds a line.
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state});
+  const Composer({super.key, required this.core, required this.onSend, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state, this.large = false});
   final CoreClient core;
 
   /// App state, for voice and the "typing" reaction.
@@ -492,6 +573,9 @@ class Composer extends StatefulWidget {
   final TaskView? busyTask;
   final Run? run;
   final bool autofocus;
+
+  /// The big one on the home screen.
+  final bool large;
 
   @override
   State<Composer> createState() => _ComposerState();
@@ -535,14 +619,19 @@ class _ComposerState extends State<Composer> {
     final busy = widget.busyTask?.active ?? false;
     final voice = widget.state?.voice;
     final hearing = voice != null && (voice.listening || voice.busy);
-    return Container(
+    final focused = _focus.hasFocus || hearing;
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
       decoration: BoxDecoration(
         color: c.raised,
-        borderRadius: BorderRadius.circular(22),
-        border: Border.all(color: _focus.hasFocus ? c.accent.withValues(alpha: .6) : c.border),
-        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: .04), blurRadius: 12, offset: const Offset(0, 4))],
+        borderRadius: BorderRadius.circular(widget.large ? 22 : 18),
+        border: Border.all(color: hearing ? c.listen : focused ? c.accent.withValues(alpha: .7) : c.borderStrong, width: focused ? 1.5 : 1),
+        boxShadow: [
+          ...Shapes.float(c),
+          if (focused) BoxShadow(color: (hearing ? c.listen : c.accent).withValues(alpha: .14), blurRadius: 0, spreadRadius: 4),
+        ],
       ),
-      padding: const EdgeInsets.fromLTRB(18, 6, 8, 6),
+      padding: EdgeInsets.fromLTRB(widget.large ? 20 : 18, widget.large ? 10 : 6, 8, widget.large ? 10 : 6),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.end,
         children: [
@@ -570,6 +659,10 @@ class _ComposerState extends State<Composer> {
                   hintText: online ? (busy ? 'Compii is working — you can stop it any time' : widget.hint) : 'Waiting for Compii Core…',
                   hintStyle: context.type.bodyLarge?.copyWith(color: c.faint),
                   border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
+                  filled: false,
                   isDense: true,
                   contentPadding: const EdgeInsets.symmetric(vertical: 12),
                 ),
@@ -582,18 +675,18 @@ class _ComposerState extends State<Composer> {
             const SizedBox(width: 4),
           const SizedBox(width: 2),
           if (busy)
-            IconButton.filled(
+            _RoundButton(
               tooltip: 'Stop',
-              style: IconButton.styleFrom(backgroundColor: c.danger, foregroundColor: Colors.white),
+              color: c.danger,
               onPressed: () => widget.run?.call(() => widget.core.stop(widget.busyTask!.id)),
-              icon: const Icon(Icons.stop_rounded, size: 20),
+              child: const Glyph(G.stop, size: 16, color: Colors.white, duo: true, duoColor: Colors.white),
             )
           else
-            IconButton.filled(
+            _RoundButton(
               tooltip: 'Send (Enter)',
-              style: IconButton.styleFrom(backgroundColor: c.accent, foregroundColor: c.onAccent, disabledBackgroundColor: c.sunken),
+              color: c.accent,
               onPressed: online && _text.text.trim().isNotEmpty ? _send : null,
-              icon: const Icon(Icons.arrow_upward_rounded, size: 20),
+              child: Glyph(G.arrowUp, size: 18, color: c.onAccent, weight: 2.2),
             ),
         ],
       ),
@@ -601,11 +694,46 @@ class _ComposerState extends State<Composer> {
   }
 }
 
+/// The send / stop button on the composer.
+class _RoundButton extends StatelessWidget {
+  const _RoundButton({required this.tooltip, required this.color, required this.onPressed, required this.child});
+  final String tooltip;
+  final Color color;
+  final VoidCallback? onPressed;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final on = onPressed != null;
+    return Tooltip(
+      message: tooltip,
+      child: MouseRegion(
+        cursor: on ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        child: GestureDetector(
+          onTap: onPressed,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: on ? color : c.sunken,
+              shape: BoxShape.circle,
+              boxShadow: on ? [BoxShadow(color: color.withValues(alpha: .35), blurRadius: 12, offset: const Offset(0, 4))] : null,
+            ),
+            alignment: Alignment.center,
+            child: on ? child : Glyph(G.arrowUp, size: 18, color: c.faint, weight: 2.2),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 const suggestions = [
-  (Icons.receipt_long_outlined, 'Invoices to a spreadsheet', "Find last month's invoices in Downloads, put them in a spreadsheet and email it to me"),
-  (Icons.cleaning_services_outlined, 'Tidy my Downloads', 'Tidy my Downloads folder: sort files into folders by type'),
-  (Icons.summarize_outlined, 'Summarize a PDF', 'Summarize the newest PDF in my Downloads in five bullet points'),
-  (Icons.travel_explore_outlined, 'Research something', 'Research the three best budget laptops this month and save a comparison table'),
+  (G.receipt, 'Invoices → spreadsheet', 'Last month’s invoices from Downloads, totalled and emailed', "Find last month's invoices in Downloads, put them in a spreadsheet and email it to me"),
+  (G.broom, 'Tidy my Downloads', 'Sort every file into folders by type', 'Tidy my Downloads folder: sort files into folders by type'),
+  (G.doc, 'Summarize a PDF', 'The newest PDF in Downloads, in five bullets', 'Summarize the newest PDF in my Downloads in five bullet points'),
+  (G.search, 'Research something', 'Three best budget laptops, as a comparison table', 'Research the three best budget laptops this month and save a comparison table'),
 ];
 
 class _Home extends StatelessWidget {
@@ -616,7 +744,7 @@ class _Home extends StatelessWidget {
 
   String get _greeting {
     final h = DateTime.now().hour;
-    return h < 12 ? 'Good morning' : (h < 18 ? 'Good afternoon' : 'Good evening');
+    return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : (h < 18 ? 'Good afternoon' : 'Good evening');
   }
 
   Future<void> _start(String text) async {
@@ -631,48 +759,112 @@ class _Home extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
+    final mood = state.moodWith(core);
+    final jobs = core.ordered.where((t) => t.active).length;
+    final online = core.status == CoreStatus.online;
     return Center(
       child: SingleChildScrollView(
-        padding: const EdgeInsets.all(28),
+        padding: const EdgeInsets.fromLTRB(32, 0, 32, 40),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 680),
+          constraints: const BoxConstraints(maxWidth: 700),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              if (state.voice != null)
-                TalkableOrbling(voice: state.voice!, mood: state.moodWith(core), jobs: core.ordered.where((t) => t.active).length)
-              else
-                SizedBox.square(dimension: 150, child: Orbling(mood: moodOf(core), jobs: core.ordered.where((t) => t.active).length)),
-              const SizedBox(height: 8),
-              Text(_greeting, style: context.type.headlineMedium),
-              const SizedBox(height: 6),
-              Text(
-                state.voice?.canListen == true
-                    ? 'What should we get done? Type, or click me and just say it.'
-                    : 'What should we get done?',
-                style: context.type.bodyLarge?.copyWith(color: c.muted),
+              Aura(
+                size: 250,
+                color: switch (mood) {
+                  Mood.listening => c.listen,
+                  Mood.waiting => c.warning,
+                  Mood.problem || Mood.offline => c.danger,
+                  _ => c.accent,
+                },
+                child: state.voice != null
+                    ? TalkableOrbling(voice: state.voice!, mood: mood, jobs: jobs, size: 150)
+                    : SizedBox.square(dimension: 150, child: Orbling(mood: mood, jobs: jobs)),
               ),
-              const SizedBox(height: 24),
-              Composer(core: core, onSend: _start, state: state),
+              Text('$_greeting.', style: context.type.displaySmall, textAlign: TextAlign.center),
+              const SizedBox(height: 8),
+              Text(
+                state.voice?.canListen == true ? 'What should we get done? Type it, or click me and just say it.' : 'What should we get done?',
+                style: context.type.bodyLarge?.copyWith(color: c.muted),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 26),
+              Composer(core: core, onSend: _start, state: state, large: true),
+              const SizedBox(height: 22),
+              LayoutBuilder(
+                builder: (context, box) {
+                  final two = box.maxWidth >= 520;
+                  final w = two ? (box.maxWidth - 12) / 2 : box.maxWidth;
+                  return Wrap(
+                    spacing: 12,
+                    runSpacing: 12,
+                    children: [
+                      for (final (glyph, title, sub, prompt) in suggestions)
+                        SizedBox(width: w, child: _Suggestion(glyph: glyph, title: title, subtitle: sub, onTap: online ? () => _start(prompt) : null)),
+                    ],
+                  );
+                },
+              ),
               const SizedBox(height: 22),
               BriefCard(core: core, run: run),
-              const SizedBox(height: 18),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                alignment: WrapAlignment.center,
-                children: [
-                  for (final (icon, label, prompt) in suggestions)
-                    ActionChip(
-                      avatar: Icon(icon, size: 17, color: c.accent),
-                      label: Text(label),
-                      labelStyle: context.type.labelLarge?.copyWith(color: c.text),
-                      backgroundColor: c.raised,
-                      side: BorderSide(color: c.border),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                      onPressed: core.status == CoreStatus.online ? () => _start(prompt) : null,
-                    ),
-                ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Suggestion extends StatefulWidget {
+  const _Suggestion({required this.glyph, required this.title, required this.subtitle, this.onTap});
+  final GlyphData glyph;
+  final String title;
+  final String subtitle;
+  final VoidCallback? onTap;
+  @override
+  State<_Suggestion> createState() => _SuggestionState();
+}
+
+class _SuggestionState extends State<_Suggestion> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return MouseRegion(
+      cursor: widget.onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.all(14),
+          transform: Matrix4.translationValues(0, _hover ? -2 : 0, 0),
+          decoration: BoxDecoration(
+            color: c.raised,
+            borderRadius: Shapes.r16,
+            border: Border.all(color: _hover ? c.accent.withValues(alpha: .35) : c.border),
+            boxShadow: _hover ? Shapes.float(c) : Shapes.card(c),
+          ),
+          child: Row(
+            children: [
+              GlyphTile(glyph: widget.glyph, size: 38),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(widget.title, style: context.type.titleSmall),
+                    const SizedBox(height: 2),
+                    Text(widget.subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                  ],
+                ),
+              ),
+              AnimatedOpacity(
+                duration: const Duration(milliseconds: 140),
+                opacity: _hover ? 1 : 0,
+                child: Glyph(G.chevronRight, size: 16, color: c.accent),
               ),
             ],
           ),
@@ -692,21 +884,46 @@ class _Conversation extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
+    final waiting = task.pendingApproval != null;
+    final (String label, Color color) = waiting
+        ? ('Needs you', c.warning)
+        : switch (task.status) {
+            'running' => ('Working', c.accent),
+            'failed' => ('Problem', c.danger),
+            'stopped' => ('Stopped', c.faint),
+            _ => ('Done', c.success),
+          };
     return Column(
       children: [
         Container(
-          height: 56,
-          padding: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.fromLTRB(28, 4, 20, 12),
           decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
           child: Row(
             children: [
-              Expanded(child: Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleMedium)),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.headlineSmall),
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        Pill(label, color: color),
+                        if (task.fromRoutine) ...[
+                          const SizedBox(width: 6),
+                          Pill('Routine', color: c.accent, glyph: G.routine),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
+              ),
               if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
               if (task.active)
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),
                   onPressed: () => run(() => core.stop(task.id)),
-                  icon: const Icon(Icons.stop_rounded, size: 18),
+                  icon: const Glyph(G.stop, size: 16, duo: true),
                   label: const Text('Stop'),
                 ),
             ],
@@ -714,7 +931,7 @@ class _Conversation extends StatelessWidget {
         ),
         Expanded(child: ThreadView(task: task, core: core, run: run)),
         Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 22),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
             child: Composer(
@@ -732,7 +949,7 @@ class _Conversation extends StatelessWidget {
   }
 }
 
-/// Right panel (Claude Cowork-style): the live plan and every file touched.
+/// Right panel: the live plan, every file touched, and the action count.
 class ProgressPanel extends StatelessWidget {
   const ProgressPanel({super.key, required this.task, required this.core, required this.run});
   final TaskView task;
@@ -746,40 +963,83 @@ class ProgressPanel extends StatelessWidget {
     final plan = turns.reversed.map((t) => t.plan).whereType<List<Map<String, dynamic>>>().firstOrNull;
     final files = [for (final t in turns) ...t.files];
     final steps = [for (final t in turns) ...t.finished];
-    Widget heading(String s) => Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(s, style: context.type.labelMedium?.copyWith(fontWeight: FontWeight.w600)),
+    final failed = steps.where((s) => s['ok'] != true).length;
+    Widget heading(String s, [String? count]) => Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          Text(s, style: context.type.labelSmall),
+          if (count != null) ...[
+            const SizedBox(width: 6),
+            Text(count, style: context.type.labelSmall?.copyWith(color: c.muted)),
+          ],
+        ],
+      ),
     );
+    final done = plan?.where((s) => s['status'] == 'done').length ?? 0;
     return Container(
       width: 320,
       decoration: BoxDecoration(color: c.surface, border: Border(left: BorderSide(color: c.border))),
       child: ListView(
-        padding: const EdgeInsets.all(20),
+        padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
         children: [
-          Text('Progress', style: context.type.titleMedium),
-          const SizedBox(height: 16),
+          Text('Progress', style: context.type.titleLarge),
+          const SizedBox(height: 14),
+          if (plan != null && plan.isNotEmpty) ...[
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(value: done / plan.length, minHeight: 5),
+            ),
+            const SizedBox(height: 6),
+            Text('$done of ${plan.length} steps', style: context.type.labelMedium),
+            const SizedBox(height: 18),
+          ],
           heading('PLAN'),
           if (plan == null)
-            Text('Compii shows a plan here for anything with several steps.', style: context.type.bodySmall)
+            Text('For anything with several steps, Compii lays out a plan here and ticks it off as it goes.', style: context.type.bodySmall)
           else
             PlanList(steps: plan),
-          const SizedBox(height: 22),
-          heading('FILES'),
+          const SizedBox(height: 24),
+          heading('FILES', files.isEmpty ? null : '${files.length}'),
           if (files.isEmpty)
-            Text('Files Compii creates or changes appear here.', style: context.type.bodySmall)
+            Text('Files Compii creates or changes show up here, ready to open.', style: context.type.bodySmall)
           else
             for (final f in files)
               Padding(padding: const EdgeInsets.only(bottom: 8), child: FileChip(file: f, core: core, run: run)),
-          const SizedBox(height: 22),
+          const SizedBox(height: 24),
           heading('ACTIVITY'),
-          Text(
-            steps.isEmpty
-                ? 'Nothing done yet.'
-                : '${steps.length} ${steps.length == 1 ? 'action' : 'actions'} · ${steps.where((s) => s['ok'] != true).length} failed · every one is in the action journal',
-            style: context.type.bodySmall,
+          Panel(
+            padding: const EdgeInsets.all(14),
+            child: Row(
+              children: [
+                _Stat(value: '${steps.length}', label: steps.length == 1 ? 'action' : 'actions'),
+                Container(width: 1, height: 28, color: c.border, margin: const EdgeInsets.symmetric(horizontal: 14)),
+                _Stat(value: '$failed', label: 'failed', color: failed > 0 ? c.danger : null),
+                const Spacer(),
+                Tooltip(
+                  message: 'Every action is in the journal and the tamper-evident activity record (Safety).',
+                  child: Glyph(G.shieldCheck, size: 18, color: c.success, duo: true),
+                ),
+              ],
+            ),
           ),
         ],
       ),
     );
   }
+}
+
+class _Stat extends StatelessWidget {
+  const _Stat({required this.value, required this.label, this.color});
+  final String value;
+  final String label;
+  final Color? color;
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(value, style: context.type.titleLarge?.copyWith(color: color)),
+      Text(label, style: context.type.labelMedium),
+    ],
+  );
 }

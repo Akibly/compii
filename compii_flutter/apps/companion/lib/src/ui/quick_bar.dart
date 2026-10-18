@@ -9,6 +9,7 @@ import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
 import 'voice.dart';
+import 'glyphs.dart';
 
 const _barSize = Size(720, 132);
 const _openSize = Size(720, 520);
@@ -76,7 +77,7 @@ class QuickMode extends ChangeNotifier {
     if (hide) await windowManager.hide();
     await windowManager.setAlwaysOnTop(false);
     await windowManager.setSkipTaskbar(false);
-    await windowManager.setTitleBarStyle(TitleBarStyle.normal);
+    await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
     if (_saved != null) await windowManager.setBounds(_saved!);
     if (_wasMaximized) await windowManager.maximize();
     if (openTask && t != null) state.open(t);
@@ -172,7 +173,7 @@ class QuickBar extends StatelessWidget {
                         const Spacer(),
                         TextButton.icon(
                           onPressed: () => quick.close(openTask: true),
-                          icon: const Icon(Icons.open_in_full, size: 16),
+                          icon: const Glyph(G.pip, size: 16),
                           label: const Text('Open in Compii'),
                         ),
                       ],

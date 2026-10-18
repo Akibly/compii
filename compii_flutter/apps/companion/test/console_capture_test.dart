@@ -103,9 +103,9 @@ CoreClient sampleCore(Sample state) {
 Future<void> _loadFonts(WidgetTester tester) async {
   final icons = FontLoader('MaterialIcons')..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
   await tester.runAsync(icons.load);
-  for (final family in ['Segoe UI Variable Text', 'Roboto']) {
+  for (final family in ['Segoe UI Variable Text', 'Segoe UI Variable Display', 'Roboto']) {
     final loader = FontLoader(family);
-    for (final f in ['segoeui.ttf']) {
+    for (final f in ['SegUIVar.ttf']) {
       final file = File('C:/Windows/Fonts/$f');
       if (file.existsSync()) loader.addFont(Future.value(ByteData.sublistView(file.readAsBytesSync())));
     }
@@ -127,6 +127,12 @@ void main() {
       ('home-listening', const Size(1440, 900), Sample.empty, Brightness.light, 'listening'),
       ('conversation-speaking-dark', const Size(1440, 900), Sample.done, Brightness.dark, 'speaking'),
       ('settings-voice', const Size(1440, 900), Sample.empty, Brightness.light, 'settings'),
+      ('home-dark', const Size(1440, 900), Sample.empty, Brightness.dark, 'workspace'),
+      ('safety', const Size(1440, 900), Sample.empty, Brightness.light, 'safety'),
+      ('skills-dark', const Size(1440, 900), Sample.empty, Brightness.dark, 'skills'),
+      ('routines', const Size(1440, 900), Sample.empty, Brightness.light, 'routines'),
+      ('updates-dark', const Size(1440, 900), Sample.empty, Brightness.dark, 'updates'),
+      ('memory', const Size(1440, 900), Sample.empty, Brightness.light, 'memory'),
     ];
     for (final (name, size, sample, brightness, surface) in shots) {
       tester.view.physicalSize = size;
@@ -154,6 +160,11 @@ void main() {
       }
       if (surface == 'speaking') voice.speaking = true;
       if (surface == 'settings') state.go(Section.settings);
+      if (surface == 'safety') state.go(Section.safety);
+      if (surface == 'skills') state.go(Section.skills);
+      if (surface == 'routines') state.go(Section.routines);
+      if (surface == 'updates') state.go(Section.updates);
+      if (surface == 'memory') state.go(Section.memory);
       final quick = QuickMode(state)
         ..active = true
         ..task = 't1';
@@ -180,7 +191,7 @@ void main() {
         final boundary = key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
         final image = (await tester.runAsync(boundary.toImage))!;
         final bytes = await tester.runAsync(() => image.toByteData(format: ui.ImageByteFormat.png));
-        final out = Directory('../../../docs/compii/build-previews/v3')..createSync(recursive: true);
+        final out = Directory('../../../docs/compii/build-previews/v4')..createSync(recursive: true);
         await tester.runAsync(() => File('${out.path}/$name.png').writeAsBytes(bytes!.buffer.asUint8List()));
         image.dispose();
       }

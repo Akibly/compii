@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'tokens.dart';
+import 'glyphs.dart';
 
 /// App side of Compii's free, local voice: push-to-talk with a live
 /// transcript, and knowing when Compii is speaking so it can be interrupted.
@@ -217,7 +218,7 @@ class _MicButtonState extends State<MicButton> {
         return IconButton(
           tooltip: 'Set up free voice input',
           onPressed: widget.onSetup,
-          icon: Icon(Icons.mic_none, size: 20, color: c.faint),
+          icon: Glyph(G.mic, size: 20, color: c.faint),
         );
       }
       return Tooltip(
@@ -240,13 +241,17 @@ class _MicButtonState extends State<MicButton> {
             duration: const Duration(milliseconds: 150),
             width: 40,
             height: 40,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: v.listening ? const Color(0xFF16B8BF) : Colors.transparent,
+              color: v.listening ? c.listen : Colors.transparent,
+              boxShadow: v.listening ? [BoxShadow(color: c.listen.withValues(alpha: .4), blurRadius: 12)] : null,
             ),
-            child: Icon(
-              v.listening ? Icons.mic : Icons.mic_none,
-              size: 20,
+            child: Glyph(
+              v.listening ? G.mic : G.mic,
+              size: 19,
+              duo: v.listening,
+              duoColor: Colors.white,
               color: v.listening ? Colors.white : c.muted,
             ),
           ),

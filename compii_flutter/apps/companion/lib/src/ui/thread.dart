@@ -4,6 +4,8 @@ import '../console/character.dart';
 import '../console/core_client.dart';
 import 'tokens.dart';
 import 'trust.dart';
+import 'chrome.dart';
+import 'glyphs.dart';
 
 /// One exchange in a conversation: what the user asked and everything Compii
 /// did in response.
@@ -135,7 +137,7 @@ class _UserBubble extends StatelessWidget {
           color: context.c.userBubble,
           borderRadius: BorderRadius.circular(18).copyWith(bottomRight: const Radius.circular(6)),
         ),
-        child: SelectableText(text, style: context.type.bodyLarge),
+        child: SelectableText(text, style: context.type.bodyLarge?.copyWith(color: context.c.onBubble)),
       ),
     ),
   );
@@ -249,8 +251,8 @@ class _StepLedgerState extends State<StepLedger> {
                 if (t.active && t.pending == null)
                   SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, color: c.accent))
                 else
-                  Icon(
-                    t.pending != null ? Icons.front_hand_outlined : (failed > 0 ? Icons.error_outline : Icons.check_circle_outline),
+                  Glyph(
+                    t.pending != null ? G.hand : (failed > 0 ? G.alert : G.checkCircle),
                     size: 16,
                     color: t.pending != null ? c.warning : (failed > 0 ? c.danger : c.success),
                   ),
@@ -262,7 +264,7 @@ class _StepLedgerState extends State<StepLedger> {
                     style: context.type.bodyMedium?.copyWith(color: c.muted, fontWeight: FontWeight.w500),
                   ),
                 ),
-                if (n > 0) Icon(_open ? Icons.expand_less : Icons.expand_more, size: 18, color: c.faint),
+                if (n > 0) Glyph(_open ? G.collapse : G.expand, size: 18, color: c.faint),
               ],
             ),
           ),
@@ -308,7 +310,7 @@ class _StepRow extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 2),
-            child: Icon(ok ? Icons.check : Icons.close, size: 15, color: ok ? c.success : c.danger),
+            child: Glyph(ok ? G.check : G.close, size: 15, color: ok ? c.success : c.danger),
           ),
           const SizedBox(width: 10),
           Expanded(
@@ -396,7 +398,7 @@ class ApprovalCard extends StatelessWidget {
     final approve = FilledButton.icon(
       style: FilledButton.styleFrom(backgroundColor: destructive ? c.danger : c.accent),
       onPressed: () => run(() => core.decide(id, approved: true)),
-      icon: Icon(destructive ? Icons.warning_amber_rounded : Icons.check, size: 18),
+      icon: Glyph(destructive ? G.warning : G.check, size: 18),
       label: Text(destructive ? 'Yes, ${kind == 'spend' ? 'pay' : 'delete'}' : 'Approve'),
     );
     final decline = OutlinedButton(
@@ -416,33 +418,43 @@ class ApprovalCard extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: c.raised,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: fg.withValues(alpha: .55), width: destructive ? 2 : 1.2),
+        borderRadius: Shapes.r16,
+        border: Border.all(color: fg.withValues(alpha: destructive ? .7 : .4), width: destructive ? 1.8 : 1.2),
+        boxShadow: [
+          ...Shapes.float(c),
+          BoxShadow(color: fg.withValues(alpha: .10), blurRadius: 0, spreadRadius: 4),
+        ],
       ),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Container(
-            color: bg,
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            decoration: BoxDecoration(
+              gradient: LinearGradient(colors: [bg, bg.withValues(alpha: 0)], begin: Alignment.topLeft, end: Alignment.bottomRight),
+            ),
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
             child: Row(
               children: [
-                Icon(switch (kind) {
-                  'send' => Icons.send_outlined,
-                  'delete' => Icons.delete_outline,
-                  'spend' => Icons.payments_outlined,
-                  _ => Icons.edit_outlined,
-                }, size: 18, color: fg),
-                const SizedBox(width: 8),
-                Text(_tierTitle(kind), style: context.type.titleSmall?.copyWith(color: fg)),
+                GlyphTile(
+                  glyph: switch (kind) {
+                    'send' => G.send,
+                    'delete' => G.trash,
+                    'spend' => G.money,
+                    _ => G.edit,
+                  },
+                  size: 30,
+                  color: fg,
+                ),
+                const SizedBox(width: 10),
+                Text(_tierTitle(kind), style: context.type.titleMedium?.copyWith(color: fg)),
                 const Spacer(),
-                Text('Needs you', style: context.type.labelMedium?.copyWith(color: fg)),
+                Pill('Needs your okay', color: c.warning, glyph: G.hand),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+            padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -593,7 +605,7 @@ class ResultSummary extends StatelessWidget {
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(result)));
               }
             }),
-            icon: const Icon(Icons.undo, size: 16),
+            icon: const Glyph(G.undo, size: 16),
             label: const Text('Undo last change'),
           ),
         ],
@@ -615,12 +627,12 @@ class FileChip extends StatelessWidget {
     final name = path.split(RegExp(r'[\\/]')).last;
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
     final icon = switch (ext) {
-      'xlsx' || 'xls' || 'csv' => Icons.table_chart_outlined,
-      'pdf' => Icons.picture_as_pdf_outlined,
-      'eml' => Icons.mail_outline,
-      'png' || 'jpg' || 'jpeg' => Icons.image_outlined,
-      '' => Icons.folder_outlined,
-      _ => Icons.description_outlined,
+      'xlsx' || 'xls' || 'csv' => G.sheet,
+      'pdf' => G.doc,
+      'eml' => G.mail,
+      'png' || 'jpg' || 'jpeg' => G.image,
+      '' => G.folder,
+      _ => G.doc,
     };
     return Container(
       decoration: BoxDecoration(
@@ -632,7 +644,7 @@ class FileChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 20, color: c.accent),
+          Glyph(icon, size: 20, color: c.accent),
           const SizedBox(width: 8),
           Flexible(
             child: ConstrainedBox(
@@ -651,13 +663,13 @@ class FileChip extends StatelessWidget {
             tooltip: 'Open',
             visualDensity: VisualDensity.compact,
             onPressed: () => run(() => core.openFile(path)),
-            icon: const Icon(Icons.open_in_new, size: 17),
+            icon: const Glyph(G.external, size: 17),
           ),
           IconButton(
             tooltip: 'Show in folder',
             visualDensity: VisualDensity.compact,
             onPressed: () => run(() => core.revealFile(path)),
-            icon: const Icon(Icons.folder_open_outlined, size: 17),
+            icon: const Glyph(G.folder, size: 17),
           ),
         ],
       ),
@@ -717,15 +729,22 @@ class _PlanMark extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: switch (status) {
-          'done' => c.success,
-          'active' => c.accent,
+          'done' => c.success.withValues(alpha: c.dark ? .2 : .14),
+          'active' => c.accent.withValues(alpha: c.dark ? .25 : .14),
           _ => Colors.transparent,
         },
-        border: status == 'pending' || status == 'skipped' ? Border.all(color: c.border, width: 1.5) : null,
+        border: Border.all(
+          color: switch (status) {
+            'done' => c.success.withValues(alpha: .5),
+            'active' => c.accent,
+            _ => c.borderStrong,
+          },
+          width: 1.5,
+        ),
       ),
       child: switch (status) {
-        'done' => Icon(Icons.check, size: 13, color: c.raised),
-        'active' => SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.8, color: c.onAccent)),
+        'done' => Glyph(G.check, size: 12, color: c.success, weight: 2.4),
+        'active' => Container(width: 8, height: 8, decoration: BoxDecoration(color: c.accent, shape: BoxShape.circle)),
         _ => Text('$number', style: TextStyle(fontSize: 11, color: c.faint, fontWeight: FontWeight.w600)),
       },
     );
