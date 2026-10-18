@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from . import guard
 from .journal import Entry, Journal
 from .policy import ActionKind, Policy
 from .tools import ToolError, Toolbox
@@ -106,6 +107,7 @@ class Task:
     runner: asyncio.Task[None] | None = None
     # Full conversation with the model, kept so follow-ups have context.
     messages: list[dict[str, Any]] = field(default_factory=list)
+    warned_injection: bool = False
 
 
 class Stopped(Exception):
@@ -232,6 +234,12 @@ class Agent:
         except (KeyError, TypeError) as e:
             return result(f"Invalid input: {e}", True)
 
+        blocked = guard.blocked_reason(call.name, call.input)
+        if blocked:
+            self.journal.record(Entry(task.id, call.name, kind.value, call.input, False, f"Blocked: {blocked}"))
+            await self.emit(task, "action_blocked", tool=call.name, label=label, reason=blocked)
+            return result(f"Blocked by Compii's safety rules: {blocked} Tell the user and carry on without it.", True)
+
         if self.policy.needs_approval(kind, task.approved_kinds):
             approval_id = uuid.uuid4().hex[:10]
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
@@ -271,7 +279,17 @@ class Agent:
             await self.emit(task, "plan", steps=out.plan)
         for path, action in out.files:
             await self.emit(task, "file", path=path, action=action)
-        return result(out.text)
+        text = out.text
+        if call.name in guard.UNTRUSTED_TOOLS:
+            suspicious = guard.looks_like_injection(text)
+            if suspicious and not task.warned_injection:
+                task.warned_injection = True
+                await self.emit(task, "injection_warning", tool=call.name, phrase=suspicious)
+            text = guard.wrap_untrusted(call.name, text)
+        text, hidden = guard.redact(text)
+        if hidden:
+            await self.emit(task, "redacted", tool=call.name, count=len(hidden), kinds=sorted(set(hidden)))
+        return result(text)
 
     async def _finish(self, task: Task, status: str, text: str) -> None:
         task.status = status
