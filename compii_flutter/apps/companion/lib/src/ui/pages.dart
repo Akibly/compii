@@ -4,6 +4,7 @@ import '../console/core_client.dart';
 import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'trust.dart';
 import 'voice.dart';
 
 class _Page extends StatelessWidget {
@@ -173,6 +174,13 @@ class _SettingsPageState extends State<SettingsPage> {
       title: 'Settings',
       subtitle: 'How much Compii may do on its own, and how it looks.',
       children: [
+        Text('Brain', style: context.type.titleLarge),
+        const SizedBox(height: 4),
+        Text('Which AI does the thinking. Free local models run on this PC; cloud ones need your own key.',
+            style: context.type.bodySmall),
+        const SizedBox(height: 12),
+        BrainCard(run: widget.run),
+        const SizedBox(height: 28),
         Text('Autonomy', style: context.type.titleLarge),
         const SizedBox(height: 4),
         Text('For each kind of action, choose whether Compii asks first. Every action is recorded either way.', style: context.type.bodySmall),

@@ -58,3 +58,10 @@ approvals aloud, mascot with moods, phone companion, local-first storage, localh
 
 Deliberately not taken: cloud VMs (Compii is local-first), commerce/checkout connectors (Compii
 never pays), human call centres, video avatar (the Orbling is the character).
+
+## Status (2026-10-19)
+
+All ten are built and tested: Core in `guard.py`, `providers.py`, `keys.py`, `policy.py` (Gate, rules),
+`audit.py`, `skills.py`, `walkthrough.py`; the app in `lib/src/ui/trust.dart` (Settings → Brain, Safety page,
+Skills page, lockdown and walkthrough bars, "Always allow" and "Save as skill") plus the Ctrl+Alt+Shift+S kill
+switch. Not yet tried with a real local model: Ollama isn't installed on this PC.

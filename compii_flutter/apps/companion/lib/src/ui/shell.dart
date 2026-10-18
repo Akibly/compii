@@ -7,9 +7,10 @@ import 'pages.dart';
 import 'proactive.dart';
 import 'thread.dart';
 import 'tokens.dart';
+import 'trust.dart';
 import 'voice.dart';
 
-enum Section { home, chat, updates, routines, memory, settings }
+enum Section { home, chat, updates, routines, skills, memory, safety, settings }
 
 /// App-wide UI state shared by the workspace and the quick bar.
 class AppState extends ChangeNotifier {
@@ -132,10 +133,14 @@ class Workspace extends StatelessWidget {
                     child: Column(
                       children: [
                         _StatusLine(core: core, state: state),
+                        LockdownBanner(run: _run),
+                        const WalkthroughBar(),
                         Expanded(
                           child: switch (state.section) {
                             Section.memory => MemoryPage(core: core, run: _run),
                             Section.routines => RoutinesPage(core: core, run: _run),
+                            Section.skills => SkillsPage(run: _run, onOpenTask: state.open),
+                            Section.safety => SafetyPage(run: _run),
                             Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
                             Section.settings => SettingsPage(core: core, state: state, run: _run),
                             Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
@@ -260,10 +265,22 @@ class _Sidebar extends StatelessWidget {
                   onTap: () => state.go(Section.routines),
                 ),
                 _NavButton(
+                  icon: Icons.school_outlined,
+                  label: 'Skills',
+                  selected: state.section == Section.skills,
+                  onTap: () => state.go(Section.skills),
+                ),
+                _NavButton(
                   icon: Icons.auto_awesome_outlined,
                   label: 'Memory',
                   selected: state.section == Section.memory,
                   onTap: () => state.go(Section.memory),
+                ),
+                _NavButton(
+                  icon: Icons.shield_outlined,
+                  label: 'Safety',
+                  selected: state.section == Section.safety,
+                  onTap: () => state.go(Section.safety),
                 ),
                 _NavButton(
                   icon: Icons.tune,
@@ -684,6 +701,7 @@ class _Conversation extends StatelessWidget {
           child: Row(
             children: [
               Expanded(child: Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleMedium)),
+              if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
               if (task.active)
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),

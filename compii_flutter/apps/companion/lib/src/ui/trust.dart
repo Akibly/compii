@@ -1,0 +1,1061 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import 'package:flutter/material.dart';
+
+import '../console/core_client.dart';
+import 'thread.dart' show Run;
+import 'tokens.dart';
+
+/// Calls to Compii Core on this PC for the brain, safety and skills screens.
+/// Uses this PC's token, so key changes, "Always allow" and lifting the kill
+/// switch work only here, never from a phone.
+class TrustApi {
+  static final HttpClient _http = HttpClient()..connectionTimeout = const Duration(seconds: 3);
+
+  static Future<dynamic> call(String method, String path, [Object? body]) async {
+    final String token;
+    final HttpClientRequest req;
+    try {
+      token = (await CoreClient.tokenFile().readAsString()).trim();
+      req = await _http.openUrl(method, Uri.parse('http://127.0.0.1:8765$path'));
+    } on IOException {
+      throw CoreError('Compii Core isn’t reachable right now. It reconnects by itself once Core is running.');
+    }
+    req.headers.set('X-Compii-Token', token);
+    if (body != null) {
+      req.headers.contentType = ContentType.json;
+      req.write(jsonEncode(body));
+    }
+    final res = await req.close();
+    final text = await res.transform(utf8.decoder).join();
+    if (res.statusCode >= 400) {
+      String detail = 'Compii Core couldn’t do that (error ${res.statusCode}).';
+      try {
+        final d = jsonDecode(text);
+        if (d is Map && d['detail'] is String) detail = d['detail'] as String;
+      } catch (_) {}
+      throw CoreError(detail);
+    }
+    return text.isEmpty ? null : jsonDecode(text);
+  }
+
+  static Future<Map<String, dynamic>> map(String method, String path, [Object? body]) async =>
+      Map<String, dynamic>.from(await call(method, path, body) as Map);
+
+  /// Kill switch: stop everything now; every action asks until lifted on this PC.
+  static Future<void> kill() => call('POST', '/killswitch');
+  static Future<void> lift() => call('DELETE', '/killswitch');
+  static Future<void> alwaysAllow(String approvalId) =>
+      call('POST', '/approvals/$approvalId', {'approved': true, 'always': true});
+  static Future<Map<String, dynamic>> saveSkill(String taskId, [String name = '']) =>
+      map('POST', '/tasks/$taskId/skill', {'name': name});
+}
+
+// ---- shared bits ----------------------------------------------------------------
+
+class TrustPage extends StatelessWidget {
+  const TrustPage({super.key, required this.title, required this.subtitle, required this.children});
+  final String title;
+  final String subtitle;
+  final List<Widget> children;
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    padding: const EdgeInsets.symmetric(horizontal: 32, vertical: 28),
+    children: [
+      Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 720),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(title, style: context.type.headlineMedium),
+              const SizedBox(height: 6),
+              Text(subtitle, style: context.type.bodyLarge?.copyWith(color: context.c.muted)),
+              const SizedBox(height: 24),
+              ...children,
+            ],
+          ),
+        ),
+      ),
+    ],
+  );
+}
+
+class TrustCard extends StatelessWidget {
+  const TrustCard({super.key, required this.child, this.padding = const EdgeInsets.all(16)});
+  final Widget child;
+  final EdgeInsets padding;
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: padding,
+    decoration: BoxDecoration(
+      color: context.c.raised,
+      border: Border.all(color: context.c.border),
+      borderRadius: BorderRadius.circular(14),
+    ),
+    child: child,
+  );
+}
+
+Widget _heading(BuildContext context, String title, String sub) => Padding(
+  padding: const EdgeInsets.only(top: 8, bottom: 12),
+  child: Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(title, style: context.type.titleLarge),
+      const SizedBox(height: 4),
+      Text(sub, style: context.type.bodySmall),
+    ],
+  ),
+);
+
+Widget _chip(BuildContext context, String text, Color fg, Color bg, {IconData? icon}) => Container(
+  padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+  decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
+  child: Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      if (icon != null) ...[Icon(icon, size: 14, color: fg), const SizedBox(width: 4)],
+      Text(text, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w600)),
+    ],
+  ),
+);
+
+String _ago(num? at) {
+  if (at == null) return '';
+  final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch((at * 1000).round()));
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inHours < 1) return '${d.inMinutes} min ago';
+  if (d.inDays < 1) return '${d.inHours} h ago';
+  return '${d.inDays} d ago';
+}
+
+// ---- Brain: which AI thinks, and its keys ------------------------------------------
+
+/// Settings card: Claude, a free local model (Ollama, LM Studio) or another
+/// OpenAI-compatible service; write-only keys; a test; an opt-in backup.
+class BrainCard extends StatefulWidget {
+  const BrainCard({super.key, required this.run});
+  final Run run;
+  @override
+  State<BrainCard> createState() => _BrainCardState();
+}
+
+class _BrainCardState extends State<BrainCard> {
+  Map<String, dynamic>? _v;
+  String _provider = 'claude';
+  final _model = TextEditingController();
+  final _url = TextEditingController();
+  final _key = TextEditingController();
+  bool _fallback = false;
+  String _fallbackProvider = 'claude';
+  List<String> _local = [];
+  bool? _localRunning;
+  bool _testing = false;
+  bool _dirty = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _model.dispose();
+    _url.dispose();
+    _key.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() => widget.run(() async {
+    final v = await TrustApi.map('GET', '/brain');
+    if (!mounted) return;
+    _apply(v);
+    await _findLocal();
+  });
+
+  void _apply(Map<String, dynamic> v) {
+    final s = Map<String, dynamic>.from(v['settings'] as Map);
+    final p = Map<String, dynamic>.from(s['primary'] as Map);
+    setState(() {
+      _v = v;
+      _provider = p['provider'] as String? ?? 'claude';
+      _model.text = p['model'] as String? ?? '';
+      _url.text = p['base_url'] as String? ?? '';
+      _fallback = s['fallback_enabled'] == true;
+      final fb = s['fallback'] as Map?;
+      if (fb != null) _fallbackProvider = fb['provider'] as String? ?? 'claude';
+      _dirty = false;
+    });
+  }
+
+  Map<String, dynamic> get _presets => Map<String, dynamic>.from(_v?['presets'] as Map? ?? {});
+  Map<String, dynamic> _preset(String p) => Map<String, dynamic>.from(_presets[p] as Map? ?? {});
+  String get _keyName => switch (_provider) {
+    'claude' => 'anthropic',
+    'openrouter' || 'openai' || 'custom' => _provider,
+    _ => '',
+  };
+  bool get _hasKey => _keyName.isNotEmpty && (_v?['keys'] as Map?)?[_keyName] == true;
+  bool get _isLocal => _preset(_provider)['where'] == 'local';
+
+  Future<void> _findLocal() async {
+    if (!_isLocal) return;
+    final url = _url.text.isEmpty ? '${_preset(_provider)['base_url']}' : _url.text;
+    try {
+      final r = await TrustApi.map('GET', '/brain/models?base_url=${Uri.encodeQueryComponent(url)}');
+      if (!mounted) return;
+      setState(() {
+        _local = [for (final m in r['models'] as List) '$m'];
+        _localRunning = r['running'] == true;
+      });
+    } catch (_) {
+      if (mounted) setState(() => _localRunning = false);
+    }
+  }
+
+  Future<void> _save() => widget.run(() async {
+    final v = await TrustApi.map('PUT', '/brain', {
+      'primary': {'provider': _provider, 'model': _model.text.trim(), 'base_url': _url.text.trim()},
+      'fallback': _fallback ? {'provider': _fallbackProvider, 'model': '', 'base_url': ''} : null,
+      'fallback_enabled': _fallback,
+    });
+    if (mounted) _apply(v);
+  });
+
+  Future<void> _saveKey() => widget.run(() async {
+    final value = _key.text.trim();
+    if (value.isEmpty) return;
+    final v = await TrustApi.map('PUT', '/keys/$_keyName', {'value': value});
+    _key.clear(); // never kept in the app
+    if (mounted) _apply(v);
+  });
+
+  Future<void> _removeKey() => widget.run(() async {
+    final v = await TrustApi.map('DELETE', '/keys/$_keyName');
+    if (mounted) _apply(v);
+  });
+
+  Future<void> _test() async {
+    setState(() => _testing = true);
+    await widget.run(() async {
+      if (_dirty) await _save();
+      final v = await TrustApi.map('POST', '/brain/test');
+      if (mounted) _apply(v);
+    });
+    if (mounted) setState(() => _testing = false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final v = _v;
+    if (v == null) {
+      return const TrustCard(child: Center(child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator())));
+    }
+    final probe = v['probe'] as Map?;
+    final problem = v['problem'] as String?;
+    final fixed = v['fixed'] == true;
+    final needsUrl = _provider == 'custom' || _provider == 'lmstudio';
+
+    return TrustCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          if (fixed)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Text('Core is running in rehearsal mode, so changes here take effect next time it starts normally.',
+                  style: context.type.bodySmall?.copyWith(color: c.warning)),
+            ),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final p in _presets.keys)
+                ChoiceChip(
+                  label: Text('${_preset(p)['label']}'),
+                  avatar: Icon(_preset(p)['where'] == 'local' ? Icons.computer : Icons.cloud_outlined, size: 16),
+                  selected: _provider == p,
+                  onSelected: (_) {
+                    setState(() {
+                      _provider = p;
+                      _model.text = '${_preset(p)['model']}';
+                      _url.text = '';
+                      _local = [];
+                      _localRunning = null;
+                      _dirty = true;
+                    });
+                    _findLocal();
+                  },
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          if (_isLocal) ...[
+            Row(
+              children: [
+                Icon(Icons.savings_outlined, size: 18, color: c.success),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Free and private: the AI runs on this PC. Smaller local models are slower and less capable than Claude, '
+                    'so pick one that can use tools (Test checks this).',
+                    style: context.type.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            if (_localRunning == false)
+              Text(
+                _provider == 'ollama'
+                    ? 'Ollama isn’t running on this PC. Install it from ollama.com, then run “ollama pull qwen3:8b” and come back.'
+                    : 'LM Studio’s server isn’t running. Start it from LM Studio’s Developer tab.',
+                style: context.type.bodySmall?.copyWith(color: c.warning),
+              ),
+            if (_local.isNotEmpty) ...[
+              Text('Installed models', style: context.type.labelMedium),
+              const SizedBox(height: 6),
+              Wrap(spacing: 6, runSpacing: 6, children: [
+                for (final m in _local)
+                  ChoiceChip(
+                    label: Text(m),
+                    selected: _model.text == m,
+                    onSelected: (_) => setState(() {
+                      _model.text = m;
+                      _dirty = true;
+                    }),
+                  ),
+              ]),
+              const SizedBox(height: 10),
+            ],
+          ],
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _model,
+                  onChanged: (_) => setState(() => _dirty = true),
+                  decoration: const InputDecoration(labelText: 'Model', isDense: true),
+                ),
+              ),
+              if (needsUrl) ...[
+                const SizedBox(width: 10),
+                Expanded(
+                  child: TextField(
+                    controller: _url,
+                    onChanged: (_) => setState(() => _dirty = true),
+                    decoration: InputDecoration(
+                      labelText: 'Server address',
+                      hintText: '${_preset(_provider)['base_url']}'.isEmpty ? 'https://…/v1' : '${_preset(_provider)['base_url']}',
+                      isDense: true,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          if (_keyName.isNotEmpty) ...[
+            const SizedBox(height: 14),
+            if (_hasKey)
+              Row(
+                children: [
+                  _chip(context, 'Key saved in Windows Credential Manager', c.success, c.sunken, icon: Icons.lock_outline),
+                  const Spacer(),
+                  TextButton(onPressed: _removeKey, child: const Text('Remove key')),
+                ],
+              ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _key,
+                    obscureText: true,
+                    enableSuggestions: false,
+                    autocorrect: false,
+                    decoration: InputDecoration(
+                      labelText: _hasKey ? 'Replace key' : 'API key',
+                      helperText: 'Stored only in Windows Credential Manager. Compii never shows it again.',
+                      isDense: true,
+                    ),
+                    onSubmitted: (_) => _saveKey(),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                FilledButton.tonal(onPressed: _saveKey, child: const Text('Save key')),
+              ],
+            ),
+          ],
+          const SizedBox(height: 14),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: _fallback,
+            onChanged: (on) => setState(() {
+              _fallback = on;
+              _dirty = true;
+            }),
+            title: const Text('Use a backup AI if this one fails'),
+            subtitle: Text(_fallback
+                ? 'Backup: ${_preset(_fallbackProvider)['label']}. Compii never switches to a cloud AI unless you turn this on.'
+                : 'Off: if the AI fails, Compii tells you instead of switching.'),
+          ),
+          if (_fallback)
+            Wrap(spacing: 6, children: [
+              for (final p in _presets.keys.where((p) => p != _provider))
+                ChoiceChip(
+                  label: Text('${_preset(p)['label']}'),
+                  selected: _fallbackProvider == p,
+                  onSelected: (_) => setState(() {
+                    _fallbackProvider = p;
+                    _dirty = true;
+                  }),
+                ),
+            ]),
+          const SizedBox(height: 12),
+          if (problem != null && !fixed)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text(problem, style: context.type.bodySmall?.copyWith(color: c.danger)),
+            ),
+          if (probe != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Row(
+                children: [
+                  if (probe['ok'] != true)
+                    _chip(context, 'Didn’t answer', c.danger, c.dangerSoft, icon: Icons.error_outline)
+                  else if (probe['tools'] == true)
+                    _chip(context, 'Works · can do tasks · ${probe['ms']} ms', c.success, c.sunken, icon: Icons.check_circle_outline)
+                  else
+                    _chip(context, 'Chat only · can’t use tools', c.warning, c.warningSoft, icon: Icons.info_outline),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('${probe['error'] ?? probe['note'] ?? ''}',
+                        maxLines: 2, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                  ),
+                ],
+              ),
+            ),
+          if (v['fallback_note'] != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 10),
+              child: Text('${v['fallback_note']}', style: context.type.bodySmall?.copyWith(color: c.warning)),
+            ),
+          Row(
+            children: [
+              FilledButton(onPressed: _dirty ? _save : null, child: const Text('Use this AI')),
+              const SizedBox(width: 8),
+              OutlinedButton.icon(
+                onPressed: _testing ? null : _test,
+                icon: _testing
+                    ? const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2))
+                    : const Icon(Icons.bolt, size: 18),
+                label: const Text('Test'),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ---- Safety: kill switch, rules, audit log ------------------------------------------------
+
+class SafetyPage extends StatefulWidget {
+  const SafetyPage({super.key, required this.run});
+  final Run run;
+  @override
+  State<SafetyPage> createState() => _SafetyPageState();
+}
+
+class _SafetyPageState extends State<SafetyPage> {
+  Map<String, dynamic>? _s;
+  Map<String, dynamic>? _audit;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() => widget.run(() async {
+    final s = await TrustApi.map('GET', '/safety');
+    final a = await TrustApi.map('GET', '/audit?limit=150');
+    if (mounted) {
+      setState(() {
+        _s = s;
+        _audit = a;
+      });
+    }
+  });
+
+  Future<void> _do(Future<void> Function() f) => widget.run(() async {
+    await f();
+    await _load();
+  });
+
+  static const _blocked = [
+    (Icons.password, 'Typing passwords, card or bank numbers and one-time codes'),
+    (Icons.lock_outline, 'Locking, signing out or shutting down the PC'),
+    (Icons.install_desktop, 'Installing software or editing the registry'),
+    (Icons.shield_outlined, 'Opening security, privacy or firewall settings'),
+    (Icons.payments_outlined, 'Pressing pay, buy or checkout buttons'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final s = _s;
+    final lockdown = s?['lockdown'] == true;
+    final rules = [for (final r in (s?['rules'] as List? ?? [])) Map<String, dynamic>.from(r as Map)];
+    final verify = Map<String, dynamic>.from(_audit?['verify'] as Map? ?? {});
+    final entries = [for (final e in (_audit?['entries'] as List? ?? [])) Map<String, dynamic>.from(e as Map)];
+    return TrustPage(
+      title: 'Safety',
+      subtitle: 'What Compii may never do, what you’ve always allowed, and a tamper-evident record of everything it did.',
+      children: [
+        TrustCard(
+          child: Row(
+            children: [
+              Icon(lockdown ? Icons.gpp_maybe : Icons.power_settings_new, color: lockdown ? c.danger : c.muted, size: 28),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(lockdown ? 'Lockdown is on' : 'Kill switch', style: context.type.titleMedium),
+                    const SizedBox(height: 2),
+                    Text(
+                      lockdown
+                          ? 'Everything was stopped. Compii asks before every action, and “Always allow” rules are paused.'
+                          : 'Ctrl + Alt + Shift + S from anywhere: stops every task, silences Compii, and makes it ask before everything.',
+                      style: context.type.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              lockdown
+                  ? FilledButton(onPressed: () => _do(TrustApi.lift), child: const Text('Lift lockdown'))
+                  : FilledButton(
+                      style: FilledButton.styleFrom(backgroundColor: c.danger),
+                      onPressed: () => _do(TrustApi.kill),
+                      child: const Text('Stop everything'),
+                    ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        _heading(context, 'Always allowed', 'Actions you approved with “Always allow”. Each covers one tool on one folder, site, window or set of recipients.'),
+        TrustCard(
+          padding: EdgeInsets.zero,
+          child: rules.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Text('Nothing yet. When Compii asks for approval, “Always allow” adds a rule here.', style: context.type.bodySmall),
+                )
+              : Column(
+                  children: [
+                    for (final (i, r) in rules.indexed) ...[
+                      if (i > 0) Divider(height: 1, color: c.border),
+                      ListTile(
+                        leading: Icon(Icons.verified_outlined, color: c.success),
+                        title: Text('${r['label']}'.isEmpty ? '${r['tool']}' : '${r['label']}'),
+                        subtitle: Text(
+                          '${r['tool']}${'${r['scope']}'.isEmpty ? ' · anywhere' : ' · ${r['scope']}'} · ${_ago(r['created'] as num?)}',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        trailing: IconButton(
+                          tooltip: 'Remove rule',
+                          icon: const Icon(Icons.close),
+                          onPressed: () => _do(() => TrustApi.call('DELETE', '/rules/${r['id']}')),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+        ),
+        const SizedBox(height: 20),
+        _heading(context, 'Never, whatever anyone says', 'These are enforced by Compii’s code, not by the AI, so no web page, file or prompt can unlock them.'),
+        TrustCard(
+          child: Column(
+            children: [
+              for (final (icon, text) in _blocked)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 5),
+                  child: Row(children: [
+                    Icon(icon, size: 18, color: c.danger),
+                    const SizedBox(width: 10),
+                    Expanded(child: Text(text, style: context.type.bodyMedium)),
+                  ]),
+                ),
+              const SizedBox(height: 6),
+              Text(
+                'Text Compii reads from files, windows and web pages is treated as data. If it looks like instructions to an AI, '
+                'Compii tells you, and sending, deleting or paying in that task need a fresh okay. Card numbers, keys and ID '
+                'numbers are hidden before anything goes to a cloud AI.',
+                style: context.type.bodySmall,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(child: _heading(context, 'Activity record', 'Append-only and hash-chained: if any line is changed or removed, the check below fails.')),
+            if (verify.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 14),
+                child: verify['ok'] == true
+                    ? _chip(context, 'Intact · ${verify['count']} entries', c.success, c.sunken, icon: Icons.verified_user_outlined)
+                    : _chip(context, 'Tampered at line ${verify['broken_at']}', c.danger, c.dangerSoft, icon: Icons.report_outlined),
+              ),
+          ],
+        ),
+        TrustCard(
+          padding: EdgeInsets.zero,
+          child: entries.isEmpty
+              ? Padding(padding: const EdgeInsets.all(16), child: Text('Nothing recorded yet.', style: context.type.bodySmall))
+              : Column(
+                  children: [
+                    for (final (i, e) in entries.take(80).indexed) ...[
+                      if (i > 0) Divider(height: 1, color: c.border),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            SizedBox(width: 92, child: Text(_ago(e['at'] as num?), style: context.type.labelMedium?.copyWith(color: c.faint))),
+                            SizedBox(width: 110, child: Text(_eventName('${e['event']}'), style: context.type.labelLarge)),
+                            Expanded(
+                              child: Text(
+                                [e['tool'], e['reason'], e['scope'], e['name'], e['provider'], e['error']]
+                                    .where((x) => x != null && '$x'.isNotEmpty)
+                                    .join(' · '),
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: context.type.bodySmall,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+String _eventName(String e) => switch (e) {
+  'asked' => 'Asked you',
+  'approved' => 'You approved',
+  'declined' => 'You declined',
+  'done' => 'Did',
+  'failed' => 'Failed',
+  'blocked' => 'Blocked',
+  'stopped' => 'Stopped',
+  'rule_added' => 'Rule added',
+  'rule_removed' => 'Rule removed',
+  'kill_switch' => 'Kill switch',
+  'lockdown_lifted' => 'Lockdown lifted',
+  'key_saved' => 'Key saved',
+  'key_removed' => 'Key removed',
+  'brain_changed' => 'AI changed',
+  'brain_fallback' => 'Used backup AI',
+  'dial_changed' => 'Autonomy set',
+  'skill_saved' => 'Skill saved',
+  _ => e,
+};
+
+/// A red bar at the top of every page while the kill switch is on.
+class LockdownBanner extends StatefulWidget {
+  const LockdownBanner({super.key, required this.run});
+  final Run run;
+  @override
+  State<LockdownBanner> createState() => _LockdownBannerState();
+}
+
+class _LockdownBannerState extends State<LockdownBanner> {
+  bool _on = false;
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    _check();
+    _poll = Timer.periodic(const Duration(seconds: 3), (_) => _check());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _check() async {
+    try {
+      final s = await TrustApi.map('GET', '/safety');
+      if (mounted && (s['lockdown'] == true) != _on) setState(() => _on = s['lockdown'] == true);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_on) return const SizedBox.shrink();
+    final c = context.c;
+    return Material(
+      color: c.dangerSoft,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.gpp_maybe, color: c.danger, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('Lockdown: everything was stopped, and Compii asks before every action.',
+                  style: context.type.labelLarge?.copyWith(color: c.danger)),
+            ),
+            TextButton(
+              onPressed: () => widget.run(() async {
+                await TrustApi.lift();
+                await _check();
+              }),
+              child: const Text('Lift'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// While Compii teaches you something: which step you're on.
+class WalkthroughBar extends StatefulWidget {
+  const WalkthroughBar({super.key});
+  @override
+  State<WalkthroughBar> createState() => _WalkthroughBarState();
+}
+
+class _WalkthroughBarState extends State<WalkthroughBar> {
+  Map<String, dynamic>? _w;
+  Timer? _poll;
+
+  @override
+  void initState() {
+    super.initState();
+    _poll = Timer.periodic(const Duration(seconds: 2), (_) => _check());
+  }
+
+  @override
+  void dispose() {
+    _poll?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _check() async {
+    try {
+      final w = await TrustApi.map('GET', '/walkthrough');
+      if (mounted) setState(() => _w = w.isEmpty ? null : w);
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final w = _w;
+    if (w == null || w['status'] != 'running') return const SizedBox.shrink();
+    final c = context.c;
+    final steps = [for (final s in w['steps'] as List) Map<String, dynamic>.from(s as Map)];
+    final i = (w['completed'] as num? ?? 0).toInt().clamp(0, steps.length - 1);
+    return Material(
+      color: c.accentSoft,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+        child: Row(
+          children: [
+            Icon(Icons.school_outlined, color: c.accent, size: 20),
+            const SizedBox(width: 10),
+            Text('${w['goal']} · step ${i + 1} of ${steps.length}', style: context.type.labelLarge?.copyWith(color: c.accent)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('${steps[i]['instruction']}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodyMedium),
+            ),
+            SizedBox(
+              width: 120,
+              child: LinearProgressIndicator(value: steps.isEmpty ? 0 : i / steps.length, color: c.accent),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ---- Skills ----------------------------------------------------------------------------------
+
+class SkillsPage extends StatefulWidget {
+  const SkillsPage({super.key, required this.run, required this.onOpenTask});
+  final Run run;
+  final void Function(String taskId) onOpenTask;
+  @override
+  State<SkillsPage> createState() => _SkillsPageState();
+}
+
+class _SkillsPageState extends State<SkillsPage> {
+  List<Map<String, dynamic>>? _skills;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() => widget.run(() async {
+    final s = await TrustApi.call('GET', '/skills') as List;
+    if (mounted) setState(() => _skills = [for (final x in s) Map<String, dynamic>.from(x as Map)]);
+  });
+
+  Future<void> _routine(Map<String, dynamic> skill) async {
+    var kind = 'weekdays';
+    var time = const TimeOfDay(hour: 9, minute: 0);
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, set) => AlertDialog(
+          title: Text('Make “${skill['name']}” a routine'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Tip: run it once by hand first. When it works, let it run on its own.', style: context.type.bodySmall),
+              const SizedBox(height: 14),
+              SegmentedButton<String>(
+                segments: const [
+                  ButtonSegment(value: 'daily', label: Text('Every day')),
+                  ButtonSegment(value: 'weekdays', label: Text('Weekdays')),
+                ],
+                selected: {kind},
+                onSelectionChanged: (v) => set(() => kind = v.first),
+              ),
+              const SizedBox(height: 10),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.schedule, size: 18),
+                label: Text('At ${time.format(context)}'),
+                onPressed: () async {
+                  final t = await showTimePicker(context: context, initialTime: time);
+                  if (t != null) set(() => time = t);
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Make routine')),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    final at = '${time.hour.toString().padLeft(2, '0')}:${time.minute.toString().padLeft(2, '0')}';
+    await widget.run(() => TrustApi.call('POST', '/skills/${skill['id']}/routine', {'schedule': {'kind': kind, 'at': at}}));
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('“${skill['name']}” now runs ${kind == 'daily' ? 'every day' : 'on weekdays'} at $at. See Routines.')));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final skills = _skills;
+    return TrustPage(
+      title: 'Skills',
+      subtitle: 'Things you’ve taught Compii. Do something once, save it, and next time just say its name.',
+      children: [
+        if (skills == null)
+          const Center(child: CircularProgressIndicator())
+        else if (skills.isEmpty)
+          TrustCard(
+            child: Row(
+              children: [
+                Icon(Icons.school_outlined, color: c.accent, size: 28),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Text(
+                    'No skills yet. When a conversation goes well, press “Save as skill” at the top of it, '
+                    'or tell Compii “remember how to do this”.',
+                    style: context.type.bodyMedium,
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          for (final s in skills) ...[
+            TrustCard(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.auto_fix_high, color: c.accent, size: 20),
+                      const SizedBox(width: 10),
+                      Expanded(child: Text('${s['name']}', style: context.type.titleMedium)),
+                      Text(
+                        (s['uses'] as num? ?? 0) == 0 ? 'Not used yet' : 'Used ${s['uses']}× · ${_ago(s['last_used'] as num?)}',
+                        style: context.type.labelMedium?.copyWith(color: c.faint),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 6),
+                  Text('${s['instruction']}', maxLines: 3, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                  if ((s['steps'] as List).isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    for (final (i, step) in (s['steps'] as List).take(8).indexed)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 2),
+                        child: Text('${i + 1}. $step', style: context.type.bodySmall?.copyWith(color: c.muted)),
+                      ),
+                  ],
+                  const SizedBox(height: 10),
+                  Wrap(
+                    spacing: 8,
+                    children: [
+                      FilledButton.icon(
+                        icon: const Icon(Icons.play_arrow_rounded, size: 18),
+                        label: const Text('Do it now'),
+                        onPressed: () => widget.run(() async {
+                          final t = await TrustApi.map('POST', '/skills/${s['id']}/run');
+                          widget.onOpenTask(t['id'] as String);
+                        }),
+                      ),
+                      OutlinedButton.icon(
+                        icon: const Icon(Icons.event_repeat, size: 18),
+                        label: const Text('Make routine'),
+                        onPressed: () => _routine(s),
+                      ),
+                      TextButton(
+                        onPressed: () => widget.run(() async {
+                          final left = await TrustApi.call('DELETE', '/skills/${s['id']}') as List;
+                          if (mounted) setState(() => _skills = [for (final x in left) Map<String, dynamic>.from(x as Map)]);
+                        }),
+                        child: const Text('Delete'),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+          ],
+      ],
+    );
+  }
+}
+
+/// "Save as skill" for a finished conversation.
+class SaveSkillButton extends StatelessWidget {
+  const SaveSkillButton({super.key, required this.task, required this.run});
+  final TaskView task;
+  final Run run;
+
+  @override
+  Widget build(BuildContext context) => TextButton.icon(
+    icon: const Icon(Icons.school_outlined, size: 18),
+    label: const Text('Save as skill'),
+    onPressed: () async {
+      final name = TextEditingController(text: _suggest(task.request));
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Save as a skill'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Compii keeps what you asked and the steps that worked, so next time you can just say the name.',
+                  style: context.type.bodySmall),
+              const SizedBox(height: 12),
+              TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Name')),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
+          ],
+        ),
+      );
+      if (ok != true) return;
+      await run(() async {
+        final s = await TrustApi.saveSkill(task.id, name.text.trim());
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Saved “${s['name']}” with ${(s['steps'] as List).length} steps. Find it under Skills.')),
+          );
+        }
+      });
+    },
+  );
+
+  static String _suggest(String request) {
+    final words = request.replaceAll(RegExp(r'[^\w\s\x27-]'), '').split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(5).join(' ');
+    return words.isEmpty ? 'My skill' : words[0].toUpperCase() + words.substring(1);
+  }
+}
+
+/// Notes in a conversation when Compii's safety rules stepped in.
+class SafetyNotes extends StatelessWidget {
+  const SafetyNotes({super.key, required this.events});
+  final List<Map<String, dynamic>> events;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final e in events)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(switch (e['type']) {
+                  'action_blocked' => Icons.block,
+                  'injection_warning' => Icons.gpp_maybe_outlined,
+                  'redacted' => Icons.visibility_off_outlined,
+                  _ => Icons.verified_outlined,
+                }, size: 16, color: switch (e['type']) {
+                  'action_blocked' || 'injection_warning' => c.danger,
+                  'redacted' => c.warning,
+                  _ => c.success,
+                }),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(switch (e['type']) {
+                    'action_blocked' => 'Blocked: ${e['reason']}',
+                    'injection_warning' =>
+                      'Something Compii read looked like instructions to an AI (“${e['phrase']}”). It ignored them; sending, deleting or paying in this task need your fresh okay.',
+                    'redacted' => 'Hid ${e['count']} private ${e['count'] == 1 ? 'item' : 'items'} (${(e['kinds'] as List).join(', ')}) before sending to the AI.',
+                    _ => 'Allowed by your rule: ${e['label']}',
+                  }, style: context.type.bodySmall),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}

@@ -2,7 +2,7 @@
 
 The local service that does the work behind Compii's character. The Flutter app (`compii_flutter/apps/companion`) is the face; Core is the hands.
 
-- **Agent loop** on Claude (`claude-opus-5-5`, adaptive thinking, server-side refusal fallback), with web search.
+- **Agent loop** on Claude (`claude-opus-5-5`, adaptive thinking, server-side refusal fallback, web search) or a free local model (see Brain below).
 - **Tools:** list/find/read files (text, PDF, Excel), write files, create folders, move (undoable), create Excel spreadsheets with formulas, run Python scripts in the workspace, open files/URLs/known apps, send email, remember/recall facts, and point at a button or menu on screen by its label (Windows UI Automation).
 - **Hands in your apps:** list and switch windows, read a window's text and controls, click buttons and menus by name, type into fields, press shortcuts (Windows UI Automation; uses the control itself, leaving your mouse alone where possible). Before clicking or typing on screen, the character points at the spot.
 - **Its own browser:** Microsoft Edge driven by Playwright with a separate profile in `~/Compii/browser-profile` (never your logins): open, read, click, fill. Submitting a form counts as *sending* and always asks.
@@ -43,6 +43,43 @@ Stored in `~/Compii/proactive.json` and checked every 20 seconds:
 - **Watches:** *folder* (new files matching a pattern) and *web* (a page starts saying something, or changes) are checked locally for free; *AI* watches use Claude and run at most every 30 minutes, reporting only when the answer is YES.
 - **Daily brief:** at your chosen time, a local summary of what needs you, what got done, what watches caught, what's on today and what's new in Downloads.
 - **Updates inbox:** everything above lands in `/proactive` → `inbox`, is pushed to the app as an `update` event and, with spoken replies on, is said out loud.
+
+## Brain: free local AI or your own key
+
+Settings → Brain (`GET/PUT /brain`) picks who thinks: **Claude**, a **free local model** through
+[Ollama](https://ollama.com) or LM Studio (nothing leaves the PC, no cost), or OpenRouter, OpenAI or any
+OpenAI-compatible server. **Test** (`POST /brain/test`) sends one tiny request and reports whether the model can
+use tools (small models that can't still chat, but can't do tasks). A **backup AI** is used only if you turn it on;
+Compii never silently moves from a local model to a cloud one.
+
+API keys go to **Windows Credential Manager** (`PUT /keys/{anthropic|openrouter|openai|custom}`), are
+write-only (never sent back to the app or written to Compii's files), and only the app on this PC can set them.
+`ANTHROPIC_API_KEY` in the environment still works too.
+
+## Safety outside the model
+
+- **Never, whatever anyone says** (enforced in code): pressing lock/sign-out/shutdown shortcuts, installing
+  software or editing the registry, opening security settings, pressing pay/checkout buttons, typing secrets.
+- **Untrusted text:** whatever Compii reads from files, windows and web pages is wrapped as data for the AI.
+  Text that looks like instructions to an AI is reported once, and sending, deleting or paying in that task then
+  need a fresh okay even if a rule or the dial would allow them.
+- **Redaction:** card numbers (Luhn-checked), API keys, private keys and ID numbers are hidden before tool output
+  reaches the AI; the conversation says when this happened.
+- **Always allow:** approval cards offer it (from this PC only). A rule covers one tool on one folder, site, window
+  or set of recipients, never payments, and is listed and removable in Safety (`/safety`, `DELETE /rules/{id}`).
+- **Kill switch:** Ctrl+Alt+Shift+S (or `POST /killswitch`, also from a paired phone) stops every task, silences
+  Compii and puts it in lockdown: every action asks and rules are paused until you lift it on this PC.
+- **Activity record:** `~/Compii/audit/audit.jsonl` is append-only and SHA-256 hash-chained, with redacted
+  arguments; `GET /audit` shows it and says whether the chain is intact.
+
+## Skills and walkthroughs
+
+- **Skills** ("teach once, repeat"): save any finished conversation (`POST /tasks/{id}/skill`) or ask Compii to
+  "remember how to do this". Skills are listed to the AI by name (`use_skill`), can be run now, and promoted to a
+  routine once they work (`POST /skills/{id}/routine`). Stored in `~/Compii/skills.json`.
+- **Walkthroughs** ("teach me to…"): `start_walkthrough` points at each step on your screen, says it, waits while you
+  do it, checks with UI Automation (an item appears/disappears or a window opens), gives a hint if you're stuck, and
+  moves on. Progress is saved in `~/Compii/walkthrough.json`; it pauses rather than guessing when an item isn't there.
 
 ## Point at something
 

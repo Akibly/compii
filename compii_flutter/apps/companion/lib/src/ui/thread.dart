@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'tokens.dart';
+import 'trust.dart';
 
 /// One exchange in a conversation: what the user asked and everything Compii
 /// did in response.
@@ -15,6 +16,7 @@ class Turn {
   final List<Map<String, dynamic>> files = [];
   final List<Map<String, dynamic>> approvals = [];
   final Set<String> resolved = {};
+  final List<Map<String, dynamic>> safety = []; // blocked, injection, redacted, rule used
   List<Map<String, dynamic>>? plan;
   String? reply;
   String status = 'running';
@@ -58,6 +60,8 @@ List<Turn> turnsOf(TaskView task) {
             t.steps.add(e);
           case 'file':
             t.files.add(e);
+          case 'action_blocked' || 'injection_warning' || 'redacted' || 'rule_used':
+            t.safety.add(e);
           case 'approval_needed':
             t.approvals.add(e);
           case 'approval_resolved':
@@ -171,6 +175,7 @@ class _AssistantTurn extends StatelessWidget {
             children: [
               if (turn.plan != null && compact) PlanList(steps: turn.plan!, dense: true),
               if (turn.steps.isNotEmpty || turn.active) StepLedger(turn: turn),
+              if (turn.safety.isNotEmpty) SafetyNotes(events: turn.safety),
               if (pending != null) ...[
                 const SizedBox(height: 10),
                 ApprovalCard(approval: pending, core: core, run: run),
@@ -398,6 +403,15 @@ class ApprovalCard extends StatelessWidget {
       onPressed: () => run(() => core.decide(id, approved: false)),
       child: const Text('Decline'),
     );
+    // Grok-style "Always allow": saved as a rule for this tool on this folder,
+    // site, window or recipients. Never offered for payments.
+    final always = approval['can_always'] == true
+        ? TextButton(
+            onPressed: () => run(() => TrustApi.alwaysAllow(id)),
+            child: const Text('Always allow'),
+          )
+        : null;
+    final why = '${approval['why'] ?? ''}';
 
     return Container(
       decoration: BoxDecoration(
@@ -438,8 +452,12 @@ class ApprovalCard extends StatelessWidget {
                   Row(
                     children: destructive
                         ? [decline, const Spacer(), approve]
-                        : [approve, const SizedBox(width: 8), decline],
+                        : [approve, const SizedBox(width: 8), decline, if (always != null) ...[const Spacer(), always]],
                   ),
+                ],
+                if (why.isNotEmpty) ...[
+                  const SizedBox(height: 6),
+                  Text(why, style: context.type.bodySmall?.copyWith(color: c.danger)),
                 ],
                 if (_tierWhy(kind).isNotEmpty) ...[
                   const SizedBox(height: 4),
@@ -482,7 +500,7 @@ class ApprovalCard extends StatelessWidget {
                   Row(
                     children: destructive
                         ? [decline, const Spacer(), approve]
-                        : [approve, const SizedBox(width: 8), decline],
+                        : [approve, const SizedBox(width: 8), decline, if (always != null) ...[const Spacer(), always]],
                   ),
                 ],
               ],

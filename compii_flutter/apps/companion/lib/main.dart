@@ -13,6 +13,7 @@ import 'src/ui/proactive.dart';
 import 'src/ui/quick_bar.dart';
 import 'src/ui/shell.dart';
 import 'src/ui/tokens.dart';
+import 'src/ui/trust.dart';
 import 'src/ui/voice.dart';
 
 Future<void> main(List<String> args) async {
@@ -33,6 +34,22 @@ Future<void> main(List<String> args) async {
       await hotKeyManager.register(
         HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.control, HotKeyModifier.alt], scope: HotKeyScope.system),
         keyDownHandler: (_) => voice.speaking ? voice.quiet() : voice.toggle(),
+      );
+      // Kill switch from anywhere: stop everything; every action asks until lifted.
+      await hotKeyManager.register(
+        HotKey(
+          key: PhysicalKeyboardKey.keyS,
+          modifiers: [HotKeyModifier.control, HotKeyModifier.alt, HotKeyModifier.shift],
+          scope: HotKeyScope.system,
+        ),
+        keyDownHandler: (_) async {
+          voice.quiet();
+          try {
+            await TrustApi.kill();
+          } on Object catch (e) {
+            debugPrint('Kill switch: $e');
+          }
+        },
       );
     } on Object catch (e) {
       debugPrint('Hotkeys not available: $e');
