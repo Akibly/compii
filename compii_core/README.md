@@ -44,6 +44,23 @@ Stored in `~/Compii/proactive.json` and checked every 20 seconds:
 - **Daily brief:** at your chosen time, a local summary of what needs you, what got done, what watches caught, what's on today and what's new in Downloads.
 - **Updates inbox:** everything above lands in `/proactive` → `inbox`, is pushed to the app as an `update` event and, with spoken replies on, is said out loud.
 
+## The cursor buddy (main way to use Compii)
+
+Like Clicky: **hold Ctrl + Alt in any app and talk; let go to send.** Or tap Ctrl + Alt once and just talk; Compii
+sends when you pause. A small Orbling appears beside your mouse pointer, shows your words as you speak, says
+"On it." right away, then answers out loud in a speech bubble and points at what it's talking about. The Compii
+window can stay closed (closing it only hides it; Quit is in Settings). The app starts Core by itself.
+
+- **Screen-aware:** the moment you press, Core notes the window you're in (items, labels and positions, never
+  password fields or password managers). The AI answers about it and points by item id, so it never guesses
+  pixels. Nothing is stored after the turn.
+- **Hears you better:** a quick live preview while you talk, then a careful pass primed with words from your screen.
+  Words the two passes disagree on are flagged, so Compii asks "did you mean X or Y?" instead of guessing.
+- **Natural voice:** whole sentences with a breath between them; markdown, links and paths are never read out.
+- **Research:** `search_web` and `read_web_page` work with every AI (free, keyless). "Deep research" plans
+  sub-questions, reads several sources and saves a report with sources to Documents.
+- Ctrl + Fn can't be used: on most laptops Fn never reaches Windows. Ctrl + Alt is the same idea.
+
 ## Brain: free local AI or your own key
 
 Settings → Brain (`GET/PUT /brain`) picks who thinks: **Claude**, a **free local model** through
