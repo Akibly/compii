@@ -116,3 +116,14 @@ def test_walkthrough_moves_on_when_you_click_the_item(toolbox, tmp_path):
     threading.Timer(0.2, lambda: setattr(screen, "clicks", True)).start()
     out = walks.run({"goal": "x", "steps": [{"instruction": "Click Insert.", "target": "Insert"}]})
     assert "all 1 steps done" in out.text
+
+
+def test_watch_me_ignores_compiis_own_shortcuts():
+    state = {"down": set()}
+    w = Watcher(lambda x, y: None, lambda: (0, 0), lambda: "Word", lambda vk: vk in state["down"], lambda: None)
+    w.start()
+    state["down"] = {0xA2, 0xA4, ord("W")}  # Ctrl+Alt+W stops watching: not a step
+    time.sleep(0.15)
+    state["down"] = set()
+    time.sleep(0.1)
+    assert w.stop() == []

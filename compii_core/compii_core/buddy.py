@@ -118,6 +118,8 @@ class Buddy:
         while self.voice._listening:
             try:
                 p = self._cursor()
+                if self._trail and abs(p[0] - self._trail[-1][0]) + abs(p[1] - self._trail[-1][1]) > 400:
+                    self._trail = []  # a jump, not a gesture
                 if not self._trail or abs(p[0] - self._trail[-1][0]) + abs(p[1] - self._trail[-1][1]) > 4:
                     self._trail.append(p)
             except Exception:  # noqa: BLE001
@@ -141,6 +143,8 @@ class Buddy:
         if not self._busy.acquire(blocking=False):
             return
         try:
+            self.voice.stop_recording()  # mic off the moment you let go
+            self.emit("thinking", heard="")
             if self._snap_thread is not None:
                 self._snap_thread.join(timeout=2.5)
             snap = dict(self._snap or {})
@@ -209,7 +213,8 @@ class Buddy:
         name = goal[:1].upper() + goal[1:] if self.watch_goal else time.strftime("Shown %d %b %H:%M")
         if self._save_skill:
             self._save_skill(name, f"Repeat what the user demonstrated: {goal}.", steps)
-        summary = f"Got it: {len(steps)} steps, saved as “{name}”. Ask me to do it any time."
+        n = len(steps)
+        summary = f"Got it: {n} step{'s' if n != 1 else ''}, saved as “{name}”. Ask me to do it any time."
         self.last_answer = summary
         self.emit("answer", text=summary, steps=steps)
         self.say(summary)
@@ -231,6 +236,8 @@ class Buddy:
         self.emit("dictating")
 
     def dictate_end(self, held: float) -> None:
+        self.voice.stop_recording()  # mic off the moment you let go
+
         def run() -> None:
             text = tidy_dictation(self.voice.stop_listening())
             self.dictating = False

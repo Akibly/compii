@@ -73,7 +73,9 @@ class Watcher:
                     if is_down and vk not in held:
                         held.add(vk)
                         name = KEY_NAMES.get(vk) or (f"F{vk - 0x6F}" if 0x70 <= vk <= 0x7B else chr(vk))
-                        if mods:
+                        if "Ctrl" in mods and "Alt" in mods and vk in (ord("W"), ord("R"), ord("H")):
+                            pass  # Compii's own shortcuts are not part of your task
+                        elif mods:
                             self._add(f"Press {'+'.join(mods + [name])}")
                         elif vk in KEY_NAMES:
                             self._add(f"Press {name}")

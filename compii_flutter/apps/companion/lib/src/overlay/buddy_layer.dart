@@ -135,6 +135,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     final tilt = ((next.dx - _pos.dx) * .035).clamp(-.45, .45);
     var changed = (next - _pos).distance > .25 || (tilt - _tilt).abs() > .01;
     if (state == 'listening') {
+      if (_trail.isNotEmpty && (c - _trail.last).distance > 300) _trail.clear(); // a jump, not a gesture
       if (_trail.isEmpty || (c - _trail.last).distance > 3) {
         _trail.add(c);
         if (_trail.length > 240) _trail.removeAt(0);
@@ -259,7 +260,9 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     final still = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
     if (!still && talking && !_pulse.isAnimating) _pulse.repeat();
     if ((still || !talking) && _pulse.isAnimating) _pulse.stop();
-    if (_cursor == null || ((_hidden || !widget.alwaysVisible) && !talking && _target == null)) {
+    // Hidden (Ctrl+Alt+H): only appears while you're actually talking to it.
+    final engaged = const {'listening', 'dictating', 'thinking', 'needs_you', 'watching'}.contains(state) || _target != null;
+    if (_cursor == null || (_hidden && !engaged) || (!widget.alwaysVisible && !talking && _target == null)) {
       return const SizedBox.expand();
     }
 

@@ -84,6 +84,7 @@ class Voice:
         self._chunks: list[np.ndarray] = []
         self._stream = None
         self._listening = False
+        self._recorded_pending = False  # recording stopped, transcript not taken yet
         # Hands-free mode: send automatically when you stop talking.
         self.on_auto_end: Callable[[], None] | None = None
         self._auto = False
@@ -443,18 +444,27 @@ class Voice:
         """Keep listening after a quick tap and send by itself when you stop talking."""
         self._auto = True
 
-    def stop_listening(self) -> str:
-        """Stop recording and return the final transcript."""
+    def stop_recording(self) -> bool:
+        """Turn the microphone off right away (the transcript comes after).
+        Returns False if nothing was being recorded."""
         with self._lock:
             if not self._listening:
-                return ""
+                return self._recorded_pending
             self._auto = False
             self._listening = False
+            self._recorded_pending = True
             self._stopped.set()
             stream, self._stream = self._stream, None
         if stream is not None:
             stream.stop()
         self.emit({"type": "voice_listening", "on": False})
+        return True
+
+    def stop_listening(self) -> str:
+        """Stop recording (if still on) and return the final transcript."""
+        if not self.stop_recording():
+            return ""
+        self._recorded_pending = False
         if self._partial_thread is not None:
             self._partial_thread.join(timeout=5)  # let any preview finish first
         text = self.transcribe(self._audio())
