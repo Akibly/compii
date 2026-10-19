@@ -4,7 +4,6 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/scheduler.dart';
 
 /// Clicky-style cursor buddy, drawn inside one full-screen, click-through
 /// overlay (no window ever moves, so it keeps up with the mouse).
@@ -45,7 +44,7 @@ class BuddyLayer extends StatefulWidget {
 
 class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   StreamSubscription<Map<String, dynamic>>? _sub;
-  late final Ticker _ticker = createTicker(_tick);
+  Timer? _follow;
   late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200));
   late final AnimationController _fly = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
   Timer? _hide;
@@ -73,13 +72,15 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     super.initState();
     _sub = widget.events.listen(onEvent);
     widget.points?.addListener(_onPoint);
-    _ticker.start();
+    // Read the pointer ~60 times a second; redraw only when something moved,
+    // so an idle buddy costs next to nothing.
+    _follow = Timer.periodic(const Duration(milliseconds: 16), (_) => _tick());
   }
 
   @override
   void dispose() {
     widget.points?.removeListener(_onPoint);
-    _ticker.dispose();
+    _follow?.cancel();
     _pulse.dispose();
     _fly.dispose();
     _sub?.cancel();
@@ -90,11 +91,18 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
 
   // ---- motion: follow the cursor every frame (cheap: nothing moves but pixels) ----
 
-  void _tick(Duration _) {
-    if (!_asking) {
+  int _ticks = 0;
+  int _stillTicks = 0;
+
+  void _tick() {
+    _ticks++;
+    // When the mouse has been still for a moment, check it 10x a second instead of 60.
+    final resting = _stillTicks > 30 && _target == null && !_fly.isAnimating;
+    if (!_asking && (!resting || _ticks % 6 == 0)) {
       _asking = true;
       widget.cursor().then((p) {
         _asking = false;
+        _stillTicks = (_cursor != null && (p - _cursor!).distance < .5) ? _stillTicks + 1 : 0;
         _cursor = p;
       }, onError: (_) => _asking = false);
     }
