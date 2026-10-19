@@ -430,9 +430,107 @@ def describe_snapshot(snap: dict[str, Any]) -> str:
         return f"The user is in “{snap['title']}”, a password manager or similar; Compii doesn't read it."
     lines = [f"Window: “{snap['title']}” ({snap.get('app', '')}). Mouse at {snap['cursor'][0]},{snap['cursor'][1]}"
              + (f", over “{snap['under_cursor']}”." if snap.get("under_cursor") else ".")]
+    if snap.get("focus"):
+        by_id = {e["id"]: e for e in snap["elements"]}
+        shown = [f"{i} · {by_id[i]['role']} · {by_id[i]['name']}" for i in snap["focus"] if i in by_id]
+        if shown:
+            lines.append("While talking, the user circled or moved the mouse over (most likely first; "
+                         "\"this\"/\"here\" means these): " + "; ".join(shown))
     lines.append("Items (id · type · label):")
     for e in snap["elements"]:
         lines.append(f"{e['id']} · {e['role']} · {e['name']}")
     if snap.get("truncated"):
         lines.append("… more items not listed.")
     return "\n".join(lines)
+
+
+# ---- dictation, clicks and demonstrations ----------------------------------------------
+
+
+def mouse_down() -> bool:
+    """Is the left mouse button held right now?"""
+    import ctypes
+
+    return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
+
+
+def item_at(x: int, y: int) -> dict[str, Any] | None:
+    """The item under a screen point: label, type, window. Never a password field's contents."""
+    _need_windows()
+    import uiautomation as auto
+
+    with auto.UIAutomationInitializerInThread():
+        try:
+            c = auto.ControlFromPoint(x, y)
+            if c is None:
+                return None
+            top = c.GetTopLevelControl()
+            name = (c.Name or "").strip()
+            r = c.BoundingRectangle
+            return {"name": name[:80], "role": c.ControlTypeName.replace("Control", ""),
+                    "window": (top.Name if top else "") or "", "password": bool(getattr(c, "IsPassword", False)),
+                    "x": r.left, "y": r.top, "w": r.width(), "h": r.height()}
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def focused_item() -> dict[str, Any] | None:
+    _need_windows()
+    import uiautomation as auto
+
+    with auto.UIAutomationInitializerInThread():
+        try:
+            c = auto.GetFocusedControl()
+            if c is None:
+                return None
+            top = c.GetTopLevelControl()
+            return {"name": (c.Name or "").strip()[:80], "role": c.ControlTypeName.replace("Control", ""),
+                    "window": (top.Name if top else "") or "", "password": bool(getattr(c, "IsPassword", False))}
+        except Exception:  # noqa: BLE001
+            return None
+
+
+def foreground_title() -> str:
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    h = user32.GetForegroundWindow()
+    n = user32.GetWindowTextLengthW(h)
+    buf = ctypes.create_unicode_buffer(n + 1)
+    user32.GetWindowTextW(h, buf, n + 1)
+    return buf.value
+
+
+def type_unicode(text: str) -> None:
+    """Type text where the cursor is, in any app (dictation). Refuses password fields."""
+    _need_windows()
+    f = focused_item()
+    if f and f["password"]:
+        raise ScreenError("That's a password field. Compii never types there.")
+    import ctypes
+    from ctypes import wintypes
+
+    class KEYBDINPUT(ctypes.Structure):
+        _fields_ = [("wVk", wintypes.WORD), ("wScan", wintypes.WORD), ("dwFlags", wintypes.DWORD),
+                    ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_size_t)]
+
+    class INPUT(ctypes.Structure):
+        class _U(ctypes.Union):
+            _fields_ = [("ki", KEYBDINPUT), ("pad", ctypes.c_byte * 32)]
+
+        _anonymous_ = ("u",)
+        _fields_ = [("type", wintypes.DWORD), ("u", _U)]
+
+    events = []
+    for ch in text.replace("\r\n", "\n"):
+        if ch == "\n":
+            events += [INPUT(type=1, ki=KEYBDINPUT(0x0D, 0, 0, 0, 0)), INPUT(type=1, ki=KEYBDINPUT(0x0D, 0, 2, 0, 0))]
+            continue
+        code = ord(ch)
+        units = [code] if code <= 0xFFFF else [0xD800 + ((code - 0x10000) >> 10), 0xDC00 + ((code - 0x10000) & 0x3FF)]
+        for u in units:
+            events.append(INPUT(type=1, ki=KEYBDINPUT(0, u, 0x0004, 0, 0)))  # KEYEVENTF_UNICODE
+            events.append(INPUT(type=1, ki=KEYBDINPUT(0, u, 0x0004 | 0x0002, 0, 0)))
+    if events:
+        arr = (INPUT * len(events))(*events)
+        ctypes.windll.user32.SendInput(len(events), arr, ctypes.sizeof(INPUT))

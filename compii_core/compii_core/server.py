@@ -413,7 +413,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     app.state.plans = plans
     app.state.tick = tick
     app.state.act_on = act_on
-    buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop)
+    buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop,
+                  save_skill=lambda name, instruction, steps: skills.add(name, instruction, steps))
     app.state.buddy = buddy
     _proactive_tools(toolbox, plans)
 
@@ -923,7 +924,7 @@ def main() -> None:
 
     app = build_app()
     if os.environ.get("COMPII_HOTKEY", "1") != "0":
-        app.state.buddy.hotkey.start()  # hold Ctrl+Alt anywhere to talk
+        app.state.buddy.start_shortcuts()  # hold Ctrl+Alt to talk, Ctrl+Win to dictate, Ctrl+Alt+W/R/H
     uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 

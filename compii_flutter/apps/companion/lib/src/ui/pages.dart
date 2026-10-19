@@ -277,6 +277,12 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               for (final (i, (keys, what)) in const [
                 ('Hold Ctrl + Alt', 'Talk to Compii from any app — let go to send, or tap once and just talk'),
+                ('Hold Ctrl + Alt + move mouse', 'Show what you mean: circle or wave over it while you talk'),
+                ('Hold Ctrl + Win', 'Dictate: your words are typed where your cursor is'),
+                ('Ctrl + Alt + W', 'Watch me: show Compii a task, press again (or say “done”) to save it'),
+                ('Ctrl + Alt + R', 'Say the last answer again'),
+                ('Ctrl + Alt + H', 'Hide or show the cursor buddy'),
+                ('Ctrl + Alt + Shift + S', 'Kill switch: stop everything'),
                 ('Alt + Space', 'Show or hide the Compii window'),
                 ('Ctrl + Space', 'Type to Compii from anywhere (quick bar)'),
                 ('Ctrl + N', 'New conversation'),

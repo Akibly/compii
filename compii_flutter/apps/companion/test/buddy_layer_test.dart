@@ -45,14 +45,14 @@ void main() {
     await tester.pump(const Duration(milliseconds: 50));
     await tester.pump(const Duration(milliseconds: 50));
 
-    Offset buddy() => tester.getTopLeft(find.byType(CustomPaint).last) + const Offset(6, 6);
-    expect((buddy() - (mouse + const Offset(12, 14))).distance, lessThan(2), reason: 'sits right beside the pointer');
+    Offset buddy() => tester.getCenter(find.byWidgetPredicate((w) => w is CustomPaint && w.painter is SparkPainter));
+    expect((buddy() - (mouse + const Offset(14, 16))).distance, lessThan(2), reason: 'sits right beside the pointer');
 
     mouse = const Offset(420, 260);
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 16));
     }
-    expect((buddy() - (mouse + const Offset(12, 14))).distance, lessThan(3), reason: 'smoothly follows the mouse');
+    expect((buddy() - (mouse + const Offset(14, 16))).distance, lessThan(3), reason: 'smoothly follows the mouse');
 
     Future<void> shot(String name) async {
       await tester.pump(const Duration(milliseconds: 60));
@@ -88,8 +88,14 @@ void main() {
     expect(buddy().dx, greaterThan(600), reason: 'flew to the item');
     await shot('pointing');
 
-    events.add({'type': 'voice_buddy', 'state': 'idle'});
+    // The label closes by itself once Compii has finished talking.
+    events.add({'type': 'voice_speaking', 'on': true});
     await tester.pump();
+    events.add({'type': 'voice_speaking', 'on': false});
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 3));
+    expect(find.text('Open Insert, then click Table.'), findsNothing);
+    points.value = null;
     await events.close();
   });
 }

@@ -64,6 +64,23 @@ class Walkthroughs:
             return self._find(when["element_gone"]) is None
         return self._find(step["target"]) is None or self._front() != start_front
 
+    def _clicked(self, found) -> bool:
+        """You clicked the item Compii is pointing at: move on (like HeyClicky)."""
+        down = getattr(self.toolbox.screen, "mouse_down", None)
+        cursor = getattr(self.toolbox.screen, "cursor_position", None)
+        if down is None or cursor is None:
+            return False
+        try:
+            if not down():
+                return False
+            x, y = cursor()
+        except Exception:  # noqa: BLE001
+            return False
+        if found.left - 6 <= x <= found.right + 6 and found.top - 6 <= y <= found.bottom + 6:
+            time.sleep(0.4)  # let the app react before the next step looks for its item
+            return True
+        return False
+
     # ---- running ----
 
     def save(self, state: dict[str, Any]) -> None:
@@ -105,7 +122,7 @@ class Walkthroughs:
             start_front = self._front()
             deadline = time.monotonic() + self.step_seconds
             hinted = False
-            while not self._done(step, start_front):
+            while not self._done(step, start_front) and not self._clicked(found):
                 if halt is not None and halt.is_set():
                     state.update(status="stopped", completed=i)
                     self.save(state)
