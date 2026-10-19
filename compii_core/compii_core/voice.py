@@ -34,6 +34,11 @@ KOKORO_FILES = {
     "voices-v1.0.bin": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
 }
 DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465, "speak_hq": 170}
+# Capitalised words that aren't names; anything else capitalised gets a second, sharper listen.
+COMMON_CAPS = {"downloads", "documents", "desktop", "pictures", "monday", "tuesday", "wednesday", "thursday",
+               "friday", "saturday", "sunday", "january", "february", "march", "april", "june", "july", "august",
+               "september", "october", "november", "december", "excel", "word", "outlook", "chrome", "edge",
+               "windows", "google", "notepad", "settings", "compii", "doctor", "mister", "misses", "please"}
 # Fuller-quality voice model (half precision instead of 8-bit): smoother, less "robot".
 KOKORO_HQ = ("kokoro-v1.0.fp16.onnx",
              "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx")
@@ -298,35 +303,46 @@ class Voice:
         return self._transcribe_fast(audio)
 
     def transcribe_detailed(self, audio: np.ndarray) -> tuple[str, list[str]]:
-        """The careful final pass: beam search, the sharper model if present, a vocabulary
-        hint from the screen, and the words Whisper wasn't sure about."""
+        """The careful final pass (~1 s): beam search with a vocabulary hint from the
+        screen. Words the live preview and this pass disagree on were hard to hear;
+        only then, if the sharper model is downloaded, it re-checks (a few seconds)."""
         if audio.size < RATE * 0.3 or float(np.abs(audio).max()) < 0.003:
             return "", []
         peak = float(np.abs(audio).max())
         if peak < 0.5:
             audio = audio * (0.5 / peak)
         hints = getattr(self, "_hints", [])
-        prompt = "Compii." + (" " + ", ".join(hints) + "." if hints else "")
-        with self._stt_lock:
-            segments, _ = self._whisper_hq().transcribe(
-                audio,
-                language="en",
-                beam_size=5,
-                vad_filter=True,
-                vad_parameters={"min_silence_duration_ms": 400},
-                condition_on_previous_text=False,
-                no_speech_threshold=0.5,
-                initial_prompt=prompt[:400],
+        prompt = ("Compii." + (" " + ", ".join(hints) + "." if hints else ""))[:400]
+
+        def run(model) -> str:
+            segments, _ = model.transcribe(
+                audio, language="en", beam_size=5, vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 400}, condition_on_previous_text=False,
+                no_speech_threshold=0.5, initial_prompt=prompt,
             )
-            texts = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.6 and seg.avg_logprob > -1.2]
-        text = " ".join(texts).strip()
-        # Where the quick live preview and this careful pass disagree, the word was hard to hear.
+            return " ".join(seg.text.strip() for seg in segments
+                            if seg.no_speech_prob < 0.6 and seg.avg_logprob > -1.2).strip()
+
         def words(t: str) -> list[str]:
             return [w.strip(" .,!?;:\"'").lower() for w in t.split()]
 
-        preview = set(words(getattr(self, "_last_preview", "")))
-        unclear = [w for w in words(text) if len(w) > 2 and preview and w not in preview]
-        return text, list(dict.fromkeys(unclear))[:6]
+        def differ(a: str, b: str) -> list[str]:
+            other = set(words(b))
+            return list(dict.fromkeys(w for w in words(a) if len(w) > 2 and other and w not in other))
+
+        with self._stt_lock:
+            text = run(self._whisper())
+            unclear = differ(text, getattr(self, "_last_preview", ""))
+            known = {w.lower() for h in hints for w in h.split()} | COMMON_CAPS
+            names = [w.strip(".,!?;:'\"") for w in text.split()[1:]]
+            names = [w for w in names if len(w) > 3 and w[:1].isupper() and not w.isupper() and w.lower() not in known]
+            if (unclear or names) and self.has_hq():
+                sharp = run(self._whisper_hq())
+                if sharp:
+                    # Still unclear: words the two careful passes disagree on.
+                    unclear = differ(sharp, text)
+                    text = sharp
+        return text, unclear[:6]
 
     def annotate(self, text: str) -> str:
         """If `text` is what was just heard, note the words that were unclear, for the AI."""
