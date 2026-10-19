@@ -362,6 +362,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     agent.on_rules_changed = save_rules
 
+    from .web import web_tools
+
+    for t in web_tools():
+        toolbox.tools[t.name] = t
     skills = Skills(workspace / "skills.json")
     agent.extra_context = skills.context
     for t in skill_tools(skills):

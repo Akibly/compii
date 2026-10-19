@@ -13,7 +13,7 @@ import re
 from typing import Any
 
 # Tools whose output is text from the outside world (files, windows, web pages).
-UNTRUSTED_TOOLS = {"read_file", "read_window", "browse", "read_page", "recall"}
+UNTRUSTED_TOOLS = {"read_file", "read_window", "browse", "read_page", "recall", "search_web", "read_web_page"}
 
 _BLOCKED_KEYS = {
     "win+l": "locking the computer",
