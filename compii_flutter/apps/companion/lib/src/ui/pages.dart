@@ -8,6 +8,7 @@ import 'trust.dart';
 import 'voice.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
+import '../app_control.dart';
 
 class _Page extends StatelessWidget {
   const _Page({required this.title, required this.subtitle, required this.children});
@@ -256,7 +257,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: Column(
             children: [
               for (final (i, (keys, what)) in const [
-                ('Alt + Space', 'Talk to Compii from anywhere (press again to send)'),
+                ('Hold Ctrl + Alt', 'Talk to Compii from any app — let go to send, or tap once and just talk'),
+                ('Alt + Space', 'Show or hide the Compii window'),
                 ('Ctrl + Space', 'Type to Compii from anywhere (quick bar)'),
                 ('Ctrl + N', 'New conversation'),
                 ('Enter / Shift + Enter', 'Send / new line'),
@@ -278,6 +280,16 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
               ],
             ],
+          ),
+        ),
+        const SizedBox(height: 28),
+        _Card(
+          child: OptionRow(
+            glyph: G.power,
+            title: 'Quit Compii',
+            subtitle: 'Closing the window only hides it, so Ctrl + Alt keeps working. This really quits.',
+            color: c.danger,
+            trailing: OutlinedButton(onPressed: appControl.quit, child: const Text('Quit')),
           ),
         ),
       ],
@@ -360,7 +372,7 @@ class VoiceSettings extends StatelessWidget {
                         G.mic,
                         'Talk to Compii',
                         voice.canListen
-                            ? 'Ready. Tap Compii and speak, or press Alt + Space from anywhere.'
+                            ? 'Ready. Hold Ctrl + Alt in any app and talk, or tap Compii here.'
                             : 'Uses Whisper, an open speech model, running on your PC.',
                         voice.canListen
                             ? Glyph(G.checkCircle, color: c.success)

@@ -28,7 +28,7 @@ void main() {
     final sent = <String>[];
     await tester.pumpWidget(_app(VoiceDock(core: core, state: state, onSend: (t) async => sent.add(t))));
     expect(find.byType(TextField), findsNothing);
-    expect(find.byTooltip('Tap to talk · Alt + Space'), findsOneWidget);
+    expect(find.byTooltip('Tap to talk · or hold Ctrl + Alt in any app'), findsOneWidget);
 
     await tester.sendKeyEvent(LogicalKeyboardKey.keyH);
     await tester.pumpAndSettle();

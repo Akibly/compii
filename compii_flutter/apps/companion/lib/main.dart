@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
+import 'src/app_control.dart';
 import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
@@ -19,6 +20,7 @@ import 'src/ui/voice.dart';
 Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
   WidgetsFlutterBinding.ensureInitialized();
+  await ensureCore();
   final core = CoreClient()..start();
   final state = AppState();
   final voice = VoiceController(core);
@@ -32,10 +34,19 @@ Future<void> main(List<String> args) async {
     quick = QuickMode(state);
     try {
       await quick.registerHotkey();
-      // Talk from anywhere (Alt+Space): press to start, press again to send.
+      // Talking from any app is Core's hold-Ctrl+Alt (see compii_core/hotkey.py).
+      // Alt+Space shows or hides this window.
       await hotKeyManager.register(
         HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.alt], scope: HotKeyScope.system),
-        keyDownHandler: (_) => voice.speaking ? voice.quiet() : voice.toggle(),
+        keyDownHandler: (_) async {
+          if (quick?.active == true) return;
+          if (await windowManager.isVisible() && await windowManager.isFocused()) {
+            await windowManager.hide();
+          } else {
+            await windowManager.show();
+            await windowManager.focus();
+          }
+        },
       );
       // Kill switch from anywhere: stop everything; every action asks until lifted.
       await hotKeyManager.register(
@@ -115,25 +126,56 @@ class CompiiApp extends StatelessWidget {
 }
 
 /// The pointing overlay runs as a second copy of this app in its own
-/// transparent window; it closes when the main window closes.
+/// transparent window. Closing the main window only hides it: Compii keeps
+/// running for the cursor buddy (hold Ctrl+Alt). Quit from Settings.
 Future<void> _startOverlay() async {
   try {
-    final overlay = await Process.start(Platform.resolvedExecutable, ['--overlay']);
+    appControl.overlay = await Process.start(Platform.resolvedExecutable, ['--overlay']);
     await windowManager.setPreventClose(true);
-    windowManager.addListener(_CloseOverlay(overlay));
+    windowManager.addListener(_HideOnClose());
   } on Object catch (e) {
     debugPrint('Compii overlay did not start: $e');
   }
 }
 
-class _CloseOverlay with WindowListener {
-  _CloseOverlay(this.overlay);
-  final Process overlay;
-
+class _HideOnClose with WindowListener {
   @override
-  Future<void> onWindowClose() async {
-    overlay.kill();
-    await windowManager.setPreventClose(false);
-    await windowManager.close();
+  Future<void> onWindowClose() async => windowManager.hide();
+}
+
+/// Start Compii Core if it isn't running, so the app just works when opened.
+Future<void> ensureCore() async {
+  final http = HttpClient()..connectionTimeout = const Duration(milliseconds: 800);
+  try {
+    final req = await http.getUrl(Uri.parse('http://127.0.0.1:8765/health'));
+    final res = await req.close();
+    await res.drain<void>();
+    if (res.statusCode == 200) return;
+  } on Object {
+    // not running: start it below
+  } finally {
+    http.close(force: true);
   }
+  final dir = _findCore();
+  if (dir == null) return;
+  try {
+    await Process.start('uv', ['run', 'compii-core'], workingDirectory: dir, mode: ProcessStartMode.detached, runInShell: true);
+  } on Object catch (e) {
+    debugPrint('Could not start Compii Core: $e');
+  }
+}
+
+String? _findCore() {
+  final env = Platform.environment['COMPII_CORE_DIR'];
+  if (env != null && File('$env/pyproject.toml').existsSync()) return env;
+  for (final start in [File(Platform.resolvedExecutable).parent, Directory.current]) {
+    Directory? d = start;
+    for (var i = 0; i < 10 && d != null; i++) {
+      final candidate = '${d.path}${Platform.pathSeparator}compii_core';
+      if (File('$candidate${Platform.pathSeparator}pyproject.toml').existsSync()) return candidate;
+      final parent = d.parent;
+      d = parent.path == d.path ? null : parent;
+    }
+  }
+  return null;
 }

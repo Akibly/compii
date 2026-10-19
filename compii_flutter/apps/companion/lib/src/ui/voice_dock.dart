@@ -272,16 +272,18 @@ class _Hint extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final style = context.type.labelMedium?.copyWith(color: c.faint);
-    if (voice.listening) return Text('Listening — tap Compii or press Alt + Space to send', maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    if (voice.listening) return Text('Listening — tap Compii to send', maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         Flexible(
-          child: Text(voice.wakeListening ? 'Say “Hey Compii”, tap Compii, or press' : 'Tap Compii or press',
+          child: Text(voice.wakeListening ? 'Say “Hey Compii”, tap Compii, or hold' : 'Tap Compii, or hold',
               maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
         ),
         const SizedBox(width: 6),
-        const Kbd('Alt + Space'),
+        const Kbd('Ctrl + Alt'),
+        const SizedBox(width: 6),
+        Text('in any app', style: style),
       ],
     );
   }

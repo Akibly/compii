@@ -296,7 +296,7 @@ class _Sidebar extends StatelessWidget {
                         child: Text('Talk', maxLines: 1, overflow: TextOverflow.ellipsis,
                             style: context.type.labelMedium?.copyWith(color: c.faint)),
                       ),
-                      const Kbd('Alt + Space'),
+                      const Kbd('Ctrl + Alt'),
                     ],
                   ),
                 ),
