@@ -1,11 +1,11 @@
 """Hold-to-talk from anywhere: hold Ctrl + Alt (like Clicky's Ctrl + Option).
 
-A low-level keyboard hook watches only the Ctrl and Alt keys. Holding both
+Compii checks whether Ctrl and Alt are held, about 33 times a second. Holding both
 (and nothing else) for a moment starts listening; letting go sends. A quick
 tap starts listening hands-free and Compii sends when you stop talking.
 Pressing any other key while holding them (Ctrl+Alt+Del, AltGr letters…)
 cancels, so normal shortcuts and typing are untouched. Keys are never
-blocked or recorded: the hook only looks at whether Ctrl and Alt are down.
+blocked or recorded: only whether Ctrl and Alt (and anything held with them) are down.
 """
 
 from __future__ import annotations
@@ -94,52 +94,33 @@ class HoldToTalk:
         self._thread.start()
 
     def stop(self) -> None:
-        if self._thread_id is not None:
-            import ctypes
-
-            ctypes.windll.user32.PostThreadMessageW(self._thread_id, 0x0012, 0, 0)  # WM_QUIT
         self.running = False
 
     def _loop(self) -> None:
+        """Poll the real key state ~33 times a second. Unlike a keyboard hook, this
+        can't be silently dropped by Windows when Compii is busy transcribing,
+        so letting go of Ctrl+Alt is never missed (at worst it's seen 30 ms late)."""
         import ctypes
-        from ctypes import wintypes
 
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-
-        class KBDLLHOOKSTRUCT(ctypes.Structure):
-            _fields_ = [("vkCode", wintypes.DWORD), ("scanCode", wintypes.DWORD), ("flags", wintypes.DWORD),
-                        ("time", wintypes.DWORD), ("dwExtraInfo", ctypes.c_void_p)]
-
-        LRESULT = ctypes.c_ssize_t
-        HOOKPROC = ctypes.WINFUNCTYPE(LRESULT, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-        user32.SetWindowsHookExW.restype = wintypes.HHOOK
-        user32.SetWindowsHookExW.argtypes = [ctypes.c_int, HOOKPROC, wintypes.HINSTANCE, wintypes.DWORD]
-        user32.CallNextHookEx.restype = LRESULT
-        user32.CallNextHookEx.argtypes = [wintypes.HHOOK, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
-        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
-
-        def proc(code: int, wparam: int, lparam: int) -> int:
-            if code == 0:
-                info = ctypes.cast(lparam, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
-                down = wparam in (0x0100, 0x0104)  # WM_KEYDOWN, WM_SYSKEYDOWN
-                up = wparam in (0x0101, 0x0105)
-                if down or up:
-                    try:
-                        self.key(int(info.vkCode), down)
-                    except Exception:  # noqa: BLE001 - never break the user's keyboard
-                        pass
-            return user32.CallNextHookEx(None, code, wparam, lparam)  # never swallow keys
-
-        self._proc = HOOKPROC(proc)  # keep a reference
-        hook = user32.SetWindowsHookExW(13, self._proc, kernel32.GetModuleHandleW(None), 0)  # WH_KEYBOARD_LL
-        if not hook:
-            return
-        self._thread_id = kernel32.GetCurrentThreadId()
+        get = ctypes.windll.user32.GetAsyncKeyState
+        watched = sorted(VK_CONTROL - {0x11} | VK_ALT - {0x12})  # left/right Ctrl and Alt
+        # Any other key held with them means a real shortcut (Ctrl+Alt+Del, AltGr letters…).
+        others = [vk for vk in range(0x08, 0xFF)
+                  if vk not in VK_CONTROL | VK_ALT | {0x10, 0xA0, 0xA1} and not 0x01 <= vk <= 0x06]
+        before: set[int] = set()
         self.running = True
-        msg = wintypes.MSG()
-        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
-            user32.TranslateMessage(ctypes.byref(msg))
-            user32.DispatchMessageW(ctypes.byref(msg))
-        user32.UnhookWindowsHookEx(hook)
-        self.running = False
+        while self.running:
+            try:
+                now = {vk for vk in watched if get(vk) & 0x8000}
+                if now & VK_CONTROL and now & VK_ALT:
+                    other = next((vk for vk in others if get(vk) & 0x8000), None)
+                    if other is not None:
+                        now.add(other)
+                for vk in now - before:
+                    self.key(vk, True)
+                for vk in before - now:
+                    self.key(vk, False)
+                before = now
+            except Exception:  # noqa: BLE001 - never stop watching
+                pass
+            time.sleep(0.03)

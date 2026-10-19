@@ -34,9 +34,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   Win32Window::Point origin(10, 10);
   Win32Window::Size size(1280, 720);
   if (overlay) {
+    // One transparent, click-through layer over the whole main screen, created
+    // once at full size: the cursor buddy is drawn inside it and never has to
+    // move a window (moving windows every frame is what makes overlays lag).
     window.SetPopup(true);
     origin = Win32Window::Point(0, 0);
-    size = Win32Window::Size(460, 360);
+    size = Win32Window::Size(0, 0);  // 0 x 0 = cover the primary monitor
   }
   if (!window.Create(overlay ? L"Compii overlay" : L"Compii", origin, size)) {
     return EXIT_FAILURE;

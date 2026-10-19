@@ -134,12 +134,21 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  int x = Scale(origin.x, scale_factor), y = Scale(origin.y, scale_factor);
+  int width = Scale(size.width, scale_factor), height = Scale(size.height, scale_factor);
+  if (popup_ && size.width == 0 && size.height == 0) {
+    // Full-screen overlay: exactly the primary monitor, in physical pixels.
+    MONITORINFO info = {sizeof(info)};
+    GetMonitorInfo(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info);
+    x = info.rcMonitor.left;
+    y = info.rcMonitor.top;
+    width = info.rcMonitor.right - info.rcMonitor.left;
+    height = info.rcMonitor.bottom - info.rcMonitor.top;
+  }
   HWND window = CreateWindowEx(
       popup_ ? (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) : 0,
       window_class, title.c_str(), popup_ ? WS_POPUP : WS_OVERLAPPEDWINDOW,
-      Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
-      Scale(size.width, scale_factor), Scale(size.height, scale_factor),
-      nullptr, nullptr, GetModuleHandle(nullptr), this);
+      x, y, width, height, nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
     return false;

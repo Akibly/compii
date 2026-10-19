@@ -25,8 +25,8 @@ Future<void> runOverlay() async {
   await windowManager.ensureInitialized();
   final display = await screenRetriever.getPrimaryDisplay();
   final scale = (display.scaleFactor ?? 1).toDouble();
-  // Topmost, click-through (layered + transparent), no focus and hidden from
-  // the taskbar are all set natively when the popup is created.
+  // Full-screen, topmost, click-through (layered + transparent), no focus and
+  // hidden from the taskbar: all set natively when the popup is created.
   await windowManager.setBackgroundColor(Colors.transparent);
   runApp(
     OverlayApp(
@@ -61,73 +61,14 @@ class OverlayApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     color: Colors.transparent,
     theme: ThemeData(useMaterial3: true, canvasColor: Colors.transparent),
-    home: _Overlay(core: core, scale: scale, screen: screen, onPlace: onPlace, cursor: cursor),
-  );
-}
-
-/// Pointing and the cursor buddy share one small window: while Compii points
-/// at something, the buddy steps aside, then comes back to your cursor.
-class _Overlay extends StatefulWidget {
-  const _Overlay({required this.core, required this.scale, required this.screen, required this.onPlace, this.cursor});
-  final CoreClient core;
-  final double scale;
-  final Size screen;
-  final Future<void> Function(Offset) onPlace;
-  final Future<Offset> Function()? cursor;
-  @override
-  State<_Overlay> createState() => _OverlayState();
-}
-
-class _OverlayState extends State<_Overlay> {
-  final _pointing = ValueNotifier(false);
-  Timer? _done;
-
-  @override
-  void initState() {
-    super.initState();
-    widget.core.lastPoint.addListener(_onPoint);
-  }
-
-  @override
-  void dispose() {
-    widget.core.lastPoint.removeListener(_onPoint);
-    _done?.cancel();
-    super.dispose();
-  }
-
-  void _onPoint() {
-    _pointing.value = true;
-    _done?.cancel();
-    _done = Timer(const Duration(seconds: 9), () => _pointing.value = false);
-  }
-
-  @override
-  Widget build(BuildContext context) => Stack(
-    children: [
-      Positioned.fill(
-        child: PointerLayer(
-          points: widget.core.lastPoint,
-          scale: widget.scale,
-          screen: widget.screen,
-          window: overlayWindow,
-          onPlace: widget.onPlace,
-        ),
-      ),
-      if (widget.cursor != null)
-        Positioned.fill(
-          child: ValueListenableBuilder(
-            valueListenable: _pointing,
-            builder: (context, _, _) => BuddyLayer(
-              events: widget.core.voiceEvents.stream,
-              cursor: widget.cursor!,
-              window: overlayWindow,
-              screen: widget.screen,
-              onPlace: widget.onPlace,
-              paused: _pointing,
-            ),
-          ),
-        ),
-    ],
+    // The overlay covers the whole screen (created that way natively), so the
+    // buddy and its pointing are just drawn; no window ever moves.
+    home: BuddyLayer(
+      events: core.voiceEvents.stream,
+      points: core.lastPoint,
+      scale: scale,
+      cursor: cursor ?? () async => Offset.zero,
+    ),
   );
 }
 

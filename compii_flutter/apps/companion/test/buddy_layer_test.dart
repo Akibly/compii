@@ -9,7 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('the cursor buddy listens, thinks and answers beside the pointer', (tester) async {
+  testWidgets('the cursor buddy trails the pointer, listens, answers and flies to what it points at', (tester) async {
     const capture = bool.fromEnvironment('CAPTURE');
     if (capture) {
       final loader = FontLoader('Segoe UI Variable Text');
@@ -17,35 +17,45 @@ void main() {
       if (f.existsSync()) loader.addFont(Future.value(ByteData.sublistView(f.readAsBytesSync())));
       await tester.runAsync(loader.load);
     }
-    tester.view.physicalSize = const Size(460, 360);
+    const size = Size(900, 520);
+    tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final events = StreamController<Map<String, dynamic>>.broadcast();
-    final placed = <Offset>[];
+    final points = ValueNotifier<Map<String, dynamic>?>(null);
+    var mouse = const Offset(300, 200);
     final key = GlobalKey();
     await tester.pumpWidget(MediaQuery(
-      data: const MediaQueryData(size: Size(460, 360), disableAnimations: true),
+      data: const MediaQueryData(size: size, disableAnimations: true),
       child: Directionality(
         textDirection: TextDirection.ltr,
         child: RepaintBoundary(
           key: key,
-          child: Container(
-            color: const Color(0xFFE9E6E0), // stands in for whatever app is behind
-            child: BuddyLayer(
-              events: events.stream,
-              cursor: () async => const Offset(300, 200),
-              window: const Size(460, 360),
-              screen: const Size(1920, 1080),
-              onPlace: (o) async => placed.add(o),
-            ),
-          ),
+          child: Stack(children: [
+            // Stands in for whatever app is on screen.
+            Positioned.fill(child: Container(color: const Color(0xFFF3F2EF))),
+            Positioned(left: 560, top: 300, width: 90, height: 30,
+                child: Container(color: const Color(0xFFDDE3EE), alignment: Alignment.center,
+                    child: const Text('Table', style: TextStyle(fontSize: 13, color: Color(0xFF333333))))),
+            Positioned.fill(child: BuddyLayer(events: events.stream, points: points, cursor: () async => mouse)),
+          ]),
         ),
       ),
     ));
-    expect(find.text('Listening…'), findsNothing, reason: 'nothing shows until you hold the keys');
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.pump(const Duration(milliseconds: 50));
+
+    Offset buddy() => tester.getTopLeft(find.byType(CustomPaint).last) + const Offset(6, 6);
+    expect((buddy() - (mouse + const Offset(12, 14))).distance, lessThan(2), reason: 'sits right beside the pointer');
+
+    mouse = const Offset(420, 260);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect((buddy() - (mouse + const Offset(12, 14))).distance, lessThan(3), reason: 'smoothly follows the mouse');
 
     Future<void> shot(String name) async {
-      await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 60));
       if (!capture) return;
       final boundary = key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
       final image = (await tester.runAsync(() => boundary.toImage(pixelRatio: 2)))!;
@@ -54,28 +64,32 @@ void main() {
       await tester.runAsync(() => File('${out.path}/buddy-$name.png').writeAsBytes(bytes!.buffer.asUint8List()));
     }
 
+    await shot('idle');
     events.add({'type': 'voice_buddy', 'state': 'listening'});
     await tester.pump();
     events.add({'type': 'voice_partial', 'text': 'how do I add a table here'});
     await tester.pump();
+    await tester.pump();
     expect(find.text('how do I add a table here'), findsOneWidget);
-    expect(placed.last, const Offset(314, 216), reason: 'sits just below-right of the pointer');
     await shot('listening');
 
     events.add({'type': 'voice_buddy', 'state': 'thinking', 'heard': 'how do I add a table here'});
     await tester.pump();
     await tester.pump();
-    expect(find.text('“how do I add a table here”'), findsOneWidget);
     await shot('thinking');
 
-    events.add({'type': 'voice_buddy', 'state': 'answer', 'text': 'Open the Insert tab, then click Table — I’m pointing at it.'});
+    events.add({'type': 'voice_buddy', 'state': 'answer', 'text': 'Open Insert, then click Table.'});
+    points.value = {'x': 560, 'y': 300, 'w': 90, 'h': 30, 'message': 'Click Table'};
     await tester.pump();
-    expect(find.textContaining('Insert tab'), findsOneWidget);
-    await shot('answer');
+    for (var i = 0; i < 50; i++) {
+      await tester.pump(const Duration(milliseconds: 16));
+    }
+    expect(find.text('Click Table'), findsOneWidget);
+    expect(buddy().dx, greaterThan(600), reason: 'flew to the item');
+    await shot('pointing');
 
     events.add({'type': 'voice_buddy', 'state': 'idle'});
-    await tester.pump(const Duration(milliseconds: 300));
-    expect(find.textContaining('Insert tab'), findsNothing);
+    await tester.pump();
     await events.close();
   });
 }
