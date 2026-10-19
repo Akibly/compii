@@ -170,7 +170,14 @@ class OpenAICompatBrain:
                 r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
                 if r.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
                     break
-                await asyncio.sleep(1.5 * (attempt + 1))
+                wait = 1.5 * (attempt + 1)
+                if r.status_code == 429:
+                    # Over a free plan's limit: wait only if it clears almost at once;
+                    # otherwise hand over to the backup straight away instead of stalling.
+                    wait = _retry_after(r.headers)
+                    if wait is None or wait > 2:
+                        break
+                await asyncio.sleep(wait)
         if r.status_code >= 400:
             try:
                 detail = r.json().get("error", r.text)
@@ -191,6 +198,13 @@ class OpenAICompatBrain:
         finish = choice.get("finish_reason") or "stop"
         stop = "max_tokens" if finish == "length" else "tool_use" if calls else "end_turn"
         return BrainReply(blocks, text, calls, stop)
+
+
+def _retry_after(headers: Any) -> float | None:
+    try:
+        return float(headers.get("retry-after"))
+    except (TypeError, ValueError):
+        return None
 
 
 def strip_thinking(text: str) -> str:
@@ -301,6 +315,13 @@ def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
         # Thinking off: Compii answers out loud, so speed matters more than long reasoning.
         return OpenAICompatBrain(c.base_url, c.model, key, extra={
             "chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.6, "top_p": 0.95, "max_tokens": 4096})
+    if c.provider == "groq" and c.model.startswith("openai/gpt-oss"):
+        # Spoken answers: brief reasoning is plenty and much faster. Each model has its own
+        # free per-minute limit, so the other gpt-oss model stands in before any slower backup.
+        fast = {"reasoning_effort": "low"}
+        main = OpenAICompatBrain(c.base_url, c.model, key, extra=fast)
+        other = "openai/gpt-oss-20b" if c.model != "openai/gpt-oss-20b" else "openai/gpt-oss-120b"
+        return FallbackBrain(main, OpenAICompatBrain(c.base_url, other, key, extra=fast))
     return OpenAICompatBrain(c.base_url, c.model, key)
 
 

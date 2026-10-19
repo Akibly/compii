@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import itertools
+import re
 import threading
 import time
 import uuid
@@ -20,6 +21,20 @@ from .tools import ToolError, Toolbox
 MAX_STEPS = 40
 # Pointing while answering: a reply with text plus only this is complete.
 SHOW_ONLY_TOOLS = {"point_at"}
+# Enough for questions, pointing, showing and simple actions in the app you're in.
+QUICK_TOOLS = ["point_at", "start_walkthrough", "search_web", "read_web_page", "read_window", "click_on",
+               "type_into", "press_keys", "open_item", "focus_window", "remember", "recall", "use_skill"]
+MORE_TOOLS = {
+    "name": "more_tools",
+    "description": "Unlock all of Compii's tools (files and folders, spreadsheets, email, routines and reminders, "
+                   "watches, your own browser, Python, plans, skills). Call it first when the request needs any of them.",
+    "input_schema": {"type": "object", "properties": {}},
+}
+# Requests that clearly need the full toolbox start with it.
+NEEDS_ALL_TOOLS = re.compile(
+    r"\b(files?|folders?|downloads|documents?|spreadsheets?|excel|csv|pdf|email|mail|routine|remind|reminder|every|"
+    r"daily|weekly|schedule|watch|notify|save|move|rename|delete|organi[sz]e|tidy|browse|website|form|book|order|"
+    r"calculate|python|research|report|plan|skill)\b", re.I)
 MODEL = "claude-opus-5-5"
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
@@ -124,6 +139,8 @@ class Task:
     warned_injection: bool = False
     # What was on screen when the user asked (screen-aware turns), used once.
     pending_screen: dict[str, Any] | None = None
+    # False: a quick question with the slim tool set (see QUICK_TOOLS).
+    all_tools: bool = True
 
 
 class Stopped(Exception):
@@ -150,6 +167,7 @@ class Agent:
 
     def start(self, request: str, origin: dict[str, Any] | None = None, screen: dict[str, Any] | None = None) -> Task:
         task = Task(id=f"t{next(self._ids)}-{uuid.uuid4().hex[:6]}", request=_shown(request), origin=origin, pending_screen=screen)
+        task.all_tools = not (origin or {}).get("buddy") or bool(NEEDS_ALL_TOOLS.search(request))
         self.tasks[task.id] = task
         task.runner = asyncio.create_task(self._run(task, request))
         return task
@@ -235,7 +253,6 @@ class Agent:
             extra = self.extra_context()
             if extra:
                 system += "\n" + extra
-        schemas = [t.schema() for t in self.toolbox.tools.values()]
         messages = task.messages
         if task.pending_screen:
             from .screen import describe_snapshot
@@ -254,7 +271,7 @@ class Agent:
         try:
             for _ in range(MAX_STEPS):
                 await self.emit(task, "thinking")
-                reply = await self._until_stopped(task, self.brain.step(system, messages, schemas))
+                reply = await self._until_stopped(task, self.brain.step(system, messages, self._schemas(task)))
                 messages.append({"role": "assistant", "content": reply.content})
                 if reply.stop_reason == "refusal":
                     return await self._finish(task, "failed", "I can't help with that one.")
@@ -290,10 +307,21 @@ class Agent:
         halt.cancel()
         return work.result()
 
+    def _schemas(self, task: Task) -> list[dict[str, Any]]:
+        """Quick questions get a slim set of tools: every tool description is sent with
+        every step, and free AI plans cap tokens per minute. `more_tools` unlocks the rest."""
+        tools = self.toolbox.tools
+        if task.all_tools:
+            return [t.schema() for t in tools.values()]
+        return [tools[n].schema() for n in QUICK_TOOLS if n in tools] + [MORE_TOOLS]
+
     async def _call(self, task: Task, call: ToolCall) -> dict[str, Any]:
         def result(text: str, error: bool = False) -> dict[str, Any]:
             return {"type": "tool_result", "tool_use_id": call.id, "content": text, "is_error": error}
 
+        if call.name == MORE_TOOLS["name"]:
+            task.all_tools = True
+            return result("All tools are available now. Carry on.")
         tool = self.toolbox.tools.get(call.name)
         if tool is None:
             return result(f"Unknown tool {call.name}.", True)

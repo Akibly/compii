@@ -72,6 +72,7 @@ Future<void> main(List<String> args) async {
       debugPrint('Hotkeys not available: $e');
     }
     await _startOverlay();
+    _watchWindowShown();
   }
   voice.onHeard = (text) => _deliver(text, core, state, quick);
   runApp(CompiiApp(core: core, state: state, quick: quick));
@@ -117,10 +118,17 @@ class CompiiApp extends StatelessWidget {
       darkTheme: compiiTheme(Brightness.dark),
       themeMode: state.themeMode,
       // The character's eyes follow the mouse anywhere in the window.
-      builder: (context, child) => Listener(
-        onPointerHover: (e) => pointer.value = e.position,
-        onPointerMove: (e) => pointer.value = e.position,
-        child: UpdateNotices(core: core, onView: () => state.go(Section.updates), child: child!),
+      builder: (context, child) => ValueListenableBuilder<bool>(
+        valueListenable: windowShown,
+        // Hidden or minimised: pause every animation (it was half a CPU core for nobody).
+        builder: (context, shown, _) => TickerMode(
+          enabled: shown,
+          child: Listener(
+            onPointerHover: (e) => pointer.value = e.position,
+            onPointerMove: (e) => pointer.value = e.position,
+            child: UpdateNotices(core: core, onView: () => state.go(Section.updates), child: child!),
+          ),
+        ),
       ),
       home: quick?.active == true
           ? QuickBar(core: core, quick: quick!)
@@ -140,6 +148,19 @@ Future<void> _startOverlay() async {
   } on Object catch (e) {
     debugPrint('Compii overlay did not start: $e');
   }
+}
+
+/// Whether the main window can be seen (not hidden to the tray, not minimised).
+final windowShown = ValueNotifier<bool>(true);
+
+void _watchWindowShown() {
+  Timer.periodic(const Duration(milliseconds: 700), (_) async {
+    try {
+      windowShown.value = await windowManager.isVisible() && !await windowManager.isMinimized();
+    } on Object {
+      windowShown.value = true;
+    }
+  });
 }
 
 class _HideOnClose with WindowListener {

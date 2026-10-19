@@ -128,6 +128,7 @@ class VoiceSettingsBody(BaseModel):
     engine: str | None = None
     voice: str | None = None
     speed: float | None = None
+    cloud_listening: bool | None = None
 
 
 class DownloadBody(BaseModel):
@@ -193,6 +194,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
     voice_file = workspace / "voice.json"
+    voice.cloud_key = lambda: keys.get("groq") or prov._env_key("groq")  # fast speech recognition, if stored
 
     async def act_on(text: str) -> bool:
         """Short spoken commands ("yes", "no", "stop", "quiet") act at once,
@@ -766,6 +768,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 raise HTTPException(500, f"Couldn't open the microphone: {e}") from e
         if body.speed is not None:
             voice.settings.speed = max(.7, min(1.4, body.speed))
+        if body.cloud_listening is not None:
+            voice.settings.cloud_listening = body.cloud_listening
         voice_file.write_text(json.dumps(vars(voice.settings)), encoding="utf-8")
         return voice.status()
 
@@ -1036,7 +1040,7 @@ def _restore_voice(voice: Voice, path: Path) -> None:
         saved = json.loads(path.read_text(encoding="utf-8-sig"))
     except ValueError:
         return
-    for key in ("speak_replies", "voice", "speed", "engine"):
+    for key in ("speak_replies", "voice", "speed", "engine", "cloud_listening"):
         if key in saved:
             setattr(voice.settings, key, saved[key])
     if saved.get("wake_word") and voice.can_listen():

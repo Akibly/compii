@@ -42,6 +42,7 @@ COMMON_CAPS = {"downloads", "documents", "desktop", "pictures", "monday", "tuesd
 # Fuller-quality voice model (half precision instead of 8-bit): smoother, less "robot".
 KOKORO_HQ = ("kokoro-v1.0.fp16.onnx",
              "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx")
+CLOUD_WHISPER = "whisper-large-v3-turbo"
 WHISPER_HQ = "small.en"  # sharper final transcripts (optional download)
 KOKORO_VOICES = {
     "af_heart": "Heart (warm, US)",
@@ -63,6 +64,9 @@ class VoiceSettings:
     engine: str = "natural"
     # "Hey Compii": off until the user turns it on (the mic stays open while it's on).
     wake_word: bool = False
+    # Recognise speech on Groq (fast, accurate, spares your CPU) when a Groq key is stored;
+    # the on-device recogniser is the backup. Off: everything stays on this PC.
+    cloud_listening: bool = True
 
 
 class Voice:
@@ -74,6 +78,7 @@ class Voice:
         models.mkdir(parents=True, exist_ok=True)
         self.emit = emit
         self.settings = VoiceSettings()
+        self.cloud_key: Callable[[], str | None] | None = None  # set by the server: the Groq key, if stored
         self._recorder_factory = recorder_factory or _MicStream
         self._stt = None
         self._stt_lock = threading.Lock()
@@ -314,6 +319,15 @@ class Voice:
             audio = audio * (0.5 / peak)
         hints = getattr(self, "_hints", [])
         prompt = ("Compii." + (" " + ", ".join(hints) + "." if hints else ""))[:400]
+        key = self._cloud_key()
+        if key:
+            try:
+                text = self._transcribe_cloud(audio, prompt, key)
+                unclear = [w for w in _words(text) if len(w) > 2 and _words(getattr(self, "_last_preview", ""))
+                           and w not in set(_words(getattr(self, "_last_preview", "")))]
+                return text, list(dict.fromkeys(unclear))[:6]
+            except Exception:  # noqa: BLE001 - offline or over the free limit: recognise on this PC
+                pass
 
         def run(model) -> str:
             segments, _ = model.transcribe(
@@ -344,6 +358,35 @@ class Voice:
                     unclear = differ(sharp, text)
                     text = sharp
         return text, unclear[:6]
+
+    def _cloud_key(self) -> str | None:
+        if not self.settings.cloud_listening or self.cloud_key is None:
+            return None
+        try:
+            return self.cloud_key()
+        except Exception:  # noqa: BLE001
+            return None
+
+    def _transcribe_cloud(self, audio: np.ndarray, prompt: str, key: str) -> str:
+        """Groq's Whisper large-v3-turbo: about half a second for a spoken request."""
+        import io
+        import wave
+
+        import httpx
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(RATE)
+            w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+        r = httpx.post("https://api.groq.com/openai/v1/audio/transcriptions",
+                       headers={"Authorization": f"Bearer {key}"},
+                       data={"model": CLOUD_WHISPER, "language": "en", "prompt": prompt[:200], "temperature": "0",
+                             "response_format": "json"},
+                       files={"file": ("speech.wav", buf.getvalue(), "audio/wav")}, timeout=8)
+        r.raise_for_status()
+        return (r.json().get("text") or "").strip()
 
     def annotate(self, text: str) -> str:
         """If `text` is what was just heard, note the words that were unclear, for the AI."""
@@ -466,7 +509,8 @@ class Voice:
             return ""
         self._recorded_pending = False
         if self._partial_thread is not None:
-            self._partial_thread.join(timeout=5)  # let any preview finish first
+            # Let any preview finish first (it holds the on-device recogniser), unless the cloud does the final pass.
+            self._partial_thread.join(timeout=0.05 if self._cloud_key() else 5)
         text = self.transcribe(self._audio())
         self.emit({"type": "voice_final", "text": text})
         return text
@@ -627,6 +671,10 @@ class _Speaker:
                 return
 
 
+def _words(t: str) -> list[str]:
+    return [w.strip(" .,!?;:\"'").lower() for w in t.split()]
+
+
 def _trim(samples: np.ndarray, floor: float = 0.004) -> np.ndarray:
     """Cut the silence the voice model leaves at the start and end of each sentence."""
     loud = np.flatnonzero(np.abs(samples) > floor)
@@ -680,7 +728,8 @@ def _phrases(text: str, longest: int = 220) -> list[str]:
         if chunk:
             out.append(chunk)
     # A long first sentence: start with its opening clause.
-    if out and len(out[0]) > 110 and "," in out[0][:90]:
-        head, _, rest = out[0].partition(",")
-        out[0:1] = [head + ",", rest.strip()]
+    # The voice is made on this PC, so a shorter first piece means it starts talking sooner.
+    if out and len(out[0]) > 60 and "," in out[0][:70]:
+        cut = out[0].index(",") + 1
+        out[0:1] = [out[0][:cut], out[0][cut:].strip()]
     return out
