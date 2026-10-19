@@ -1,15 +1,13 @@
 """The cursor buddy: talk to Compii from any app, Clicky-style.
 
 Shortcuts (all work in any app; the Compii window can stay closed):
-- Hold Ctrl + Alt and talk; let go to send. Tap them once: Compii listens
-  hands-free and sends when you pause.
+- Hold Ctrl + Alt and talk; let go to send. A quick tap does nothing.
 - While holding, move the mouse over or around something: that's what you
   mean ("this", "here"). Compii sees the items under your trail.
 - Hold Ctrl + Win and talk: your words are typed where your cursor is
   (dictation), never into password fields.
-- Ctrl + Alt + W: watch me. Show Compii a task, press it again (or say
-  "done") and it saves the steps as a skill.
-- Ctrl + Alt + R: say the last answer again. Ctrl + Alt + H: hide or show the buddy.
+- Say "watch me", show Compii a task, then say "done": it saves the steps
+  as a skill. Say "say that again", "hide" or "show yourself" too.
 
 The moment you press, Compii notes the window you're in (items and labels
 only, never passwords). Events for the overlay are `voice_buddy` with a
@@ -32,6 +30,9 @@ from .watch import Watcher
 
 ACKS = ["On it.", "Let me look.", "One sec.", "Sure, let me check.", "Okay, looking."]
 WATCH_START = re.compile(r"^(?:ok(?:ay)?\s+)?(?:watch me|watch this|let me show you|i'?ll show you)\b[\s,.:]*(?P<goal>.*)$", re.I)
+REPEAT = re.compile(r"^(?:ok(?:ay)?\s+)?(?:say (?:that|it) again|repeat (?:that|it)?|what did you say|come again)[?.!]?$", re.I)
+HIDE = re.compile(r"^(?:ok(?:ay)?\s+)?(?:hide|go away|hide yourself|disappear)[.!]?$", re.I)
+SHOW = re.compile(r"^(?:ok(?:ay)?\s+)?(?:show yourself|come back|show up|appear)[.!]?$", re.I)
 WATCH_STOP = re.compile(r"^(?:ok(?:ay)?\s+)?(?:done|i'?m done|that'?s it|stop watching|finished|all done)[.!]?$", re.I)
 
 
@@ -62,7 +63,7 @@ class Buddy:
         self.dictating = False
         self.watch_goal = ""
         self.watcher = Watcher(screen.item_at, self._cursor, screen.foreground_title, self._key_down, screen.focused_item)
-        self.hotkey = HoldToTalk(self.start, self.end, self.cancel, on_command=self.command)
+        self.hotkey = HoldToTalk(self.start, self.end, self.cancel)
         self.dictation = HoldToTalk(self.dictate_start, self.dictate_end, self.cancel, first=VK_CONTROL, second=VK_WIN)
         voice.on_auto_end = self.finish
 
@@ -127,10 +128,9 @@ class Buddy:
             time.sleep(0.04)
 
     def end(self, held: float) -> None:
-        """Ctrl+Alt released: a hold sends now; a quick tap keeps listening until you pause."""
+        """Ctrl+Alt released: send what you said. A quick accidental tap does nothing."""
         if held < TAP_MAX:
-            self.voice.listen_hands_free()
-            self.emit("listening", hands_free=True)
+            self.cancel()
             return
         threading.Thread(target=self.finish, daemon=True).start()
 
@@ -166,6 +166,13 @@ class Buddy:
             self._busy.release()
 
     async def _handle(self, text: str, snap: dict[str, Any] | None) -> None:
+        said = text.strip()
+        if REPEAT.match(said):
+            return self.command("R")
+        if HIDE.match(said) or SHOW.match(said):
+            self.visible = bool(SHOW.match(said))
+            self._emit({"type": "voice_buddy_visible", "visible": self.visible})
+            return self.emit("idle", text="Okay." if self.visible else "")
         if self.watcher.running and WATCH_STOP.match(text.strip()):
             self.stop_watching()
             return
@@ -181,7 +188,7 @@ class Buddy:
         self.tasks.add(task.id)
         self.emit("thinking", heard=text, task_id=task.id, screen=(snap or {}).get("title", ""))
 
-    # ---- commands: Ctrl + Alt + letter ----
+    # ---- commands (by voice: "say that again", "watch me", "hide") ----
 
     def command(self, letter: str) -> None:
         if letter == "W":
@@ -202,7 +209,7 @@ class Buddy:
         self.watch_goal = goal
         self.watcher.start()
         self.emit("watching")
-        self.say("I'm watching. Show me, then say done.")
+        self.say("I'm watching. Show me, then hold Control Alt and say done.")
 
     def stop_watching(self) -> None:
         steps = self.watcher.stop()

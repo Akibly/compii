@@ -153,3 +153,42 @@ def test_unclear_words_reach_the_ai_but_not_the_screen(home):
     task = asyncio.run(run())
     assert task.request == "open synia"
     assert "Possibly misheard words: synia" in brain.seen[0][0]["content"]
+
+
+def test_answer_and_point_in_one_reply_skips_a_round_trip(home):
+    import asyncio
+
+    from compii_core.agent import Agent, BrainReply, ToolCall
+    from compii_core.journal import Journal
+    from compii_core.policy import Policy
+    from compii_core.tools import Toolbox
+
+    class OneShot:
+        calls = 0
+
+        async def step(self, system, messages, tools):
+            OneShot.calls += 1
+            if OneShot.calls == 1:
+                call = ToolCall("p1", "point_at", {"target": "e2", "message": "Here."})
+                return BrainReply([{"type": "text", "text": "It's the Table button."},
+                                   {"type": "tool_use", "id": "p1", "name": "point_at", "input": call.input}],
+                                  "It's the Table button.", [call], "tool_use")
+            return BrainReply([{"type": "text", "text": "Sure."}], "Sure.", [], "end_turn")
+
+    async def run():
+        events = []
+
+        async def emit(e):
+            events.append(e)
+
+        tb = Toolbox([home["downloads"]], home["workspace"])
+        agent = Agent(OneShot(), tb, Policy(), Journal(home["workspace"] / "j"), emit)
+        task = agent.start("where is table", screen=SNAP)
+        await asyncio.wait_for(task.runner, 5)
+        assert OneShot.calls == 1 and task.status == "done" and events[-1]["text"] == "It's the Table button."
+        assert any(e["type"] == "point" for e in events)
+        agent.reply(task.id, "thanks")  # a follow-up still works (roles stay valid)
+        await asyncio.wait_for(task.runner, 5)
+        assert task.messages[-2]["role"] == "user" and task.messages[-2]["content"][-1]["text"] == "thanks"
+
+    asyncio.run(run())

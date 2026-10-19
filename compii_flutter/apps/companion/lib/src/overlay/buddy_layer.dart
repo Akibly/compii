@@ -191,7 +191,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
               heard = '';
               _trail.clear();
             case 'watching':
-              text = e['text'] != null ? '${e['text']}' : 'Watching — show me, then say “done” or press Ctrl+Alt+W';
+              text = e['text'] != null ? '${e['text']}' : 'Watching — show me, then hold Ctrl+Alt and say “done”';
             case 'dictating':
               text = '';
             case 'thinking':

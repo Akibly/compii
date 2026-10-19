@@ -127,3 +127,30 @@ def test_watch_me_ignores_compiis_own_shortcuts():
     state["down"] = set()
     time.sleep(0.1)
     assert w.stop() == []
+
+
+def test_keys_pressed_together_still_count_as_a_command(monkeypatch):
+    """Ctrl, Alt and W can arrive in one 30 ms check; W must not become a plain hold."""
+    import ctypes
+
+    monkeypatch.setattr(hotkey, "HOLD_TO_START", 0.05)
+    seen = []
+    h = HoldToTalk(lambda: seen.append("start"), lambda held: seen.append("end"), on_command=seen.append)
+    down = {CTRL, ALT, ord("W")}
+
+    class User32:
+        @staticmethod
+        def GetAsyncKeyState(vk):
+            return 0x8000 if vk in down else 0
+
+    class Windll:
+        user32 = User32()
+
+    monkeypatch.setattr(ctypes, "windll", Windll(), raising=False)
+    t = threading.Thread(target=h._loop, daemon=True)
+    t.start()
+    time.sleep(0.15)
+    down.clear()
+    time.sleep(0.1)
+    h.stop()
+    assert seen == ["W"]

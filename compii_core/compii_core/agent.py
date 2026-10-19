@@ -18,6 +18,8 @@ from .policy import ActionKind, Gate, Policy
 from .tools import ToolError, Toolbox
 
 MAX_STEPS = 40
+# Pointing while answering: a reply with text plus only this is complete.
+SHOW_ONLY_TOOLS = {"point_at"}
 MODEL = "claude-opus-5-5"
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
@@ -81,7 +83,7 @@ How you work:
 - Never type passwords, card numbers, bank details or one-time codes, and never complete purchases or logins yourself: ask the user to do that step in the window, then carry on.
 - When the user asks how to do something themselves, use point_at to show them where to click instead of doing it.
 - From the cursor buddy, three kinds of request:
-  * A question about the screen ("what's this", "where is…"): answer in one or two spoken sentences and point at the item by id. Don't act.
+  * A question about the screen ("what's this", "where is…"): in ONE reply, write the one- or two-sentence answer AND call point_at with the item's id (no second step needed). Don't act.
   * "Show me / teach me / how do I…": demonstrate without doing it for them: use start_walkthrough with the exact items (by label), one short step each; it points, waits, and moves on when they click.
   * "Do it / can you… / go ahead" (clear requests for work): do it with your tools; Compii points at each item before clicking so they can watch.
   If unsure which they want, ask in a few words.
@@ -244,7 +246,11 @@ class Agent:
             seen = guard.wrap_untrusted("screen", describe_snapshot(snap))
             text = "\n\n".join([text, seen, "(This is what the user is looking at right now. "
                                             "Answer about it; point at items by id.)"])
-        messages.append({"role": "user", "content": text})
+        if messages and messages[-1]["role"] == "user" and isinstance(messages[-1]["content"], list):
+            # The last turn ended right after showing something: keep roles alternating.
+            messages[-1]["content"] = [*messages[-1]["content"], {"type": "text", "text": text}]
+        else:
+            messages.append({"role": "user", "content": text})
         try:
             for _ in range(MAX_STEPS):
                 await self.emit(task, "thinking")
@@ -262,6 +268,10 @@ class Agent:
                     await self.emit(task, "note", text=reply.text.strip())
                 results = [await self._call(task, c) for c in reply.tool_calls]
                 messages.append({"role": "user", "content": results})
+                # Said it and pointed in one go: that's the answer; skip a second round trip.
+                if (reply.text.strip() and all(c.name in SHOW_ONLY_TOOLS for c in reply.tool_calls)
+                        and not any(r.get("is_error") for r in results)):
+                    return await self._finish(task, "done", reply.text.strip())
             await self._finish(task, "failed", f"I stopped after {MAX_STEPS} steps without finishing.")
         except Stopped:
             await self._finish(task, "stopped", "Stopped. Nothing else will run for this task.")

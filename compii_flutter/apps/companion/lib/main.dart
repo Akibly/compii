@@ -34,7 +34,8 @@ Future<void> main(List<String> args) async {
     await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
     quick = QuickMode(state);
     try {
-      await quick.registerHotkey();
+      // Kept simple on purpose: hold Ctrl+Alt (talk) and Ctrl+Win (dictate) live in
+      // Core; the app only adds Alt+Space (show/hide) and the kill switch.
       // Talking from any app is Core's hold-Ctrl+Alt (see compii_core/hotkey.py).
       // Alt+Space shows or hides this window.
       await hotKeyManager.register(

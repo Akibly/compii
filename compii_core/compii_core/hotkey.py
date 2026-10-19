@@ -127,7 +127,8 @@ class HoldToTalk:
                     other = next((vk for vk in others if get(vk) & 0x8000), None)
                     if other is not None:
                         now.add(other)
-                for vk in now - before:
+                # Modifiers first: Ctrl, Alt and W can all go down within one check.
+                for vk in sorted(now - before, key=lambda k: 0 if self._is_mod(k) else 1):
                     self.key(vk, True)
                 for vk in before - now:
                     self.key(vk, False)
