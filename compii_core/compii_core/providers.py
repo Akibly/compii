@@ -11,6 +11,7 @@ silently moves from a local model to a cloud one.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 import uuid
@@ -30,7 +31,7 @@ PRESETS: dict[str, dict[str, str]] = {
                "model": "gemini-2.5-flash", "key": "gemini", "where": "cloud", "price": "free tier",
                "signup": "https://aistudio.google.com/apikey"},
     "nvidia": {"label": "NVIDIA", "base_url": "https://integrate.api.nvidia.com/v1",
-               "model": "nvidia/nemotron-3-ultra-550b-a55b", "key": "nvidia", "where": "cloud", "price": "free tier",
+               "model": "nvidia/nemotron-3-super-120b-a12b", "key": "nvidia", "where": "cloud", "price": "free tier",
                "signup": "https://build.nvidia.com/settings/api-keys"},
     "ollama_cloud": {"label": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "gpt-oss:120b",
                      "key": "ollama", "where": "cloud", "price": "free tier", "signup": "https://ollama.com/settings/keys"},
@@ -165,7 +166,11 @@ class OpenAICompatBrain:
             body["tools"] = tools_to_openai(tools)
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
         async with httpx.AsyncClient(timeout=self.timeout, transport=self.transport) as client:
-            r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
+            for attempt in range(3):  # busy free tiers: retry brief server hiccups
+                r = await client.post(f"{self.base_url}/chat/completions", json=body, headers=headers)
+                if r.status_code not in (429, 500, 502, 503, 504) or attempt == 2:
+                    break
+                await asyncio.sleep(1.5 * (attempt + 1))
         if r.status_code >= 400:
             try:
                 detail = r.json().get("error", r.text)

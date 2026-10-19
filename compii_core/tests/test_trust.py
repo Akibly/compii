@@ -308,7 +308,7 @@ async def test_nvidia_sends_its_key_and_turns_thinking_off():
     body = json.loads(seen[0].content)
     assert r["tools"] and seen[0].headers["Authorization"] == "Bearer nvapi-test"
     assert str(seen[0].url) == "https://integrate.api.nvidia.com/v1/chat/completions"
-    assert body["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
+    assert body["model"] == "nvidia/nemotron-3-super-120b-a12b"
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     reply = await brain.step("s", [{"role": "user", "content": "x"}], [])
     assert "secret" not in reply.text
