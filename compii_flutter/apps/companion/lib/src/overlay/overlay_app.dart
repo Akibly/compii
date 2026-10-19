@@ -7,6 +7,7 @@ import 'package:window_manager/window_manager.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
+import 'buddy_layer.dart';
 
 /// Size of the overlay's popup window, matching windows/runner/main.cpp.
 const overlayWindow = Size(460, 360);
@@ -33,6 +34,7 @@ Future<void> runOverlay() async {
       scale: scale,
       screen: display.size,
       onPlace: windowManager.setPosition,
+      cursor: screenRetriever.getCursorScreenPoint,
     ),
   );
 }
@@ -44,24 +46,88 @@ class OverlayApp extends StatelessWidget {
     required this.scale,
     required this.screen,
     required this.onPlace,
+    this.cursor,
   });
   final CoreClient core;
   final double scale;
   final Size screen;
   final Future<void> Function(Offset) onPlace;
 
+  /// Mouse position (logical pixels), for the cursor buddy.
+  final Future<Offset> Function()? cursor;
+
   @override
   Widget build(BuildContext context) => MaterialApp(
     debugShowCheckedModeBanner: false,
     color: Colors.transparent,
     theme: ThemeData(useMaterial3: true, canvasColor: Colors.transparent),
-    home: PointerLayer(
-      points: core.lastPoint,
-      scale: scale,
-      screen: screen,
-      window: overlayWindow,
-      onPlace: onPlace,
-    ),
+    home: _Overlay(core: core, scale: scale, screen: screen, onPlace: onPlace, cursor: cursor),
+  );
+}
+
+/// Pointing and the cursor buddy share one small window: while Compii points
+/// at something, the buddy steps aside, then comes back to your cursor.
+class _Overlay extends StatefulWidget {
+  const _Overlay({required this.core, required this.scale, required this.screen, required this.onPlace, this.cursor});
+  final CoreClient core;
+  final double scale;
+  final Size screen;
+  final Future<void> Function(Offset) onPlace;
+  final Future<Offset> Function()? cursor;
+  @override
+  State<_Overlay> createState() => _OverlayState();
+}
+
+class _OverlayState extends State<_Overlay> {
+  final _pointing = ValueNotifier(false);
+  Timer? _done;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.core.lastPoint.addListener(_onPoint);
+  }
+
+  @override
+  void dispose() {
+    widget.core.lastPoint.removeListener(_onPoint);
+    _done?.cancel();
+    super.dispose();
+  }
+
+  void _onPoint() {
+    _pointing.value = true;
+    _done?.cancel();
+    _done = Timer(const Duration(seconds: 9), () => _pointing.value = false);
+  }
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    children: [
+      Positioned.fill(
+        child: PointerLayer(
+          points: widget.core.lastPoint,
+          scale: widget.scale,
+          screen: widget.screen,
+          window: overlayWindow,
+          onPlace: widget.onPlace,
+        ),
+      ),
+      if (widget.cursor != null)
+        Positioned.fill(
+          child: ValueListenableBuilder(
+            valueListenable: _pointing,
+            builder: (context, _, _) => BuddyLayer(
+              events: widget.core.voiceEvents.stream,
+              cursor: widget.cursor!,
+              window: overlayWindow,
+              screen: widget.screen,
+              onPlace: widget.onPlace,
+              paused: _pointing,
+            ),
+          ),
+        ),
+    ],
   );
 }
 
