@@ -441,7 +441,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             "presets": {k: {"label": v["label"], "where": v["where"], "needs_key": bool(v["key"]), "key": v["key"],
                             "model": v["model"], "base_url": v["base_url"], "price": v.get("price", ""),
                             "signup": v.get("signup", "")} for k, v in prov.PRESETS.items()},
-            "keys": {n: keys.has(n) for n in sorted(KEY_NAMES)},
+            "keys": {n: keys.has(n) or bool(prov._env_key(n)) for n in sorted(KEY_NAMES)},
             "active": "rehearsal" if mode == "rehearsal" else brain_settings.primary.provider,
             "fixed": fixed_brain, "local": brain_settings.primary.local,
             "problem": None if fixed_brain else brain_state["problem"],
@@ -504,7 +504,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     @app.get("/brain/models", dependencies=[Depends(auth_local)])
     async def brain_models(base_url: str = Query("http://127.0.0.1:11434/v1"), provider: str = Query("")) -> dict[str, Any]:
         preset = prov.PRESETS.get(provider, {})
-        key = keys.get(preset["key"]) if preset.get("key") else None
+        key = (keys.get(preset["key"]) or prov._env_key(preset["key"])) if preset.get("key") else None
         if preset.get("key") and not key:
             return {"models": [], "running": False, "error": "Add the key first to see the models."}
         try:

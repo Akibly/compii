@@ -256,10 +256,21 @@ class FallbackBrain:
             return await self.backup.step(system, messages, tools)
 
 
+ENV_KEYS = {"nvidia": "NVIDIA_API_KEY", "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY", "ollama": "OLLAMA_API_KEY",
+            "openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}
+
+
+def _env_key(name: str) -> str | None:
+    """A key from the environment (e.g. NVIDIA_API_KEY), as provider examples use; Settings wins."""
+    import os
+
+    return os.environ.get(ENV_KEYS.get(name, ""), "").strip() or None
+
+
 def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
     c = choice.resolved()
     preset = PRESETS.get(c.provider, PRESETS["custom"])
-    key = keys.get(preset["key"]) if preset["key"] else None
+    key = (keys.get(preset["key"]) or _env_key(preset["key"])) if preset["key"] else None
     if c.provider == "claude":
         import os
 

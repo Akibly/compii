@@ -312,3 +312,11 @@ async def test_nvidia_sends_its_key_and_turns_thinking_off():
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     reply = await brain.step("s", [{"role": "user", "content": "x"}], [])
     assert "secret" not in reply.text
+
+
+def test_keys_can_also_come_from_the_environment(monkeypatch):
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-from-env")
+    assert prov.make_brain(prov.BrainChoice("nvidia"), MemoryKeyStore()).api_key == "nvapi-from-env"
+    keys = MemoryKeyStore()
+    keys.set("nvidia", "nvapi-from-settings")
+    assert prov.make_brain(prov.BrainChoice("nvidia"), keys).api_key == "nvapi-from-settings"
