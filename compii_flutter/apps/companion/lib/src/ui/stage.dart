@@ -30,6 +30,7 @@ class Stage extends StatelessWidget {
     final voice = state.voice;
     final pending = turn?.pending;
     final mood = state.moodWith(core);
+    final hero = (MediaQuery.sizeOf(context).height * .24).clamp(120.0, 220.0);
     final speakingCaption = voice != null && voice.speaking && voice.caption.isNotEmpty ? voice.caption : null;
     final (String bubble, bool working) = switch (turn) {
       null => ('', true),
@@ -79,7 +80,7 @@ class Stage extends StatelessWidget {
                             style: context.type.bodyLarge?.copyWith(color: c.muted, fontStyle: FontStyle.italic)),
                       ),
                     Aura(
-                      size: 210,
+                      size: hero * 1.55,
                       color: switch (mood) {
                         Mood.waiting => c.warning,
                         Mood.problem => c.danger,
@@ -87,8 +88,8 @@ class Stage extends StatelessWidget {
                         _ => c.accent,
                       },
                       child: voice != null
-                          ? TalkableOrbling(voice: voice, mood: mood, jobs: task.active ? 1 : 0, size: 128)
-                          : SizedBox.square(dimension: 128, child: Orbling(mood: mood, jobs: task.active ? 1 : 0)),
+                          ? TalkableOrbling(voice: voice, mood: mood, jobs: task.active ? 1 : 0, size: hero)
+                          : SizedBox.square(dimension: hero, child: Orbling(mood: mood, jobs: task.active ? 1 : 0)),
                     ),
                     if (bubble.isNotEmpty) _SpeechBubble(text: bubble, working: working, failed: turn?.status == 'failed'),
                     if (pending != null) ...[

@@ -801,6 +801,8 @@ class _Home extends StatelessWidget {
     final c = context.c;
     final mood = state.moodWith(core);
     final jobs = core.ordered.where((t) => t.active).length;
+    // The character is the star: big on a normal window, smaller when space is tight.
+    final hero = (MediaQuery.sizeOf(context).height * .3).clamp(150.0, 270.0);
     final online = core.status == CoreStatus.online;
     return Center(
       child: SingleChildScrollView(
@@ -811,7 +813,7 @@ class _Home extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Aura(
-                size: 250,
+                size: hero * 1.55,
                 color: switch (mood) {
                   Mood.listening => c.listen,
                   Mood.waiting => c.warning,
@@ -819,8 +821,8 @@ class _Home extends StatelessWidget {
                   _ => c.accent,
                 },
                 child: state.voice != null
-                    ? TalkableOrbling(voice: state.voice!, mood: mood, jobs: jobs, size: 150)
-                    : SizedBox.square(dimension: 150, child: Orbling(mood: mood, jobs: jobs)),
+                    ? TalkableOrbling(voice: state.voice!, mood: mood, jobs: jobs, size: hero)
+                    : SizedBox.square(dimension: hero, child: Orbling(mood: mood, jobs: jobs)),
               ),
               Text('$_greeting.', style: context.type.displaySmall, textAlign: TextAlign.center),
               const SizedBox(height: 6),
