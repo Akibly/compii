@@ -33,7 +33,10 @@ KOKORO_FILES = {
     "kokoro-v1.0.int8.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx",
     "voices-v1.0.bin": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
 }
-DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465}
+DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465, "speak_hq": 170}
+# Fuller-quality voice model (half precision instead of 8-bit): smoother, less "robot".
+KOKORO_HQ = ("kokoro-v1.0.fp16.onnx",
+             "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.fp16.onnx")
 WHISPER_HQ = "small.en"  # sharper final transcripts (optional download)
 KOKORO_VOICES = {
     "af_heart": "Heart (warm, US)",
@@ -125,6 +128,7 @@ class Voice:
         return {
             "listen_ready": self.can_listen(),
             "listen_hq": self.has_hq(),
+            "speak_hq": (self.models / KOKORO_HQ[0]).exists(),
             "natural_voice": self.has_natural_voice(),
             "engine": "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
             "listening": self._listening,
@@ -156,6 +160,18 @@ class Voice:
                 else:
                     download_model(WHISPER_HQ, output_dir=str(self.whisper_hq_dir))
                     self._stt_hq = None
+            elif what == "speak_hq":
+                target = self.models / KOKORO_HQ[0]
+                part = target.with_suffix(".part")
+
+                def hook_hq(blocks: int, size: int, total: int) -> None:
+                    if total > 0:
+                        self.downloading[what] = min(1.0, blocks * size / total)
+
+                urllib.request.urlretrieve(KOKORO_HQ[1], part, hook_hq)  # noqa: S310 - fixed https URL
+                part.replace(target)
+                with self._lock:
+                    self._tts = None  # reload with the better model
             else:
                 files = list(KOKORO_FILES.items())
                 for i, (name, url) in enumerate(files):
@@ -457,7 +473,9 @@ class Voice:
         if self._tts is None:
             from kokoro_onnx import Kokoro
 
-            self._tts = Kokoro(str(self.models / "kokoro-v1.0.int8.onnx"), str(self.models / "voices-v1.0.bin"))
+            hq = self.models / KOKORO_HQ[0]
+            model = hq if hq.exists() else self.models / "kokoro-v1.0.int8.onnx"
+            self._tts = Kokoro(str(model), str(self.models / "voices-v1.0.bin"))
         return self._tts
 
 
@@ -565,7 +583,9 @@ class _Speaker:
             if item is None or generation != self._generation:
                 return
             samples, rate = item
-            sd.play(samples, rate)
+            samples = _trim(samples)
+            pause = np.zeros(int(rate * 0.12), dtype=samples.dtype)  # a breath between sentences
+            sd.play(np.concatenate([samples, pause]), rate)
             sd.wait()
 
     def _speak_windows(self, text: str, generation: int) -> None:
@@ -581,6 +601,14 @@ class _Speaker:
                 return
 
 
+def _trim(samples: np.ndarray, floor: float = 0.004) -> np.ndarray:
+    """Cut the silence the voice model leaves at the start and end of each sentence."""
+    loud = np.flatnonzero(np.abs(samples) > floor)
+    if loud.size == 0:
+        return samples
+    return samples[max(0, loud[0] - 400): loud[-1] + 1200]
+
+
 def _sentences(text: str) -> list[str]:
     import re
 
@@ -588,12 +616,31 @@ def _sentences(text: str) -> list[str]:
     return parts or [text]
 
 
-def _phrases(text: str, longest: int = 90) -> list[str]:
-    """Sentences, with long ones split at commas so the first words come out sooner."""
+def speakable(text: str) -> str:
+    """Turn a written reply into something natural to say: no markdown, bullets,
+    code, raw links or long paths."""
+    import re
+
+    t = re.sub(r"```.*?```", " ", text, flags=re.S)
+    t = re.sub(r"`([^`]*)`", r"\1", t)
+    t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)  # [label](link) -> label
+    t = re.sub(r"https?://\S+", "a link", t)
+    t = re.sub(r"(?:[A-Za-z]:)?(?:[\\/][^\\/\s]+){2,}[\\/]([^\\/\s]+)", r"\1", t)  # paths -> file name
+    t = re.sub(r"[*_#>|]+", "", t)
+    t = re.sub(r"^\s*(?:[-•]|\d+[.)])\s+", "", t, flags=re.M)  # list markers
+    t = re.sub(r"[:;]?\s*\n+\s*", ". ", t)
+    t = re.sub(r"\.\s*\.", ".", t)
+    t = re.sub(r"\s{2,}", " ", t).strip(" .")
+    return t + ("." if t and t[-1] not in ".!?" else "")
+
+
+def _phrases(text: str, longest: int = 220) -> list[str]:
+    """Whole sentences, so the voice keeps its natural rise and fall. Only a long
+    first sentence is split at a comma, to get the voice going quickly."""
     import re
 
     out: list[str] = []
-    for sentence in _sentences(text):
+    for sentence in _sentences(speakable(text)):
         if len(sentence) <= longest:
             out.append(sentence)
             continue
@@ -606,8 +653,8 @@ def _phrases(text: str, longest: int = 90) -> list[str]:
                 chunk = f"{chunk} {part}".strip()
         if chunk:
             out.append(chunk)
-    # A short first phrase gets the voice going quickly.
-    if out and len(out[0]) > 45 and "," in out[0]:
+    # A long first sentence: start with its opening clause.
+    if out and len(out[0]) > 110 and "," in out[0][:90]:
         head, _, rest = out[0].partition(",")
         out[0:1] = [head + ",", rest.strip()]
     return out
