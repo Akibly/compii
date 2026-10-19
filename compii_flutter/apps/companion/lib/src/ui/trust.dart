@@ -177,19 +177,16 @@ class _BrainCardState extends State<BrainCard> {
 
   Map<String, dynamic> get _presets => Map<String, dynamic>.from(_v?['presets'] as Map? ?? {});
   Map<String, dynamic> _preset(String p) => Map<String, dynamic>.from(_presets[p] as Map? ?? {});
-  String get _keyName => switch (_provider) {
-    'claude' => 'anthropic',
-    'openrouter' || 'openai' || 'custom' => _provider,
-    _ => '',
-  };
+  String get _keyName => '${_preset(_provider)['key'] ?? ''}';
   bool get _hasKey => _keyName.isNotEmpty && (_v?['keys'] as Map?)?[_keyName] == true;
   bool get _isLocal => _preset(_provider)['where'] == 'local';
 
+  /// Models to pick from: installed ones on this PC, or the provider's list once a key is saved.
   Future<void> _findLocal() async {
-    if (!_isLocal) return;
+    if (!_isLocal && !_hasKey) return;
     final url = _url.text.isEmpty ? '${_preset(_provider)['base_url']}' : _url.text;
     try {
-      final r = await TrustApi.map('GET', '/brain/models?base_url=${Uri.encodeQueryComponent(url)}');
+      final r = await TrustApi.map('GET', '/brain/models?base_url=${Uri.encodeQueryComponent(url)}&provider=$_provider');
       if (!mounted) return;
       setState(() {
         _local = [for (final m in r['models'] as List) '$m'];
@@ -214,7 +211,12 @@ class _BrainCardState extends State<BrainCard> {
     if (value.isEmpty) return;
     final v = await TrustApi.map('PUT', '/keys/$_keyName', {'value': value});
     _key.clear(); // never kept in the app
-    if (mounted) _apply(v);
+    if (mounted) {
+      final keep = _provider;
+      _apply(v);
+      _provider = keep;
+      await _findLocal();
+    }
   });
 
   Future<void> _removeKey() => widget.run(() async {
@@ -260,7 +262,16 @@ class _BrainCardState extends State<BrainCard> {
             children: [
               for (final p in _presets.keys)
                 ChoiceChip(
-                  label: Text('${_preset(p)['label']}'),
+                  label: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('${_preset(p)['label']}'),
+                      if ('${_preset(p)['price']}'.startsWith('free')) ...[
+                        const SizedBox(width: 6),
+                        Pill('${_preset(p)['price']}', color: c.success),
+                      ],
+                    ],
+                  ),
                   avatar: Glyph(_preset(p)['where'] == 'local' ? G.monitor : G.cloud, size: 16),
                   selected: _provider == p,
                   onSelected: (_) {
@@ -278,6 +289,49 @@ class _BrainCardState extends State<BrainCard> {
             ],
           ),
           const SizedBox(height: 14),
+          if (!_isLocal && '${_preset(_provider)['price']}'.startsWith('free') && !_hasKey) ...[
+            Row(
+              children: [
+                Glyph(G.coin, size: 18, color: c.success),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Free to start: make a free account, create an API key, and paste it below. '
+                    'Free tiers have daily limits; Compii tells you if you hit one.',
+                    style: context.type.bodySmall,
+                  ),
+                ),
+                if ('${_preset(_provider)['signup']}'.isNotEmpty)
+                  TextButton.icon(
+                    icon: const Glyph(G.external, size: 15),
+                    label: const Text('Get a free key'),
+                    onPressed: () => _openLink('${_preset(_provider)['signup']}'),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+          ],
+          if (!_isLocal && _local.isNotEmpty) ...[
+            Text('Models', style: context.type.labelMedium),
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 120),
+              child: SingleChildScrollView(
+                child: Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final m in _local)
+                    ChoiceChip(
+                      label: Text(m),
+                      selected: _model.text == m,
+                      onSelected: (_) => setState(() {
+                        _model.text = m;
+                        _dirty = true;
+                      }),
+                    ),
+                ]),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
           if (_isLocal) ...[
             Row(
               children: [
@@ -285,8 +339,8 @@ class _BrainCardState extends State<BrainCard> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'Free and private: the AI runs on this PC. Smaller local models are slower and less capable than Claude, '
-                    'so pick one that can use tools (Test checks this).',
+                    'Free and private: the AI runs on this PC. On a small graphics card it can be slow; '
+                    'pick a model that can use tools (Test checks this).',
                     style: context.type.bodySmall,
                   ),
                 ),
@@ -296,7 +350,7 @@ class _BrainCardState extends State<BrainCard> {
             if (_localRunning == false)
               Text(
                 _provider == 'ollama'
-                    ? 'Ollama isn’t running on this PC. Install it from ollama.com, then run “ollama pull qwen3:8b” and come back.'
+                    ? 'Ollama isn’t running on this PC. Install it from ollama.com, then run “ollama pull qwen3:4b” and come back.'
                     : 'LM Studio’s server isn’t running. Start it from LM Studio’s Developer tab.',
                 style: context.type.bodySmall?.copyWith(color: c.warning),
               ),
@@ -446,6 +500,16 @@ class _BrainCardState extends State<BrainCard> {
         ],
       ),
     );
+  }
+}
+
+/// Opens a web page in the user's browser (sign-up pages for free keys).
+void _openLink(String url) {
+  if (!url.startsWith('https://')) return;
+  if (Platform.isWindows) {
+    Process.run('rundll32', ['url.dll,FileProtocolHandler', url]);
+  } else {
+    Process.run(Platform.isMacOS ? 'open' : 'xdg-open', [url]);
   }
 }
 

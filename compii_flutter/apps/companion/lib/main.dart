@@ -32,9 +32,9 @@ Future<void> main(List<String> args) async {
     quick = QuickMode(state);
     try {
       await quick.registerHotkey();
-      // Talk from anywhere: press to start, press again to send.
+      // Talk from anywhere (Alt+Space): press to start, press again to send.
       await hotKeyManager.register(
-        HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.control, HotKeyModifier.alt], scope: HotKeyScope.system),
+        HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.alt], scope: HotKeyScope.system),
         keyDownHandler: (_) => voice.speaking ? voice.quiet() : voice.toggle(),
       );
       // Kill switch from anywhere: stop everything; every action asks until lifted.

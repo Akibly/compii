@@ -14,7 +14,7 @@ import 'glyphs.dart';
 const _barSize = Size(720, 132);
 const _openSize = Size(720, 520);
 
-/// Turns the main window into a floating quick bar (ChatGPT Alt+Space /
+/// Turns the main window into a floating quick bar for typing (Ctrl+Space; like ChatGPT's Alt+Space /
 /// Raycast style) and back. The window itself changes mode, so there is one
 /// brain, one history and one connection.
 class QuickMode extends ChangeNotifier {
@@ -28,7 +28,7 @@ class QuickMode extends ChangeNotifier {
   Future<void> registerHotkey() async {
     await hotKeyManager.unregisterAll();
     await hotKeyManager.register(
-      HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.alt], scope: HotKeyScope.system),
+      HotKey(key: PhysicalKeyboardKey.space, modifiers: [HotKeyModifier.control], scope: HotKeyScope.system),
       keyDownHandler: (_) => toggle(),
     );
   }

@@ -293,7 +293,7 @@ class _Sidebar extends StatelessWidget {
                   child: Row(
                     children: [
                       Expanded(
-                        child: Text('Quick bar', maxLines: 1, overflow: TextOverflow.ellipsis,
+                        child: Text('Talk', maxLines: 1, overflow: TextOverflow.ellipsis,
                             style: context.type.labelMedium?.copyWith(color: c.faint)),
                       ),
                       const Kbd('Alt + Space'),
@@ -526,7 +526,7 @@ class _StatusLine extends StatelessWidget {
       CoreStatus.offline => (G.power, 'Compii Core isn’t running. Start it with “uv run compii-core” in compii_core — I’ll reconnect by myself.', c.danger),
       CoreStatus.connecting => (G.sync, 'Connecting to Compii Core…', c.muted),
       CoreStatus.online when core.brain == 'rehearsal' => (G.flask, 'Rehearsal mode — scripted test runs, not AI.', c.warning),
-      CoreStatus.online when !core.credentialsFound => (G.key, 'No AI chosen yet. Pick a free local model or add a key in Settings → Brain.', c.warning),
+      CoreStatus.online when !core.credentialsFound => (G.key, 'No AI connected yet. Pick one in Settings → Brain — Groq, Gemini and Ollama Cloud have free tiers.', c.warning),
       _ => null,
     };
     final error = state.error;
@@ -685,9 +685,7 @@ class _ComposerState extends State<Composer> {
             ),
           ),
           if (widget.onVoice != null)
-            IconButton(tooltip: 'Back to talking (Esc)', onPressed: widget.onVoice, icon: const Glyph(G.mic, size: 19))
-          else if (voice != null)
-            MicButton(voice: voice, onSetup: () => widget.state?.go(Section.settings))
+            IconButton(tooltip: 'Back to talking (Esc)', onPressed: widget.onVoice, icon: const Glyph(G.wave, size: 19))
           else
             const SizedBox(width: 4),
           const SizedBox(width: 2),
@@ -803,7 +801,7 @@ class _Home extends StatelessWidget {
               const SizedBox(height: 6),
               Text('What should we get done?', style: context.type.bodyLarge?.copyWith(color: c.muted), textAlign: TextAlign.center),
               const SizedBox(height: 22),
-              VoiceDock(core: core, state: state, onSend: _start, run: run),
+              VoiceDock(core: core, state: state, onSend: _start, run: run, showCharacter: false),
               const SizedBox(height: 26),
               TrySaying(
                 items: [for (final (g, title, _, prompt) in suggestions) (g, title, prompt)],

@@ -256,8 +256,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: Column(
             children: [
               for (final (i, (keys, what)) in const [
-                ('Alt + Space', 'Open the quick bar from anywhere'),
-                ('Ctrl + Alt + Space', 'Talk to Compii from anywhere (press again to send)'),
+                ('Alt + Space', 'Talk to Compii from anywhere (press again to send)'),
+                ('Ctrl + Space', 'Type to Compii from anywhere (quick bar)'),
                 ('Ctrl + N', 'New conversation'),
                 ('Enter / Shift + Enter', 'Send / new line'),
                 ('Esc', 'Close the quick bar'),
@@ -360,7 +360,7 @@ class VoiceSettings extends StatelessWidget {
                         G.mic,
                         'Talk to Compii',
                         voice.canListen
-                            ? 'Ready. Click Compii or the mic and speak; Ctrl + Alt + Space works from anywhere.'
+                            ? 'Ready. Tap Compii and speak, or press Alt + Space from anywhere.'
                             : 'Uses Whisper, an open speech model, running on your PC.',
                         voice.canListen
                             ? Glyph(G.checkCircle, color: c.success)

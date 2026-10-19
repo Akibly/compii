@@ -192,7 +192,7 @@ class TalkableOrbling extends StatelessWidget {
           ? 'Tap to interrupt'
           : voice.listening
               ? 'Tap to send'
-              : (voice.canListen ? 'Tap to talk to Compii' : 'Turn on listening in Settings → Voice');
+              : (voice.canListen ? 'Tap to talk · Alt + Space' : 'Turn on listening in Settings → Voice');
       return Tooltip(
         message: hint,
         child: MouseRegion(

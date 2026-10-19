@@ -92,7 +92,7 @@ class SkillRoutineBody(BaseModel):
     schedule: dict[str, Any]
 
 
-KEY_NAMES = {"anthropic", "openrouter", "openai", "custom"}
+KEY_NAMES = {"anthropic", "groq", "gemini", "ollama", "openrouter", "openai", "custom"}
 
 
 class RoutineBody(BaseModel):
@@ -429,7 +429,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         has_key = bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")) \
             or keys.has("anthropic")
         return {"ok": True, "version": __version__, "brain": "rehearsal" if mode == "rehearsal" else mode,
-                "credentials": "found" if has_key or mode != "claude" else "not_found",
+                "credentials": "found" if fixed_brain or (not brain_state["problem"] and (has_key or mode != "claude"))
+                else "not_found",
                 "lockdown": agent.gate.lockdown}
 
     # ---- brain: which AI thinks, and its keys ----
@@ -437,8 +438,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     def brain_view() -> dict[str, Any]:
         return {
             "settings": prov.asdict(brain_settings),
-            "presets": {k: {"label": v["label"], "where": v["where"], "needs_key": bool(v["key"]),
-                            "model": v["model"], "base_url": v["base_url"]} for k, v in prov.PRESETS.items()},
+            "presets": {k: {"label": v["label"], "where": v["where"], "needs_key": bool(v["key"]), "key": v["key"],
+                            "model": v["model"], "base_url": v["base_url"], "price": v.get("price", ""),
+                            "signup": v.get("signup", "")} for k, v in prov.PRESETS.items()},
             "keys": {n: keys.has(n) for n in sorted(KEY_NAMES)},
             "active": "rehearsal" if mode == "rehearsal" else brain_settings.primary.provider,
             "fixed": fixed_brain, "local": brain_settings.primary.local,
@@ -500,9 +502,14 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return brain_view()
 
     @app.get("/brain/models", dependencies=[Depends(auth_local)])
-    async def brain_models(base_url: str = Query("http://127.0.0.1:11434/v1")) -> dict[str, Any]:
+    async def brain_models(base_url: str = Query("http://127.0.0.1:11434/v1"), provider: str = Query("")) -> dict[str, Any]:
+        preset = prov.PRESETS.get(provider, {})
+        key = keys.get(preset["key"]) if preset.get("key") else None
+        if preset.get("key") and not key:
+            return {"models": [], "running": False, "error": "Add the key first to see the models."}
         try:
-            return {"models": await prov.local_models(base_url), "running": True}
+            models = await prov.local_models(preset.get("base_url") or base_url, key)
+            return {"models": sorted(models), "running": True}
         except Exception as e:  # noqa: BLE001 - server not running
             return {"models": [], "running": False, "error": str(e)[:200]}
 

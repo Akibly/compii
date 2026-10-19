@@ -22,15 +22,25 @@ from .agent import MODEL, BrainReply, ClaudeBrain, ToolCall
 from .keys import KeyStore
 
 PRESETS: dict[str, dict[str, str]] = {
-    "claude": {"label": "Claude (Anthropic)", "base_url": "", "model": MODEL, "key": "anthropic", "where": "cloud"},
-    "ollama": {"label": "Ollama (free, on this PC)", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:4b",
-               "key": "", "where": "local"},
-    "lmstudio": {"label": "LM Studio (free, on this PC)", "base_url": "http://127.0.0.1:1234/v1", "model": "",
-                 "key": "", "where": "local"},
+    "claude": {"label": "Claude (Anthropic)", "base_url": "", "model": MODEL, "key": "anthropic", "where": "cloud",
+               "price": "paid", "signup": "https://console.anthropic.com/settings/keys"},
+    "groq": {"label": "Groq", "base_url": "https://api.groq.com/openai/v1", "model": "openai/gpt-oss-120b",
+             "key": "groq", "where": "cloud", "price": "free tier", "signup": "https://console.groq.com/keys"},
+    "gemini": {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+               "model": "gemini-2.5-flash", "key": "gemini", "where": "cloud", "price": "free tier",
+               "signup": "https://aistudio.google.com/apikey"},
+    "ollama_cloud": {"label": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "gpt-oss:120b",
+                     "key": "ollama", "where": "cloud", "price": "free tier", "signup": "https://ollama.com/settings/keys"},
     "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "", "key": "openrouter",
-                   "where": "cloud"},
-    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "", "key": "openai", "where": "cloud"},
-    "custom": {"label": "Other OpenAI-compatible server", "base_url": "", "model": "", "key": "custom", "where": "cloud"},
+                   "where": "cloud", "price": "free models", "signup": "https://openrouter.ai/keys"},
+    "ollama": {"label": "Ollama on this PC", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:4b",
+               "key": "", "where": "local", "price": "free", "signup": "https://ollama.com/download"},
+    "lmstudio": {"label": "LM Studio on this PC", "base_url": "http://127.0.0.1:1234/v1", "model": "",
+                 "key": "", "where": "local", "price": "free", "signup": "https://lmstudio.ai"},
+    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "", "key": "openai", "where": "cloud",
+               "price": "paid", "signup": "https://platform.openai.com/api-keys"},
+    "custom": {"label": "Other OpenAI-compatible", "base_url": "", "model": "", "key": "custom", "where": "cloud",
+               "price": "", "signup": ""},
 }
 
 
@@ -250,7 +260,7 @@ def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
         import os
 
         if not key and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
-            raise NoKeyError("Add your Anthropic key in Settings → Brain, or pick a free local model.")
+            raise NoKeyError("Add your Anthropic key in Settings → Brain, or pick a free option there (Groq, Gemini, Ollama Cloud or Ollama on this PC).")
         brain = ClaudeBrain(model=c.model)
         if key:
             import anthropic
@@ -294,18 +304,20 @@ async def probe(brain: Any) -> dict[str, Any]:
             "note": "" if tools else "This model answered but didn't use tools, so it can chat but can't do tasks."}
 
 
-async def local_models(base_url: str) -> list[str]:
-    """Models installed in a local server (Ollama or any /v1/models)."""
+async def local_models(base_url: str, api_key: str | None = None) -> list[str]:
+    """Models a server offers: installed ones (Ollama on this PC) or, with a key, a cloud provider's list."""
     import httpx
 
     root = base_url.rstrip("/").removesuffix("/v1")
-    async with httpx.AsyncClient(timeout=3) as client:
-        try:
-            r = await client.get(f"{root}/api/tags")
-            if r.status_code == 200:
-                return [m["name"] for m in r.json().get("models", [])]
-        except httpx.HTTPError:
-            pass
-        r = await client.get(f"{base_url.rstrip('/')}/models")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    async with httpx.AsyncClient(timeout=8) as client:
+        if not api_key:
+            try:
+                r = await client.get(f"{root}/api/tags")
+                if r.status_code == 200:
+                    return [m["name"] for m in r.json().get("models", [])]
+            except httpx.HTTPError:
+                pass
+        r = await client.get(f"{base_url.rstrip('/')}/models", headers=headers)
         r.raise_for_status()
         return [m["id"] for m in r.json().get("data", [])]

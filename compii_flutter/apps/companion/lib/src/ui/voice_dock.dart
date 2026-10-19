@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -18,13 +16,16 @@ import 'voice.dart';
 /// Start typing anywhere (or press the keyboard button) and a slim text box
 /// appears; Esc goes back to voice.
 class VoiceDock extends StatefulWidget {
-  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.task, this.run, this.hint = 'Ask Compii to do something…'});
+  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true});
   final CoreClient core;
   final AppState state;
   final Future<void> Function(String text) onSend;
   final TaskView? task;
   final Run? run;
   final String hint;
+
+  /// Show the Orbling as the talk button here (off when it's already on screen, like on Home).
+  final bool showCharacter;
 
   @override
   State<VoiceDock> createState() => _VoiceDockState();
@@ -104,6 +105,8 @@ class _VoiceDockState extends State<VoiceDock> {
       listenable: voice!,
       builder: (context, _) => _VoiceBar(
         voice: voice,
+        state: widget.state,
+        showCharacter: widget.showCharacter,
         core: widget.core,
         task: widget.task,
         run: widget.run,
@@ -117,8 +120,10 @@ class _VoiceDockState extends State<VoiceDock> {
 }
 
 class _VoiceBar extends StatelessWidget {
-  const _VoiceBar({required this.voice, required this.core, required this.onType, this.task, this.run});
+  const _VoiceBar({required this.voice, required this.state, required this.showCharacter, required this.core, required this.onType, this.task, this.run});
   final VoiceController voice;
+  final AppState state;
+  final bool showCharacter;
   final CoreClient core;
   final TaskView? task;
   final Run? run;
@@ -142,9 +147,12 @@ class _VoiceBar extends StatelessWidget {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             _SideButton(glyph: G.keyboard, tooltip: 'Type instead (or just start typing)', onTap: onType),
-            const SizedBox(width: 18),
-            _TalkButton(voice: voice),
-            const SizedBox(width: 18),
+            const SizedBox(width: 16),
+            if (showCharacter)
+              TalkableOrbling(voice: voice, mood: state.moodWith(core), jobs: working ? 1 : 0, size: 76)
+            else
+              Flexible(child: _Hint(voice: voice)),
+            const SizedBox(width: 16),
             if (voice.speaking)
               _SideButton(glyph: G.speaker, tooltip: 'Stop talking', color: c.accent, onTap: voice.quiet)
             else if (working)
@@ -153,8 +161,7 @@ class _VoiceBar extends StatelessWidget {
               const SizedBox(width: 44),
           ],
         ),
-        const SizedBox(height: 10),
-        _Hint(voice: voice),
+        if (showCharacter) ...[const SizedBox(height: 6), _Hint(voice: voice)],
       ],
     );
   }
@@ -233,114 +240,6 @@ class _Stage extends StatelessWidget {
   }
 }
 
-/// The big round talk button: tap to talk, tap again to send; hold to talk.
-class _TalkButton extends StatefulWidget {
-  const _TalkButton({required this.voice});
-  final VoiceController voice;
-  @override
-  State<_TalkButton> createState() => _TalkButtonState();
-}
-
-class _TalkButtonState extends State<_TalkButton> with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 1600));
-  DateTime? _down;
-  bool _startedHere = false;
-  bool _hover = false;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    final still = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    if (still) {
-      _pulse.stop();
-    } else if (!_pulse.isAnimating) {
-      _pulse.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    final v = widget.voice;
-    final on = v.listening;
-    final color = on ? c.listen : (v.speaking ? c.accent : c.accent);
-    return Tooltip(
-      message: on ? 'Tap to send — or release if holding' : (v.speaking ? 'Tap to interrupt and talk' : 'Tap to talk · Ctrl + Alt + Space'),
-      child: MouseRegion(
-        cursor: SystemMouseCursors.click,
-        onEnter: (_) => setState(() => _hover = true),
-        onExit: (_) => setState(() => _hover = false),
-        child: GestureDetector(
-          onTapDown: (_) {
-            _down = DateTime.now();
-            _startedHere = !v.listening;
-            if (v.speaking) v.quiet();
-            if (_startedHere) v.start();
-          },
-          onTapUp: (_) {
-            final held = _down != null && DateTime.now().difference(_down!) > const Duration(milliseconds: 400);
-            if (!_startedHere || held) v.finish();
-          },
-          onTapCancel: () {
-            if (v.listening) v.finish();
-          },
-          child: SizedBox.square(
-            dimension: 92,
-            child: AnimatedBuilder(
-              animation: _pulse,
-              builder: (context, _) {
-                final t = _pulse.value;
-                final level = on ? v.level.clamp(0.0, 1.0) : 0.0;
-                return Stack(
-                  alignment: Alignment.center,
-                  children: [
-                    // Breathing halo; while listening it follows your voice.
-                    Container(
-                      width: 64 + (on ? 18 + level * 22 : 10 + math.sin(t * math.pi * 2) * 4),
-                      height: 64 + (on ? 18 + level * 22 : 10 + math.sin(t * math.pi * 2) * 4),
-                      decoration: BoxDecoration(shape: BoxShape.circle, color: color.withValues(alpha: on ? .18 : .10)),
-                    ),
-                    if (on)
-                      Container(
-                        width: 64 + t * 28,
-                        height: 64 + t * 28,
-                        decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: color.withValues(alpha: (1 - t) * .5), width: 2)),
-                      ),
-                    AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
-                      width: _hover ? 66 : 64,
-                      height: _hover ? 66 : 64,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        gradient: LinearGradient(
-                          begin: Alignment.topLeft,
-                          end: Alignment.bottomRight,
-                          colors: [Color.lerp(color, Colors.white, .18)!, color],
-                        ),
-                        boxShadow: [BoxShadow(color: color.withValues(alpha: .45), blurRadius: 18, offset: const Offset(0, 6))],
-                      ),
-                      alignment: Alignment.center,
-                      child: on
-                          ? Glyph(G.wave, size: 28, color: Colors.white, weight: 2.2)
-                          : Glyph(G.mic, size: 28, color: Colors.white, duo: true, duoColor: Colors.white, weight: 2),
-                    ),
-                  ],
-                );
-              },
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _SideButton extends StatelessWidget {
   const _SideButton({required this.glyph, required this.tooltip, required this.onTap, this.color});
   final GlyphData glyph;
@@ -373,15 +272,16 @@ class _Hint extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final style = context.type.labelMedium?.copyWith(color: c.faint);
-    if (voice.listening) return Text('Listening — tap the button again to send', style: style);
+    if (voice.listening) return Text('Listening — tap Compii or press Alt + Space to send', maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(voice.wakeListening ? 'Say “Hey Compii”, tap, or press' : 'Tap, or press', style: style),
+        Flexible(
+          child: Text(voice.wakeListening ? 'Say “Hey Compii”, tap Compii, or press' : 'Tap Compii or press',
+              maxLines: 1, overflow: TextOverflow.ellipsis, style: style),
+        ),
         const SizedBox(width: 6),
-        const Kbd('Ctrl + Alt + Space'),
-        const SizedBox(width: 6),
-        Text('· or just start typing', style: style),
+        const Kbd('Alt + Space'),
       ],
     );
   }
