@@ -289,3 +289,26 @@ def test_walkthrough_pauses_when_the_item_is_missing_and_can_stop(toolbox, tmp_p
     threading.Timer(0.1, halt.set).start()
     out = walks.run({"goal": "x", "steps": [{"instruction": "Click Insert.", "target": "Insert"}], "_halt": halt})
     assert "Stopped at step 1" in out.text
+
+
+async def test_nvidia_sends_its_key_and_turns_thinking_off():
+    keys = MemoryKeyStore()
+    keys.set("nvidia", "nvapi-test")
+    brain = prov.make_brain(prov.BrainChoice("nvidia"), keys)
+    seen: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"choices": [{"finish_reason": "tool_calls", "message": {
+            "content": None, "reasoning_content": "secret scratch thoughts",
+            "tool_calls": [{"id": "n1", "type": "function", "function": {"name": "ping", "arguments": "{\"word\": \"hi\"}"}}]}}]})
+
+    brain.transport = httpx.MockTransport(handle)
+    r = await prov.probe(brain)
+    body = json.loads(seen[0].content)
+    assert r["tools"] and seen[0].headers["Authorization"] == "Bearer nvapi-test"
+    assert str(seen[0].url) == "https://integrate.api.nvidia.com/v1/chat/completions"
+    assert body["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
+    assert body["chat_template_kwargs"] == {"enable_thinking": False}
+    reply = await brain.step("s", [{"role": "user", "content": "x"}], [])
+    assert "secret" not in reply.text

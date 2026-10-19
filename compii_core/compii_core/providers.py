@@ -29,6 +29,9 @@ PRESETS: dict[str, dict[str, str]] = {
     "gemini": {"label": "Google Gemini", "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
                "model": "gemini-2.5-flash", "key": "gemini", "where": "cloud", "price": "free tier",
                "signup": "https://aistudio.google.com/apikey"},
+    "nvidia": {"label": "NVIDIA", "base_url": "https://integrate.api.nvidia.com/v1",
+               "model": "nvidia/nemotron-3-ultra-550b-a55b", "key": "nvidia", "where": "cloud", "price": "free tier",
+               "signup": "https://build.nvidia.com/settings/api-keys"},
     "ollama_cloud": {"label": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "gpt-oss:120b",
                      "key": "ollama", "where": "cloud", "price": "free tier", "signup": "https://ollama.com/settings/keys"},
     "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "", "key": "openrouter",
@@ -144,7 +147,7 @@ class OpenAICompatBrain:
     """Any server speaking /v1/chat/completions with tool calls."""
 
     def __init__(self, base_url: str, model: str, api_key: str | None = None, timeout: float = 300,
-                 transport: Any = None) -> None:
+                 transport: Any = None, extra: dict[str, Any] | None = None) -> None:
         if not base_url or not model:
             raise ValueError("Choose a server address and a model first.")
         self.base_url = base_url.rstrip("/")
@@ -152,11 +155,12 @@ class OpenAICompatBrain:
         self.api_key = api_key
         self.timeout = timeout
         self.transport = transport  # tests
+        self.extra = extra or {}  # provider-specific request fields
 
     async def step(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> BrainReply:
         import httpx
 
-        body: dict[str, Any] = {"model": self.model, "messages": to_openai(system, messages), "stream": False}
+        body: dict[str, Any] = {"model": self.model, "messages": to_openai(system, messages), "stream": False, **self.extra}
         if tools:
             body["tools"] = tools_to_openai(tools)
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
@@ -271,6 +275,10 @@ def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
         raise NoKeyError(f"Add your {preset['label']} key in Settings → Brain first.")
     if c.provider == "ollama":
         return OllamaBrain(c.base_url, c.model)
+    if c.provider == "nvidia":
+        # Thinking off: Compii answers out loud, so speed matters more than long reasoning.
+        return OpenAICompatBrain(c.base_url, c.model, key, extra={
+            "chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.6, "top_p": 0.95, "max_tokens": 4096})
     return OpenAICompatBrain(c.base_url, c.model, key)
 
 

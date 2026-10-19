@@ -92,7 +92,7 @@ class SkillRoutineBody(BaseModel):
     schedule: dict[str, Any]
 
 
-KEY_NAMES = {"anthropic", "groq", "gemini", "ollama", "openrouter", "openai", "custom"}
+KEY_NAMES = {"anthropic", "groq", "gemini", "nvidia", "ollama", "openrouter", "openai", "custom"}
 
 
 class RoutineBody(BaseModel):

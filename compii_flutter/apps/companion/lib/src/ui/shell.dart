@@ -526,7 +526,7 @@ class _StatusLine extends StatelessWidget {
       CoreStatus.offline => (G.power, 'Compii Core isn’t running. Start it with “uv run compii-core” in compii_core — I’ll reconnect by myself.', c.danger),
       CoreStatus.connecting => (G.sync, 'Connecting to Compii Core…', c.muted),
       CoreStatus.online when core.brain == 'rehearsal' => (G.flask, 'Rehearsal mode — scripted test runs, not AI.', c.warning),
-      CoreStatus.online when !core.credentialsFound => (G.key, 'No AI connected yet. Pick one in Settings → Brain — Groq, Gemini and Ollama Cloud have free tiers.', c.warning),
+      CoreStatus.online when !core.credentialsFound => (G.key, 'No AI connected yet. Pick one in Settings → Brain — NVIDIA, Groq, Gemini and Ollama Cloud have free tiers.', c.warning),
       _ => null,
     };
     final error = state.error;
