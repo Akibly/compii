@@ -120,7 +120,7 @@ class CompiiApp extends StatelessWidget {
       // The character's eyes follow the mouse anywhere in the window.
       builder: (context, child) => ValueListenableBuilder<bool>(
         valueListenable: windowShown,
-        // Hidden or minimised: pause every animation (it was half a CPU core for nobody).
+        // Hidden, minimised or in the background: pause every animation (it was up to a CPU core).
         builder: (context, shown, _) => TickerMode(
           enabled: shown,
           child: Listener(
@@ -150,13 +150,15 @@ Future<void> _startOverlay() async {
   }
 }
 
-/// Whether the main window can be seen (not hidden to the tray, not minimised).
+/// Whether you're using the main window (shown, not minimised, in front). Otherwise its
+/// animations pause: the cursor buddy is how Compii shows up while you work elsewhere.
 final windowShown = ValueNotifier<bool>(true);
 
 void _watchWindowShown() {
   Timer.periodic(const Duration(milliseconds: 700), (_) async {
     try {
-      windowShown.value = await windowManager.isVisible() && !await windowManager.isMinimized();
+      windowShown.value = await windowManager.isVisible() && !await windowManager.isMinimized() &&
+          await windowManager.isFocused();
     } on Object {
       windowShown.value = true;
     }
