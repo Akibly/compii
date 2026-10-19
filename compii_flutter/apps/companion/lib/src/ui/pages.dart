@@ -250,6 +250,25 @@ class _SettingsPageState extends State<SettingsPage> {
             ),
           ),
         ),
+        const SizedBox(height: 10),
+        _Card(
+          child: OptionRow(
+            glyph: G.chat,
+            title: 'How Compii answers',
+            subtitle: 'Character: Compii is the main figure and replies in a speech bubble. Chat: a full message history.',
+            color: c.muted,
+            trailing: SegmentedButton<bool>(
+              showSelectedIcon: false,
+              style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
+              segments: const [
+                ButtonSegment(value: false, label: Text('Character')),
+                ButtonSegment(value: true, label: Text('Chat')),
+              ],
+              selected: {widget.state.chatView},
+              onSelectionChanged: (s) => widget.state.setChatView(s.first),
+            ),
+          ),
+        ),
         const SizedBox(height: 28),
         Text('Shortcuts', style: context.type.titleLarge),
         const SizedBox(height: 12),

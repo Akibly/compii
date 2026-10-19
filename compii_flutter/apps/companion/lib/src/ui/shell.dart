@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
@@ -10,6 +11,7 @@ import 'tokens.dart';
 import 'trust.dart';
 import 'voice.dart';
 import 'voice_dock.dart';
+import 'stage.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 
@@ -20,6 +22,27 @@ class AppState extends ChangeNotifier {
   Section section = Section.home;
   String? selected;
   ThemeMode themeMode = ThemeMode.system;
+
+  /// Replies as a chat history instead of the character's speech bubble.
+  bool chatView = false;
+
+  void setChatView(bool v) {
+    chatView = v;
+    notifyListeners();
+    SharedPreferences.getInstance().then((p) => p.setBool('chat_view', v)).ignore();
+  }
+
+  /// Restore saved preferences (chat view, theme).
+  Future<void> load() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      chatView = p.getBool('chat_view') ?? false;
+      themeMode = ThemeMode.values.byName(p.getString('theme') ?? 'system');
+      notifyListeners();
+    } on Object {
+      // first run or no storage: defaults
+    }
+  }
   String? error;
 
   /// Free local voice; set by the app at start.
@@ -57,6 +80,7 @@ class AppState extends ChangeNotifier {
   void setTheme(ThemeMode m) {
     themeMode = m;
     notifyListeners();
+    SharedPreferences.getInstance().then((p) => p.setString('theme', m.name)).ignore();
   }
 
   void fail(Object? e) {
@@ -158,7 +182,8 @@ class Workspace extends StatelessWidget {
                                 Section.safety => SafetyPage(run: _run),
                                 Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
                                 Section.settings => SettingsPage(core: core, state: state, run: _run),
-                                Section.chat when task != null => _Conversation(task: task, core: core, run: _run, state: state),
+                                Section.chat when task != null && state.chatView => _Conversation(task: task, core: core, run: _run, state: state),
+                                Section.chat when task != null => Stage(task: task, core: core, state: state, run: _run),
                                 _ => _Home(core: core, state: state, run: _run),
                               },
                             ),
@@ -862,6 +887,11 @@ class _Conversation extends StatelessWidget {
                 ),
               ),
               if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
+              TextButton.icon(
+                onPressed: () => state.setChatView(false),
+                icon: const Glyph(G.memory, size: 16),
+                label: const Text('Character view'),
+              ),
               if (task.active)
                 OutlinedButton.icon(
                   style: OutlinedButton.styleFrom(foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),

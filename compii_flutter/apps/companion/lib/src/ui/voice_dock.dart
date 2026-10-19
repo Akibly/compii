@@ -16,7 +16,7 @@ import 'voice.dart';
 /// Start typing anywhere (or press the keyboard button) and a slim text box
 /// appears; Esc goes back to voice.
 class VoiceDock extends StatefulWidget {
-  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true});
+  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true, this.showCaptions = true});
   final CoreClient core;
   final AppState state;
   final Future<void> Function(String text) onSend;
@@ -26,6 +26,9 @@ class VoiceDock extends StatefulWidget {
 
   /// Show the Orbling as the talk button here (off when it's already on screen, like on Home).
   final bool showCharacter;
+
+  /// Show what Compii is saying (off where a speech bubble already shows it).
+  final bool showCaptions;
 
   @override
   State<VoiceDock> createState() => _VoiceDockState();
@@ -107,6 +110,7 @@ class _VoiceDockState extends State<VoiceDock> {
         voice: voice,
         state: widget.state,
         showCharacter: widget.showCharacter,
+        showCaptions: widget.showCaptions,
         core: widget.core,
         task: widget.task,
         run: widget.run,
@@ -120,7 +124,8 @@ class _VoiceDockState extends State<VoiceDock> {
 }
 
 class _VoiceBar extends StatelessWidget {
-  const _VoiceBar({required this.voice, required this.state, required this.showCharacter, required this.core, required this.onType, this.task, this.run});
+  const _VoiceBar({required this.voice, required this.state, required this.showCharacter, required this.showCaptions, required this.core, required this.onType, this.task, this.run});
+  final bool showCaptions;
   final VoiceController voice;
   final AppState state;
   final bool showCharacter;
@@ -140,7 +145,7 @@ class _VoiceBar extends StatelessWidget {
         AnimatedSize(
           duration: const Duration(milliseconds: 200),
           alignment: Alignment.bottomCenter,
-          child: _Stage(voice: voice, pending: pending),
+          child: _Stage(voice: voice, pending: pending, showCaptions: showCaptions),
         ),
         const SizedBox(height: 12),
         Row(
@@ -169,7 +174,8 @@ class _VoiceBar extends StatelessWidget {
 
 /// What matters right now, in big friendly text.
 class _Stage extends StatelessWidget {
-  const _Stage({required this.voice, this.pending});
+  const _Stage({required this.voice, this.pending, this.showCaptions = true});
+  final bool showCaptions;
   final VoiceController voice;
   final Map<String, dynamic>? pending;
 
@@ -206,7 +212,7 @@ class _Stage extends StatelessWidget {
       };
       return line(text, color, glyph: glyph, big: false);
     }
-    if (voice.speaking && voice.caption.isNotEmpty) {
+    if (showCaptions && voice.speaking && voice.caption.isNotEmpty) {
       return line(voice.caption, c.text, glyph: G.speakingHead, big: false);
     }
     if (pending != null) {

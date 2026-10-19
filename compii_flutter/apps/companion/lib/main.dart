@@ -23,6 +23,7 @@ Future<void> main(List<String> args) async {
   await ensureCore();
   final core = CoreClient()..start();
   final state = AppState();
+  await state.load();
   final voice = VoiceController(core);
   state.voice = voice;
   QuickMode? quick;
