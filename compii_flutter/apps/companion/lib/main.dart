@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -21,6 +22,7 @@ Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
   WidgetsFlutterBinding.ensureInitialized();
   await ensureCore();
+  keepCoreAlive();
   final core = CoreClient()..start();
   final state = AppState();
   await state.load();
@@ -145,25 +147,38 @@ class _HideOnClose with WindowListener {
   Future<void> onWindowClose() async => windowManager.hide();
 }
 
+/// If Core ever stops (a crash, the PC waking from sleep…), start it again
+/// instead of leaving Compii stuck. Checks every 10 s; waits 30 s after a start.
+void keepCoreAlive() {
+  var restartedAt = DateTime.now();
+  Timer.periodic(const Duration(seconds: 10), (_) async {
+    if (DateTime.now().difference(restartedAt) < const Duration(seconds: 30)) return;
+    if (await ensureCore()) restartedAt = DateTime.now();
+  });
+}
+
 /// Start Compii Core if it isn't running, so the app just works when opened.
-Future<void> ensureCore() async {
+/// Returns true when it had to start it.
+Future<bool> ensureCore() async {
   final http = HttpClient()..connectionTimeout = const Duration(milliseconds: 800);
   try {
     final req = await http.getUrl(Uri.parse('http://127.0.0.1:8765/health'));
-    final res = await req.close();
+    final res = await req.close().timeout(const Duration(seconds: 3));
     await res.drain<void>();
-    if (res.statusCode == 200) return;
+    if (res.statusCode == 200) return false;
   } on Object {
     // not running: start it below
   } finally {
     http.close(force: true);
   }
   final dir = _findCore();
-  if (dir == null) return;
+  if (dir == null) return false;
   try {
     await Process.start('uv', ['run', 'compii-core'], workingDirectory: dir, mode: ProcessStartMode.detached, runInShell: true);
+    return true;
   } on Object catch (e) {
     debugPrint('Could not start Compii Core: $e');
+    return false;
   }
 }
 

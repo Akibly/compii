@@ -921,11 +921,31 @@ def main() -> None:
     import uvicorn
 
     make_dpi_aware()
+    _log_to_file()
 
     app = build_app()
     if os.environ.get("COMPII_HOTKEY", "1") != "0":
-        app.state.buddy.start_shortcuts()  # hold Ctrl+Alt to talk, Ctrl+Win to dictate, Ctrl+Alt+W/R/H
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
+        app.state.buddy.start_shortcuts()  # hold Ctrl+Alt to talk, Ctrl+Win to dictate
+        from .screen import warm_up
+
+        warm_up()  # the first screen read of a browser-based app is slow: do it now, not on first use
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info", access_log=False)  # the app polls every second
+
+
+def _log_to_file() -> None:
+    """Keep Core's output, errors and crashes in ~/Compii/core.log (it usually runs
+    in a hidden window), so a Core that stops can say why. Restarted fresh past 2 MB.
+    COMPII_LOG=console keeps output in the terminal instead."""
+    import faulthandler
+
+    log = workspace_dir() / "core.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    mode = "w" if log.exists() and log.stat().st_size > 2_000_000 else "a"
+    out = open(log, mode, encoding="utf-8", buffering=1)  # noqa: SIM115 - lives as long as Core
+    out.write(f"\n--- Compii Core {__version__} started {time.strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+    faulthandler.enable(out)  # native crashes (voice models etc.) leave a trace too
+    if os.environ.get("COMPII_LOG") != "console":
+        sys.stdout = sys.stderr = out
 
 
 if __name__ == "__main__":

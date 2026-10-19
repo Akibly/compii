@@ -10,7 +10,8 @@ Shortcuts (all work in any app; the Compii window can stay closed):
   as a skill. Say "say that again", "hide" or "show yourself" too.
 
 The moment you press, Compii notes the window you're in (items and labels
-only, never passwords). Events for the overlay are `voice_buddy` with a
+only, never passwords), but only sends it to the AI when you ask about the
+screen or point at something; plain questions skip it and answer faster. Events for the overlay are `voice_buddy` with a
 `state`: listening → thinking → answer (or needs_you / watching /
 dictating / idle / setup / error), plus `voice_buddy_visible`.
 """
@@ -146,7 +147,7 @@ class Buddy:
             self.voice.stop_recording()  # mic off the moment you let go
             self.emit("thinking", heard="")
             if self._snap_thread is not None:
-                self._snap_thread.join(timeout=2.5)
+                self._snap_thread.join(timeout=0.4)  # don't keep you waiting for a slow window
             snap = dict(self._snap or {})
             # Words on screen help recognise names and labels you say.
             self.voice.set_hints([snap.get("title", "")] + [e["name"] for e in snap.get("elements", [])[:30]])
@@ -154,9 +155,16 @@ class Buddy:
             if not text:
                 self.emit("idle", text="I didn't catch that.")
                 return
-            focus = focus_from_trail(snap, self._trail)
-            if focus:
-                snap["focus"] = focus
+            gestured = moved(self._trail)
+            if wants_screen(text, gestured):
+                if self._snap_thread is not None:
+                    self._snap_thread.join(timeout=2.5)
+                snap = dict(self._snap or {})
+                focus = focus_from_trail(snap, self._trail)
+                if focus:
+                    snap["focus"] = focus
+            else:
+                snap = {}  # a plain question: answer it without reading the screen (faster)
             self.emit("thinking", heard=text)
             loop = self._loop()
             if loop is None:
@@ -284,6 +292,28 @@ def tidy_dictation(text: str) -> str:
     if len(t.split()) > 3 and t[-1] not in ".!?":
         t += "."
     return t
+
+
+SCREEN_WORDS = re.compile(
+    r"\b(this|that|these|those|here|there|it'?s|screen|window|page|tab|site|button|icon|menu|link|box|field|"
+    r"click|tap|select|open|close|scroll|type|fill|where|which|see|look|showing|shown|show me|how do i|how can i|"
+    r"how to|error|warning|message|popup|pop-?up|dialog|settings?|option|app|file|folder|document|email|"
+    r"spreadsheet|cell|column|row|chart|picture|image|video|text|word|line|code|read|explain|translate|summari[sz]e)\b",
+    re.I)
+
+
+def moved(trail: list[tuple[int, int]]) -> bool:
+    """Did the mouse move with purpose while you talked (pointing at something)?"""
+    if len(trail) < 3:
+        return False
+    xs, ys = [p[0] for p in trail], [p[1] for p in trail]
+    return max(xs) - min(xs) + max(ys) - min(ys) >= 30
+
+
+def wants_screen(text: str, gestured: bool = False) -> bool:
+    """Only read the screen when the request is about it ("what's this?", "where do I
+    click", or the mouse pointed at something). Plain questions skip it and come back faster."""
+    return gestured or bool(SCREEN_WORDS.search(text))
 
 
 def focus_from_trail(snap: dict[str, Any], trail: list[tuple[int, int]]) -> list[str]:

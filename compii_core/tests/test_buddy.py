@@ -192,3 +192,16 @@ def test_answer_and_point_in_one_reply_skips_a_round_trip(home):
         assert task.messages[-2]["role"] == "user" and task.messages[-2]["content"][-1]["text"] == "thanks"
 
     asyncio.run(run())
+
+
+def test_screen_is_read_only_when_the_question_is_about_it():
+    from compii_core.buddy import moved, wants_screen
+
+    assert not wants_screen("what time zone is Ghana in?")
+    assert not wants_screen("remind me to call mum at six")
+    assert wants_screen("what's this?")
+    assert wants_screen("where do I click to export")
+    assert wants_screen("summarise this page")
+    assert wants_screen("what time zone is Ghana in?", gestured=True)  # pointing counts
+    assert not moved([(100, 100), (102, 101), (103, 100)])  # a hand resting on the mouse
+    assert moved([(100, 100), (160, 120), (200, 140)])

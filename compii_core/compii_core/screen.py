@@ -8,7 +8,9 @@ never searched or touched.
 
 from __future__ import annotations
 
+import functools
 import sys
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -44,6 +46,58 @@ class Found:
             "w": self.right - self.left,
             "h": self.bottom - self.top,
         }
+
+
+# All screen reading runs on ONE long-lived thread. UI Automation is COM: setting it up
+# and tearing it down on a new thread per call, while sharing one automation object,
+# can crash Python outright (Core vanished with exit code 139).
+_uia_jobs: Any = None
+_uia_lock = threading.Lock()
+
+
+def _uia_worker(jobs: Any) -> None:
+    import ctypes
+
+    ctypes.windll.ole32.CoInitializeEx(None, 0x2)  # apartment-threaded, kept for the thread's life
+    while True:
+        fn, args, kw, done = jobs.get()
+        try:
+            done.set_result(fn(*args, **kw))
+        except BaseException as e:  # noqa: BLE001 - handed back to the caller
+            done.set_exception(e)
+
+
+def _on_uia_thread(fn: Callable) -> Callable:
+    @functools.wraps(fn)
+    def run(*args: Any, **kw: Any) -> Any:
+        global _uia_jobs
+        if sys.platform != "win32" or threading.current_thread().name == "compii-uia":
+            return fn(*args, **kw)
+        from concurrent.futures import Future
+        import queue
+
+        with _uia_lock:
+            if _uia_jobs is None:
+                _uia_jobs = queue.SimpleQueue()
+                threading.Thread(target=_uia_worker, args=(_uia_jobs,), name="compii-uia", daemon=True).start()
+        done: Future = Future()
+        _uia_jobs.put((fn, args, kw, done))
+        return done.result()
+
+    return run
+
+
+def warm_up() -> None:
+    """Read the screen once in the background, so the first Ctrl+Alt isn't slow
+    (browser-based apps build their accessibility tree on first use)."""
+    threading.Thread(target=lambda: _safely(snapshot_foreground), daemon=True).start()
+
+
+def _safely(fn: Callable) -> None:
+    try:
+        fn()
+    except Exception:  # noqa: BLE001 - best effort
+        pass
 
 
 def make_dpi_aware() -> None:
@@ -130,6 +184,7 @@ def _search(auto, target: str, window: str | None = None):
     return (best[1], best[2]) if best else (None, None)
 
 
+@_on_uia_thread
 def find_element(target: str, window: str | None = None) -> Found | None:
     """Best match for `target` among the visible elements of the user's top windows."""
     _need_windows()
@@ -142,6 +197,7 @@ def find_element(target: str, window: str | None = None) -> Found | None:
 # ---- operating apps ----------------------------------------------------------------
 
 
+@_on_uia_thread
 def list_windows() -> list[dict[str, Any]]:
     _need_windows()
     import uiautomation as auto
@@ -158,6 +214,7 @@ def list_windows() -> list[dict[str, Any]]:
     return out[:40]
 
 
+@_on_uia_thread
 def focus_window(window: str) -> str:
     _need_windows()
     import uiautomation as auto
@@ -175,6 +232,7 @@ def focus_window(window: str) -> str:
         return title
 
 
+@_on_uia_thread
 def read_window(window: str | None = None) -> str:
     """The visible text and controls of a window, one per line, for the agent to read."""
     _need_windows()
@@ -216,6 +274,7 @@ def read_window(window: str | None = None) -> str:
         return "\n".join(lines)
 
 
+@_on_uia_thread
 def _act(target: str, window: str | None, before: Callable[[Found], None] | None, action) -> Found:
     _need_windows()
     import uiautomation as auto
@@ -253,6 +312,7 @@ def click(target: str, window: str | None = None, before: Callable[[Found], None
     return _act(target, window, before, press)
 
 
+@_on_uia_thread
 def type_text(text: str, target: str | None = None, window: str | None = None,
               before: Callable[[Found], None] | None = None) -> Found | None:
     """Put text into a field (by its label), or type it where the cursor is."""
@@ -305,6 +365,7 @@ def keys_to_sendkeys(combo: str) -> str:
     return "".join(out)
 
 
+@_on_uia_thread
 def press_keys(combo: str, window: str | None = None) -> str:
     _need_windows()
     import uiautomation as auto
@@ -363,6 +424,7 @@ def cursor_position() -> tuple[int, int]:
     return pt.x, pt.y
 
 
+@_on_uia_thread
 def snapshot_foreground() -> dict[str, Any] | None:
     """The window you're looking at, as a compact list of items with ids (e1, e2…),
     roles, labels and positions, plus the item under the mouse. None if it's
@@ -454,6 +516,7 @@ def mouse_down() -> bool:
     return bool(ctypes.windll.user32.GetAsyncKeyState(0x01) & 0x8000)
 
 
+@_on_uia_thread
 def item_at(x: int, y: int) -> dict[str, Any] | None:
     """The item under a screen point: label, type, window. Never a password field's contents."""
     _need_windows()
@@ -474,6 +537,7 @@ def item_at(x: int, y: int) -> dict[str, Any] | None:
             return None
 
 
+@_on_uia_thread
 def focused_item() -> dict[str, Any] | None:
     _need_windows()
     import uiautomation as auto
