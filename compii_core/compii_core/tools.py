@@ -79,6 +79,8 @@ class Toolbox:
         # Called with a screen rectangle just before Compii clicks or types there,
         # so the character can point at it ("watch me").
         self.on_point: Callable[[dict[str, Any]], None] | None = None
+        # The latest screen snapshot (screen-aware turns): point_at accepts its ids.
+        self.snapshot: dict[str, Any] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
 
     @property
@@ -349,7 +351,7 @@ class Toolbox:
         return self._browser_call(lambda: self.browser.fill(a["field"], a["value"], bool(a.get("submit"))))
 
     def point_at(self, a: dict[str, Any]) -> ToolResult:
-        found = self._find(a["target"])
+        found = self._from_snapshot(a["target"]) or self._find(a["target"])
         if found is None:
             raise ToolError(
                 f"Couldn't find anything named “{a['target']}” in the open windows. "
@@ -361,6 +363,20 @@ class Toolbox:
             f"at x={point['x']}, y={point['y']} ({point['w']}x{point['h']}).",
             point=point,
         )
+
+    def _from_snapshot(self, target: str):
+        """An item id (e12) from the screen snapshot, so the AI never has to guess pixels."""
+        import re
+
+        snap = self.snapshot
+        if not snap or not re.fullmatch(r"e\d+", target.strip()):
+            return None
+        from .screen import Found
+
+        for e in snap.get("elements", []):
+            if e["id"] == target.strip():
+                return Found(e["name"], e["role"], snap.get("title", ""), e["x"], e["y"], e["x"] + e["w"], e["y"] + e["h"])
+        return None
 
     def _find(self, target: str):  # indirection so tests can stub the screen
         from .screen import find_element
@@ -491,7 +507,7 @@ class Toolbox:
                  lambda a: f"Fill “{a['field']}”" + (" and submit" if a.get("submit") else "")),
             Tool("point_at", "Point at a button, menu, field or other item in the user's open windows, by its visible label, "
                  "with a short message in a speech bubble. Use it when teaching or when showing the user where something is.",
-                 {"target": {**s, "description": "The item's visible label, e.g. 'Save', 'File', 'Search'."},
+                 {"target": {**s, "description": "The item's id from the screen snapshot (e.g. 'e12'), or its visible label, e.g. 'Save'."},
                   "message": {**s, "description": "One short sentence for the speech bubble."}},
                  ["target", "message"], ActionKind.READ, self.point_at,
                  lambda a: f"Point at “{a['target']}”"),

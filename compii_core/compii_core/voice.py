@@ -23,6 +23,9 @@ import numpy as np
 
 RATE = 16_000
 PARTIAL_EVERY = 0.7  # seconds between live transcript updates
+SPEECH_RMS = 0.012  # louder than this counts as speech
+AUTO_END_SILENCE = 1.1  # hands-free: this much quiet after you spoke sends it
+AUTO_END_WAIT = 6.0  # hands-free: give up if you never start talking
 MAX_SECONDS = 120
 
 WHISPER_MODEL = "base.en"
@@ -72,6 +75,12 @@ class Voice:
         self._chunks: list[np.ndarray] = []
         self._stream = None
         self._listening = False
+        # Hands-free mode: send automatically when you stop talking.
+        self.on_auto_end: Callable[[], None] | None = None
+        self._auto = False
+        self._heard_speech = False
+        self._last_loud = 0.0
+        self._listen_started = 0.0
         self._partial_thread: threading.Thread | None = None
         self._speaker = speaker or _Speaker(self)
         self._wake = None
@@ -260,6 +269,8 @@ class Voice:
             if self._listening:
                 return
             self._chunks = []
+            self._heard_speech = False
+            self._listen_started = self._last_loud = time.monotonic()
             self._listening = True
             self._stopped.clear()
             self._stream = self._recorder_factory()
@@ -273,6 +284,9 @@ class Voice:
         if self._listening:
             self._chunks.append(block.copy())
             level = float(np.sqrt(np.mean(block.astype(np.float32) ** 2)))
+            if level > SPEECH_RMS:
+                self._heard_speech = True
+                self._last_loud = time.monotonic()
             self.emit({"type": "voice_level", "level": min(1.0, level * 8)})
 
     def _audio(self) -> np.ndarray:
@@ -284,8 +298,20 @@ class Voice:
         last = ""
         started = time.monotonic()
         while self._listening:
-            if self._stopped.wait(PARTIAL_EVERY):  # wakes at once when you release
+            if self._stopped.wait(0.15 if self._auto else PARTIAL_EVERY):  # wakes at once when you release
                 break
+            now = time.monotonic()
+            if self._auto and self._listening and (
+                (self._heard_speech and now - self._last_loud >= AUTO_END_SILENCE)
+                or (not self._heard_speech and now - self._listen_started >= AUTO_END_WAIT)
+            ):
+                self._auto = False
+                if self.on_auto_end:
+                    threading.Thread(target=self.on_auto_end, daemon=True).start()
+                break
+            if self._auto and now - getattr(self, "_last_partial", 0) < PARTIAL_EVERY:
+                continue
+            self._last_partial = now
             if time.monotonic() - started > MAX_SECONDS:
                 break
             if self._stt_lock.locked():
@@ -298,11 +324,16 @@ class Voice:
                 last = text
                 self.emit({"type": "voice_partial", "text": text})
 
+    def listen_hands_free(self) -> None:
+        """Keep listening after a quick tap and send by itself when you stop talking."""
+        self._auto = True
+
     def stop_listening(self) -> str:
         """Stop recording and return the final transcript."""
         with self._lock:
             if not self._listening:
                 return ""
+            self._auto = False
             self._listening = False
             self._stopped.set()
             stream, self._stream = self._stream, None

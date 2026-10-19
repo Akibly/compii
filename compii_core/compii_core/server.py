@@ -26,6 +26,7 @@ from . import providers as prov
 from .skills import Skills, from_task, skill_tools, suggest_name
 from .walkthrough import Walkthroughs
 from . import intents
+from .buddy import Buddy
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
@@ -228,6 +229,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     voice.on_command = lambda text: hub.loop and asyncio.run_coroutine_threadsafe(hands_free(text), hub.loop)
 
     plans = pro.Proactive(workspace / "proactive.json")
+    buddy: Buddy | None = None  # set once the agent exists
 
     async def post(update: pro.Update, speak: bool = True) -> None:
         plans.post(update)
@@ -237,6 +239,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     async def agent_emit(event: dict[str, Any]) -> None:
         await hub.emit(event)
+        if buddy is not None:
+            buddy.on_task_event(event)
         task = agent.tasks.get(event.get("task_id", ""))
         origin = task.origin if task else None
         if origin and "watch" in origin:
@@ -405,6 +409,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     app.state.plans = plans
     app.state.tick = tick
     app.state.act_on = act_on
+    buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop)
+    app.state.buddy = buddy
     _proactive_tools(toolbox, plans)
 
     def auth(x_compii_token: str = Header(""), x_compii_device: str = Header("")) -> None:
@@ -911,7 +917,10 @@ def main() -> None:
 
     make_dpi_aware()
 
-    uvicorn.run(build_app(), host=HOST, port=PORT, log_level="info")
+    app = build_app()
+    if os.environ.get("COMPII_HOTKEY", "1") != "0":
+        app.state.buddy.hotkey.start()  # hold Ctrl+Alt anywhere to talk
+    uvicorn.run(app, host=HOST, port=PORT, log_level="info")
 
 
 if __name__ == "__main__":

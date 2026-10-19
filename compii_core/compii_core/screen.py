@@ -325,3 +325,114 @@ def press_keys(combo: str, window: str | None = None) -> str:
 def _literal(text: str) -> str:
     """Escape text so SendKeys types it exactly (braces are its key syntax)."""
     return "".join("{" + ch + "}" if ch in "{}" else ch for ch in text)
+
+
+# ---- what's on screen when you ask (screen awareness) ----------------------------------
+
+# Apps whose windows Compii never reads: password managers and the like.
+BLOCKED_APPS = ("1password", "bitwarden", "keepass", "lastpass", "dashlane", "enpass", "roboform", "nordpass", "keeper")
+SNAPSHOT_ITEMS = 160
+SNAPSHOT_SECONDS = 1.2
+
+
+def _process_name(pid: int) -> str:
+    """e.g. "excel.exe" for a window's process (no extra packages)."""
+    import ctypes
+    from ctypes import wintypes
+
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(520)
+        size = wintypes.DWORD(520)
+        if k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size)):
+            return buf.value.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+        return ""
+    finally:
+        k.CloseHandle(h)
+
+
+def cursor_position() -> tuple[int, int]:
+    import ctypes
+    from ctypes import wintypes
+
+    pt = wintypes.POINT()
+    ctypes.windll.user32.GetCursorPos(ctypes.byref(pt))
+    return pt.x, pt.y
+
+
+def snapshot_foreground() -> dict[str, Any] | None:
+    """The window you're looking at, as a compact list of items with ids (e1, e2…),
+    roles, labels and positions, plus the item under the mouse. None if it's
+    Compii's own window. Password fields and password-manager apps are skipped."""
+    _need_windows()
+    import uiautomation as auto
+
+    with auto.UIAutomationInitializerInThread():
+        try:
+            win = auto.GetForegroundControl()
+            win = win.GetTopLevelControl() or win
+            title = (win.Name or "").strip()
+        except Exception:  # noqa: BLE001
+            return None
+        if not title or "compii" in title.lower():
+            return None
+        app = ""
+        try:
+            app = _process_name(win.ProcessId) or (win.ClassName or "").lower()
+        except Exception:  # noqa: BLE001
+            app = (win.ClassName or "").lower()
+        cx, cy = cursor_position()
+        snap: dict[str, Any] = {"title": title, "app": app, "cursor": [cx, cy], "elements": [], "at": time.time()}
+        if any(b in app or b in title.lower() for b in BLOCKED_APPS):
+            snap["blocked"] = True
+            return snap
+        under = None
+        try:
+            c = auto.ControlFromPoint(cx, cy)
+            if c is not None and not getattr(c, "IsPassword", False):
+                under = (c.Name or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        seen: set[tuple] = set()
+        deadline = time.monotonic() + SNAPSHOT_SECONDS
+        for control, _depth in auto.WalkControl(win, includeTop=False, maxDepth=25):
+            if len(snap["elements"]) >= SNAPSHOT_ITEMS or time.monotonic() > deadline:
+                snap["truncated"] = True
+                break
+            try:
+                if control.IsOffscreen or getattr(control, "IsPassword", False):
+                    continue
+                name = (control.Name or "").strip()
+                if not name:
+                    continue
+                r = control.BoundingRectangle
+                if r.width() <= 2 or r.height() <= 2:
+                    continue
+                role = control.ControlTypeName.replace("Control", "")
+                key = (role, name[:60], r.left // 8, r.top // 8)
+                if key in seen:
+                    continue
+                seen.add(key)
+                snap["elements"].append({"id": f"e{len(snap['elements']) + 1}", "role": role, "name": name[:120],
+                                         "x": r.left, "y": r.top, "w": r.width(), "h": r.height()})
+            except Exception:  # noqa: BLE001 - the window changed while we read it
+                continue
+        snap["under_cursor"] = under
+        return snap
+
+
+def describe_snapshot(snap: dict[str, Any]) -> str:
+    """The snapshot as compact text for the AI (one line per item)."""
+    if snap.get("blocked"):
+        return f"The user is in “{snap['title']}”, a password manager or similar; Compii doesn't read it."
+    lines = [f"Window: “{snap['title']}” ({snap.get('app', '')}). Mouse at {snap['cursor'][0]},{snap['cursor'][1]}"
+             + (f", over “{snap['under_cursor']}”." if snap.get("under_cursor") else ".")]
+    lines.append("Items (id · type · label):")
+    for e in snap["elements"]:
+        lines.append(f"{e['id']} · {e['role']} · {e['name']}")
+    if snap.get("truncated"):
+        lines.append("… more items not listed.")
+    return "\n".join(lines)

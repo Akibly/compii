@@ -79,6 +79,9 @@ How you work:
 - To work in the user's apps: read_window to see exact labels, then click_on, type_into and press_keys. For websites, use browse, read_page, browser_click and browser_fill in your own browser window (separate from the user's browser and logins).
 - Never type passwords, card numbers, bank details or one-time codes, and never complete purchases or logins yourself: ask the user to do that step in the window, then carry on.
 - When the user asks how to do something themselves, use point_at to show them where to click instead of doing it.
+- Screen-aware: when a request comes with what's on the user's screen (items with ids like e12), they are asking about that screen. Answer in one or two spoken sentences and point at the item with point_at using its id. Don't read the whole list back.
+- Requests often arrive by voice and may be misheard. Words marked (?) were unclear. If a word or name is unclear or could mean two things, ask briefly and naturally, e.g. "Did you mean Synology or Sonia?", instead of guessing. Never ask more than one question at a time.
+- Talk like a helpful friend, not a robot: warm, brief, natural. Start with the answer.
 - When the user wants something done regularly or at a later time, use create_routine; when they want to be told when something happens, use create_watch (prefer the free folder and web kinds). Convert their words into the exact schedule, and confirm it in one sentence.
 - Today is {today}.
 - Check your work: after creating or changing something, verify it (read it back, list the folder) before saying it is done.
@@ -109,6 +112,8 @@ class Task:
     # Full conversation with the model, kept so follow-ups have context.
     messages: list[dict[str, Any]] = field(default_factory=list)
     warned_injection: bool = False
+    # What was on screen when the user asked (screen-aware turns), used once.
+    pending_screen: dict[str, Any] | None = None
 
 
 class Stopped(Exception):
@@ -133,13 +138,13 @@ class Agent:
 
     # ---- public API ---------------------------------------------------------
 
-    def start(self, request: str, origin: dict[str, Any] | None = None) -> Task:
-        task = Task(id=f"t{next(self._ids)}-{uuid.uuid4().hex[:6]}", request=request, origin=origin)
+    def start(self, request: str, origin: dict[str, Any] | None = None, screen: dict[str, Any] | None = None) -> Task:
+        task = Task(id=f"t{next(self._ids)}-{uuid.uuid4().hex[:6]}", request=request, origin=origin, pending_screen=screen)
         self.tasks[task.id] = task
         task.runner = asyncio.create_task(self._run(task, request))
         return task
 
-    def reply(self, task_id: str, text: str) -> Task:
+    def reply(self, task_id: str, text: str, screen: dict[str, Any] | None = None) -> Task:
         """Continue a conversation with a follow-up message."""
         task = self.tasks.get(task_id)
         if task is None:
@@ -147,6 +152,7 @@ class Agent:
         if task.status in ("running", "waiting"):
             raise RuntimeError("Compii is still working on this; wait or stop it first.")
         task.stop = asyncio.Event()
+        task.pending_screen = screen
         task.approved_kinds = set()
         task.status = "running"
         task.runner = asyncio.create_task(self._run(task, text))
@@ -221,6 +227,15 @@ class Agent:
                 system += "\n" + extra
         schemas = [t.schema() for t in self.toolbox.tools.values()]
         messages = task.messages
+        if task.pending_screen:
+            from .screen import describe_snapshot
+
+            snap, task.pending_screen = task.pending_screen, None
+            self.toolbox.snapshot = snap  # point_at can use its ids
+            await self.emit(task, "screen_seen", title=snap.get("title", ""), items=len(snap.get("elements", [])))
+            seen = guard.wrap_untrusted("screen", describe_snapshot(snap))
+            text = "\n\n".join([text, seen, "(This is what the user is looking at right now. "
+                                            "Answer about it; point at items by id.)"])
         messages.append({"role": "user", "content": text})
         try:
             for _ in range(MAX_STEPS):
