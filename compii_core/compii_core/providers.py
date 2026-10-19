@@ -194,10 +194,16 @@ class OpenAICompatBrain:
 
 
 def strip_thinking(text: str) -> str:
-    """Local reasoning models may include their scratch thoughts; never show or speak them."""
+    """Local reasoning models may include their scratch thoughts; never show or speak them.
+    Typographic spaces and hyphens (gpt-oss loves them) become plain ones, so the voice reads them right."""
     import re
 
+    text = text.translate(PLAIN_TYPOGRAPHY)
     return re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+
+
+PLAIN_TYPOGRAPHY = str.maketrans({" ": " ", " ": " ", " ": " ", " ": " ", " ": " ",
+                                  "‑": "-", "‐": "-", "​": ""})
 
 
 class OllamaBrain(OpenAICompatBrain):

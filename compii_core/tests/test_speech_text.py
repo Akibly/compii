@@ -20,3 +20,9 @@ def test_whole_sentences_keep_their_natural_flow():
     long_first = _phrases("Okay, I found every invoice from last month in your Downloads folder and put them all into a "
                           "single spreadsheet with totals. Anything else?")
     assert long_first[0] == "Okay," and long_first[-1] == "Anything else?"
+
+
+def test_typographic_spaces_and_hyphens_become_plain():
+    from compii_core.providers import strip_thinking
+
+    assert strip_thinking("UTC + 0, year‑round") == "UTC + 0, year-round"
