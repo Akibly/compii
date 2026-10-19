@@ -139,7 +139,7 @@ class Agent:
     # ---- public API ---------------------------------------------------------
 
     def start(self, request: str, origin: dict[str, Any] | None = None, screen: dict[str, Any] | None = None) -> Task:
-        task = Task(id=f"t{next(self._ids)}-{uuid.uuid4().hex[:6]}", request=request, origin=origin, pending_screen=screen)
+        task = Task(id=f"t{next(self._ids)}-{uuid.uuid4().hex[:6]}", request=_shown(request), origin=origin, pending_screen=screen)
         self.tasks[task.id] = task
         task.runner = asyncio.create_task(self._run(task, request))
         return task
@@ -214,7 +214,7 @@ class Agent:
         if not task.messages:
             await self.emit(task, "task_started", request=task.request, status="running", origin=task.origin)
         else:
-            await self.emit(task, "user_message", text=text, status="running")
+            await self.emit(task, "user_message", text=_shown(text), status="running")
         system = SYSTEM.format(
             today=time.strftime("%A %d %B %Y, %H:%M"),
             home=Path.home(),
@@ -372,6 +372,11 @@ class Agent:
     async def _finish(self, task: Task, status: str, text: str) -> None:
         task.status = status
         await self.emit(task, "task_finished", status=status, text=text)
+
+
+def _shown(text: str) -> str:
+    """What the user said, without notes meant only for the AI."""
+    return text.split("\n\n(Spoken request.")[0]
 
 
 def _close_open_calls(messages: list[dict[str, Any]]) -> None:

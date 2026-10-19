@@ -95,12 +95,15 @@ class Buddy:
         if not self._busy.acquire(blocking=False):
             return
         try:
+            if self._snap_thread is not None:
+                self._snap_thread.join(timeout=2.5)
+            snap = self._snap or {}
+            # Words on screen help recognise names and labels you say.
+            self.voice.set_hints([snap.get("title", "")] + [e["name"] for e in snap.get("elements", [])[:30]])
             text = self.voice.stop_listening().strip()
             if not text:
                 self.emit("idle", text="I didn't catch that.")
                 return
-            if self._snap_thread is not None:
-                self._snap_thread.join(timeout=2.5)
             self.emit("thinking", heard=text)
             loop = self._loop()
             if loop is None:
@@ -115,7 +118,7 @@ class Buddy:
             return
         if self.voice.settings.speak_replies:
             self.voice.say(random.choice(ACKS))  # instant, human acknowledgement while the AI thinks
-        task = self.agent.start(text, origin={"buddy": True, "title": "Asked from the cursor"}, screen=snap)
+        task = self.agent.start(self.voice.annotate(text), origin={"buddy": True, "title": "Asked from the cursor"}, screen=snap)
         self.tasks.add(task.id)
         self.emit("thinking", heard=text, task_id=task.id, screen=(snap or {}).get("title", ""))
 

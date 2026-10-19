@@ -128,3 +128,28 @@ def test_quick_tap_sends_when_you_stop_talking(home, monkeypatch):
     while not sent and time.monotonic() < deadline:
         time.sleep(0.05)
     assert sent == ["hello"]
+
+
+def test_unclear_words_reach_the_ai_but_not_the_screen(home):
+    import asyncio
+
+    from compii_core.agent import Agent
+    from compii_core.journal import Journal
+    from compii_core.policy import Policy
+    from compii_core.tools import Toolbox
+
+    brain = ScriptBrain([], final="Did you mean Synology or Sonia?")
+    events = []
+
+    async def emit(e):
+        events.append(e)
+
+    async def run():
+        agent = Agent(brain, Toolbox([home["downloads"]], home["workspace"]), Policy(), Journal(home["workspace"] / "j"), emit)
+        task = agent.start("open synia\n\n(Spoken request. Possibly misheard words: synia.)")
+        await asyncio.wait_for(task.runner, 5)
+        return task
+
+    task = asyncio.run(run())
+    assert task.request == "open synia"
+    assert "Possibly misheard words: synia" in brain.seen[0][0]["content"]

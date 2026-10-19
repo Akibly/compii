@@ -33,7 +33,8 @@ KOKORO_FILES = {
     "kokoro-v1.0.int8.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx",
     "voices-v1.0.bin": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
 }
-DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120}
+DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465}
+WHISPER_HQ = "small.en"  # sharper final transcripts (optional download)
 KOKORO_VOICES = {
     "af_heart": "Heart (warm, US)",
     "af_bella": "Bella (bright, US)",
@@ -113,9 +114,17 @@ class Voice:
                     pass
             threading.Thread(target=run, daemon=True).start()
 
+    @property
+    def whisper_hq_dir(self) -> Path:
+        return self.models / f"faster-whisper-{WHISPER_HQ}"
+
+    def has_hq(self) -> bool:
+        return (self.whisper_hq_dir / "model.bin").exists()
+
     def status(self) -> dict[str, Any]:
         return {
             "listen_ready": self.can_listen(),
+            "listen_hq": self.has_hq(),
             "natural_voice": self.has_natural_voice(),
             "engine": "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
             "listening": self._listening,
@@ -139,10 +148,14 @@ class Voice:
 
     def _download(self, what: str) -> None:
         try:
-            if what == "listen":
+            if what in ("listen", "listen_hq"):
                 from faster_whisper import download_model
 
-                download_model(WHISPER_MODEL, output_dir=str(self.whisper_dir))
+                if what == "listen":
+                    download_model(WHISPER_MODEL, output_dir=str(self.whisper_dir))
+                else:
+                    download_model(WHISPER_HQ, output_dir=str(self.whisper_hq_dir))
+                    self._stt_hq = None
             else:
                 files = list(KOKORO_FILES.items())
                 for i, (name, url) in enumerate(files):
@@ -239,8 +252,76 @@ class Voice:
                     self._stt = WhisperModel(str(self.whisper_dir), device="cpu", compute_type="int8")
         return self._stt
 
+    def _whisper_hq(self):
+        """The sharper model for final transcripts, if downloaded (else the fast one)."""
+        if not self.has_hq():
+            return self._whisper()
+        if getattr(self, "_stt_hq", None) is None:
+            with self._load_lock:
+                if getattr(self, "_stt_hq", None) is None:
+                    from faster_whisper import WhisperModel
+
+                    self._stt_hq = WhisperModel(str(self.whisper_hq_dir), device="cpu", compute_type="int8")
+        return self._stt_hq
+
+    def set_hints(self, words: list[str]) -> None:
+        """Words likely to be said (names on screen, the app's title) help recognition."""
+        clean = []
+        for w in words:
+            w = " ".join(str(w).split())[:40]
+            if w and w not in clean:
+                clean.append(w)
+        self._hints = clean[:40]
+
     def transcribe(self, audio: np.ndarray, final: bool = True) -> str:
         """Speech to text. Silence and noise give "" instead of invented words."""
+        if final:
+            text, self.last_unclear = self.transcribe_detailed(audio)
+            self.last_final = (text, time.monotonic())
+            return text
+        return self._transcribe_fast(audio)
+
+    def transcribe_detailed(self, audio: np.ndarray) -> tuple[str, list[str]]:
+        """The careful final pass: beam search, the sharper model if present, a vocabulary
+        hint from the screen, and the words Whisper wasn't sure about."""
+        if audio.size < RATE * 0.3 or float(np.abs(audio).max()) < 0.003:
+            return "", []
+        peak = float(np.abs(audio).max())
+        if peak < 0.5:
+            audio = audio * (0.5 / peak)
+        hints = getattr(self, "_hints", [])
+        prompt = "Compii." + (" " + ", ".join(hints) + "." if hints else "")
+        with self._stt_lock:
+            segments, _ = self._whisper_hq().transcribe(
+                audio,
+                language="en",
+                beam_size=5,
+                vad_filter=True,
+                vad_parameters={"min_silence_duration_ms": 400},
+                condition_on_previous_text=False,
+                no_speech_threshold=0.5,
+                initial_prompt=prompt[:400],
+            )
+            texts = [seg.text.strip() for seg in segments if seg.no_speech_prob < 0.6 and seg.avg_logprob > -1.2]
+        text = " ".join(texts).strip()
+        # Where the quick live preview and this careful pass disagree, the word was hard to hear.
+        def words(t: str) -> list[str]:
+            return [w.strip(" .,!?;:\"'").lower() for w in t.split()]
+
+        preview = set(words(getattr(self, "_last_preview", "")))
+        unclear = [w for w in words(text) if len(w) > 2 and preview and w not in preview]
+        return text, list(dict.fromkeys(unclear))[:6]
+
+    def annotate(self, text: str) -> str:
+        """If `text` is what was just heard, note the words that were unclear, for the AI."""
+        last = getattr(self, "last_final", None)
+        unclear = getattr(self, "last_unclear", [])
+        if not unclear or not last or last[0].strip() != text.strip() or time.monotonic() - last[1] > 30:
+            return text
+        return f"{text}\n\n(Spoken request. Possibly misheard words: {', '.join(unclear)}.)"
+
+    def _transcribe_fast(self, audio: np.ndarray) -> str:
+        """Live preview while you talk: quick and good enough."""
         if audio.size < RATE * 0.3:
             return ""
         peak = float(np.abs(audio).max())
@@ -269,6 +350,7 @@ class Voice:
             if self._listening:
                 return
             self._chunks = []
+            self._last_preview = ""
             self._heard_speech = False
             self._listen_started = self._last_loud = time.monotonic()
             self._listening = True
@@ -322,6 +404,7 @@ class Voice:
                 continue
             if text and text != last and self._listening:
                 last = text
+                self._last_preview = text
                 self.emit({"type": "voice_partial", "text": text})
 
     def listen_hands_free(self) -> None:

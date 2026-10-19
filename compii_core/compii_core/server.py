@@ -608,7 +608,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     async def create_task(body: NewTask) -> dict[str, Any]:
         if not body.request.strip():
             raise HTTPException(400, "Empty request")
-        return task_view(agent.start(body.request.strip()))
+        return task_view(agent.start(voice.annotate(body.request.strip())))
 
     @app.get("/tasks", dependencies=[Depends(auth)])
     def list_tasks() -> list[dict[str, Any]]:
@@ -619,7 +619,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if not body.text.strip():
             raise HTTPException(400, "Empty message")
         try:
-            return task_view(agent.reply(task_id, body.text.strip()))
+            return task_view(agent.reply(task_id, voice.annotate(body.text.strip())))
         except KeyError as e:
             raise HTTPException(404, "No such conversation") from e
         except RuntimeError as e:
