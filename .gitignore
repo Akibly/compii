@@ -8,3 +8,7 @@ xcuserdata/
 Secrets.xcconfig
 *.env
 .env*
+
+# Compii build output
+/dist/
+/.build-check/

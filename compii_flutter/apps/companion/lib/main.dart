@@ -197,6 +197,18 @@ Future<bool> ensureCore() async {
   } finally {
     http.close(force: true);
   }
+  // Installed Compii: Core ships next to the app with its own Python (packaging/build_windows.py).
+  final sep = Platform.pathSeparator;
+  final bundled = File('${File(Platform.resolvedExecutable).parent.path}${sep}core${sep}python${sep}pythonw.exe');
+  if (Platform.isWindows && bundled.existsSync()) {
+    try {
+      await Process.start(bundled.path, ['-m', 'compii_core.server'],
+          workingDirectory: bundled.parent.parent.path, mode: ProcessStartMode.detached);
+      return true;
+    } on Object catch (e) {
+      debugPrint('Could not start the bundled Compii Core: $e');
+    }
+  }
   final dir = _findCore();
   if (dir == null) return false;
   try {
