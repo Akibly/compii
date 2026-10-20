@@ -68,6 +68,7 @@ class Buddy:
         self.last_answer = ""
         self.conversation: str | None = None  # the buddy conversation follow-ups continue
         self._ack: threading.Timer | None = None
+        self.vision_key: Callable[[], str | None] | None = None  # set by the server: the NVIDIA key
         self._last_done = 0.0
         self.visible = True
         self.dictating = False
@@ -168,7 +169,7 @@ class Buddy:
             if wants_screen(text, gestured):
                 if self._snap_thread is not None:
                     self._snap_thread.join(timeout=2.5)
-                snap = dict(self._snap or {})
+                snap = self._with_picture(dict(self._snap or {}), text)
                 focus = focus_from_trail(snap, self._trail)
                 if focus:
                     snap["focus"] = focus
@@ -181,6 +182,24 @@ class Buddy:
             asyncio.run_coroutine_threadsafe(self._handle(text, snap or None), loop)
         finally:
             self._busy.release()
+
+    def _with_picture(self, snap: dict[str, Any], question: str) -> dict[str, Any]:
+        """Apps like Blender draw their own interface, so there's little to read: look at a
+        picture of the window instead (only when asked about the screen, never password managers)."""
+        from . import vision
+
+        key = self.vision_key() if self.vision_key else None
+        if not key or not getattr(self.voice.settings, "see_pictures", True) or not vision.needs_picture(snap):
+            return snap
+        try:
+            self.emit("thinking", heard=question, step="Looking at your screen")
+            shot = vision.capture_foreground()
+            if shot is None:
+                return snap
+            png, window = shot
+            return vision.merge(snap, vision.look(png, question, key), window)
+        except Exception:  # noqa: BLE001 - seeing is a bonus; answer from the labels instead
+            return snap
 
     async def _handle(self, text: str, snap: dict[str, Any] | None) -> None:
         said = text.strip()

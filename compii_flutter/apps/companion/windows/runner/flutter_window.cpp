@@ -48,8 +48,10 @@ bool FlutterWindow::OnCreate() {
       });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
-  flutter_controller_->engine()->SetNextFrameCallback([&]() {
-    this->Show();
+  // Started with Windows (--background): stay hidden; Alt+Space or the tray brings it up.
+  const bool background = wcsstr(GetCommandLineW(), L"--background") != nullptr;
+  flutter_controller_->engine()->SetNextFrameCallback([this, background]() {
+    if (!background) this->Show();
   });
 
   // Flutter can complete the first frame before the "show window" callback is

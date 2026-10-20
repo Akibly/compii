@@ -492,6 +492,9 @@ def describe_snapshot(snap: dict[str, Any]) -> str:
         return f"The user is in “{snap['title']}”, a password manager or similar; Compii doesn't read it."
     lines = [f"Window: “{snap['title']}” ({snap.get('app', '')}). Mouse at {snap['cursor'][0]},{snap['cursor'][1]}"
              + (f", over “{snap['under_cursor']}”." if snap.get("under_cursor") else ".")]
+    if snap.get("seen"):
+        lines.append("What the window shows (from a picture of it): " + snap["seen"]
+                     + " Items with ids v1, v2… were found in that picture; point at them by id.")
     if snap.get("focus"):
         by_id = {e["id"]: e for e in snap["elements"]}
         shown = [f"{i} · {by_id[i]['role']} · {by_id[i]['name']}" for i in snap["focus"] if i in by_id]

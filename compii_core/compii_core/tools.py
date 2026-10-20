@@ -399,7 +399,7 @@ class Toolbox:
         import re
 
         snap = self.snapshot
-        if not snap or not re.fullmatch(r"e\d+", target.strip()):
+        if not snap or not re.fullmatch(r"[ev]\d+", target.strip()):
             return None
         from .screen import Found
 

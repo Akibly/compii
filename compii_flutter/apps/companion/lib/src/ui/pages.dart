@@ -380,7 +380,7 @@ class VoiceSettings extends StatelessWidget {
           Text('Voice', style: context.type.titleLarge),
           const SizedBox(height: 4),
           Text(
-            'Free and private: speech runs on this PC with open models. No account, no per-use cost, and your audio never leaves your computer.',
+            'Free: Compii’s voice runs on this PC. With a Groq key stored, what you say is recognised on Groq (fast, and spares your PC); turn that off below to keep everything on this PC.',
             style: context.type.bodySmall,
           ),
           const SizedBox(height: 12),
@@ -442,6 +442,35 @@ class VoiceSettings extends StatelessWidget {
                               )
                             : download('speak', 'Get natural voice'),
                       ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        G.mic,
+                        'Recognise speech on Groq',
+                        'Faster and more accurate, and spares your PC. Your recording goes to Groq (free) only while you '
+                            'hold Ctrl + Alt. Off: recognised on this PC.',
+                        Switch(
+                          value: settings['cloud_listening'] != false,
+                          onChanged: (v) => run(() => voice.set({'cloud_listening': v})),
+                        ),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        G.eye,
+                        'See apps that draw their own screens',
+                        'Blender, games and design tools don\'t list their buttons. When you ask about one of them, Compii '
+                            'sends a picture of that window (never password managers) to a free NVIDIA vision model.',
+                        Switch(
+                          value: settings['see_pictures'] != false,
+                          onChanged: (v) => run(() => voice.set({'see_pictures': v})),
+                        ),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        G.power,
+                        'Start with Windows',
+                        'Compii starts quietly when you sign in, so Ctrl + Alt always works. Alt + Space opens this window.',
+                        const _StartWithWindows(),
+                      ),
                     ],
                   ),
           ),
@@ -452,5 +481,37 @@ class VoiceSettings extends StatelessWidget {
         ],
       );
     },
+  );
+}
+
+/// Start-with-Windows switch: reads and writes the per-user start-up entry.
+class _StartWithWindows extends StatefulWidget {
+  const _StartWithWindows();
+  @override
+  State<_StartWithWindows> createState() => _StartWithWindowsState();
+}
+
+class _StartWithWindowsState extends State<_StartWithWindows> {
+  bool? _on;
+
+  @override
+  void initState() {
+    super.initState();
+    appControl.startsWithWindows().then((v) => mounted ? setState(() => _on = v) : null, onError: (_) {});
+  }
+
+  @override
+  Widget build(BuildContext context) => Switch(
+    value: _on ?? false,
+    onChanged: _on == null
+        ? null
+        : (v) async {
+            setState(() => _on = v);
+            try {
+              await appControl.setStartWithWindows(v);
+            } on Object {
+              if (mounted) setState(() => _on = !v);
+            }
+          },
   );
 }

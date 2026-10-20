@@ -129,6 +129,7 @@ class VoiceSettingsBody(BaseModel):
     voice: str | None = None
     speed: float | None = None
     cloud_listening: bool | None = None
+    see_pictures: bool | None = None
 
 
 class DownloadBody(BaseModel):
@@ -196,6 +197,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     toolbox.on_draw = lambda d: hub.emit_threadsafe({"type": "voice_draw", **d})  # the overlay draws it
     voice_file = workspace / "voice.json"
     voice.cloud_key = lambda: keys.get("groq") or prov._env_key("groq")  # fast speech recognition, if stored
+    vision_key = lambda: keys.get("nvidia") or prov._env_key("nvidia")  # noqa: E731 - free vision model
 
     async def act_on(text: str) -> bool:
         """Short spoken commands ("yes", "no", "stop", "quiet") act at once,
@@ -420,6 +422,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     app.state.act_on = act_on
     buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop,
                   save_skill=lambda name, instruction, steps: skills.add(name, instruction, steps))
+    buddy.vision_key = vision_key
     app.state.buddy = buddy
     _proactive_tools(toolbox, plans)
 
@@ -773,6 +776,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             voice.settings.speed = max(.7, min(1.4, body.speed))
         if body.cloud_listening is not None:
             voice.settings.cloud_listening = body.cloud_listening
+        if body.see_pictures is not None:
+            voice.settings.see_pictures = body.see_pictures
         voice_file.write_text(json.dumps(vars(voice.settings)), encoding="utf-8")
         return voice.status()
 
@@ -1039,7 +1044,7 @@ def _restore_voice(voice: Voice, path: Path) -> None:
         saved = json.loads(path.read_text(encoding="utf-8-sig"))
     except ValueError:
         return
-    for key in ("speak_replies", "voice", "speed", "engine", "cloud_listening"):
+    for key in ("speak_replies", "voice", "speed", "engine", "cloud_listening", "see_pictures"):
         if key in saved:
             setattr(voice.settings, key, saved[key])
     if saved.get("wake_word") and voice.can_listen():

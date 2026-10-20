@@ -83,6 +83,9 @@ class VoiceSettings:
     # Recognise speech on Groq (fast, accurate, spares your CPU) when a Groq key is stored;
     # the on-device recogniser is the backup. Off: everything stays on this PC.
     cloud_listening: bool = True
+    # When an app doesn't describe itself (Blender, games…) and you ask about the screen,
+    # send a picture of that window to a free vision model. Off: Compii only reads labels.
+    see_pictures: bool = True
 
 
 class Voice:
@@ -770,7 +773,7 @@ def speakable(text: str) -> str:
     t = re.sub(r"\((?:[^()]{40,})\)", "", t)  # long asides in brackets
     t = re.sub(r"\b(e\.g|i\.e|etc|vs)\.", lambda m: {"e.g": "for example", "i.e": "that is", "etc": "and so on",
                                                        "vs": "versus"}[m.group(1).lower()], t, flags=re.I)
-    t = re.sub(r"\b[eE]\d{1,4}\b", "", t)  # screen item ids (e12)
+    t = re.sub(r"\b[eEvV]\d{1,4}\b", "", t)  # screen item ids (e12, v3)
     t = re.sub(r"\bCtrl\b", "Control", t)
     t = re.sub(r"(?<=\w)\s*\+\s*(?=[A-Z])", " ", t)  # Control+Alt -> Control Alt
     t = t.replace("→", " to ").replace("&", " and ").replace("–", " to ")
