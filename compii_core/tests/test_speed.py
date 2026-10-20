@@ -36,7 +36,7 @@ def test_a_quick_spoken_question_sends_only_the_slim_tool_set(home):
     app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
     _run(app, "what time zone is Ghana in", {"buddy": True})
     sent = brain.tool_names[0]
-    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 1
+    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 2  # + more_tools, watch_for_step
     assert "create_spreadsheet" not in sent
 
 

@@ -423,6 +423,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop,
                   save_skill=lambda name, instruction, steps: skills.add(name, instruction, steps))
     buddy.vision_key = vision_key
+    _wire_seeing(agent, toolbox, voice, hub, vision_key)
     app.state.buddy = buddy
     _proactive_tools(toolbox, plans)
 
@@ -1052,6 +1053,61 @@ def _restore_voice(voice: Voice, path: Path) -> None:
             voice.set_wake(True)
         except Exception:  # noqa: BLE001 - no microphone right now; the setting stays saved
             voice.settings.wake_word = True
+
+
+
+def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
+    """Pictures of the window you're in, for apps whose own labels aren't enough: answering about
+    them, pointing at things in them, and the lesson coach that notices when a step is done."""
+    from . import vision as vis
+    from .agent import COACH_NOTE
+    from .coach import Coach
+
+    def allowed() -> bool:
+        return bool(vision_key()) and getattr(voice.settings, "see_pictures", True) and not vis.blocked_foreground()
+
+    def look_at(snap: dict[str, Any], question: str) -> dict[str, Any]:
+        if not allowed():
+            return snap
+        shot = vis.capture_foreground()
+        if shot is None:
+            return snap
+        png, window = shot
+        return vis.merge(snap, vis.look(png, question, vision_key()), window)
+
+    def see_item(target: str) -> dict[str, Any] | None:
+        if not allowed():
+            return None
+        shot = vis.capture_foreground()
+        if shot is None:
+            return None
+        png, window = shot
+        return vis.locate(png, window, target, vision_key())
+
+    def step_done(task_id: str, done_when: str, why: str) -> None:
+        async def go() -> None:
+            from .screen import snapshot_foreground
+
+            try:
+                snap = await asyncio.to_thread(snapshot_foreground)
+            except Exception:  # noqa: BLE001
+                snap = None
+            note = (f"{COACH_NOTE} You can see the step is done: {done_when} ({why}). In a few warm words, say so. "
+                    "Then, if a lesson is going, call update_lesson to move it on, teach the next small step and show it "
+                    "on screen with point_at or draw_on_screen, then call watch_for_step for it. If that was the last "
+                    "step, celebrate and finish.")
+            try:
+                agent.reply(task_id, note, screen=snap)
+            except (KeyError, RuntimeError):
+                pass  # the conversation is busy or gone
+
+        if hub.loop is not None:
+            asyncio.run_coroutine_threadsafe(go(), hub.loop)
+
+    agent.look_at = look_at
+    toolbox.see_item = see_item
+    agent.coach = Coach(lambda png, done_when: vis.check(png, done_when, vision_key()), step_done, allowed,
+                        emit=hub.emit_threadsafe)
 
 
 if __name__ == "__main__":

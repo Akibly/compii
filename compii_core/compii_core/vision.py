@@ -26,19 +26,115 @@ MAX_WIDTH = 1600
 THIN = 15
 # Apps known to draw their own interface.
 DRAWN_APPS = ("blender", "unity", "unreal", "godot", "krita", "gimp", "figma", "photoshop", "illustrator", "davinci",
-              "resolve", "premiere", "afterfx", "obs", "steam", "minecraft", "javaw", "fusion360", "sketchup", "zbrush")
+              "resolve", "premiere", "afterfx", "obs", "steam", "minecraft", "javaw", "fusion360", "sketchup", "zbrush",
+              "filmora", "wondershare", "capcut", "canva", "audacity", "fl studio", "ableton")
 
 
 def needs_picture(snap: dict[str, Any] | None) -> bool:
     if not snap or snap.get("blocked"):
         return False
     app = f"{snap.get('app', '')} {snap.get('title', '')}".lower()
-    return len(snap.get("elements", [])) < THIN or any(a in app for a in DRAWN_APPS)
+    elements = snap.get("elements", [])
+    return len(elements) < THIN or any(a in app for a in DRAWN_APPS) or _mostly_code_names(elements)
+
+
+def _mostly_code_names(elements: list[dict[str, Any]]) -> bool:
+    """Apps that label their buttons with internal names ("Tab_Effect", "FFPlayerToolBarBase")
+    are as good as unlabelled: what you see isn't what they report."""
+    names = [e.get("name", "") for e in elements if e.get("name")]
+    if len(names) < 8:
+        return False
+    code = sum(1 for n in names if " " not in n and ("_" in n or re.search(r"[a-z][A-Z]", n) or n.endswith(("Base", "Widget"))))
+    return code / len(names) > .3
+
+
+def blocked_foreground() -> bool:
+    """Password managers and the like are never captured."""
+    if sys.platform != "win32":
+        return True
+    import ctypes
+
+    from .screen import BLOCKED_APPS, _process_name, foreground_title
+
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(ctypes.windll.user32.GetForegroundWindow(), ctypes.byref(pid))
+    name = f"{_process_name(pid.value)} {foreground_title()}".lower()
+    return any(b in name for b in BLOCKED_APPS) or "compii" in foreground_title().lower()
+
+
+def _ask(png: bytes, prompt: str, key: str, transport: Any = None, max_tokens: int = 900) -> str:
+    import httpx
+
+    body = {
+        "model": VISION_MODEL, "max_tokens": max_tokens, "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+        "messages": [{"role": "user", "content": [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
+        ]}],
+    }
+    with httpx.Client(timeout=8, transport=transport) as c:  # never stall Compii
+        for _attempt in range(2):  # the free endpoint sometimes hiccups with a 500
+            r = c.post(VISION_URL, json=body, headers={"Authorization": f"Bearer {key}"})
+            if r.status_code < 500:
+                break
+    r.raise_for_status()
+    return r.json()["choices"][0]["message"].get("content") or ""
+
+
+def _json(text: str) -> dict[str, Any]:
+    m = re.search(r"\{.*\}", text, re.S)
+    if not m:
+        return {}
+    try:
+        return json.loads(re.sub(r",\s*([}\]])", r"\1", m.group(0)))
+    except ValueError:
+        return {}
+
+
+def locate(png: bytes, window: tuple[int, int, int, int], target: str, key: str,
+           transport: Any = None) -> dict[str, Any] | None:
+    """Where `target` is in the picture, as a box in screen pixels, or None if it isn't visible."""
+    data = _json(_ask(png, (
+        f"Find \"{target}\" in this app window (a button, menu, tab, panel, field or object; match by meaning if "
+        "the exact words differ). Reply only with JSON: {\"found\": true/false, \"label\": \"what it says\", "
+        "\"x\": centre x, \"y\": centre y, \"w\": width, \"h\": height}, all on a 0-1000 grid of the image."),
+        key, transport, max_tokens=300))
+    if not data.get("found"):
+        return None
+    left, top, w, h = window
+    try:
+        cx, cy = float(data["x"]) / 1000 * w + left, float(data["y"]) / 1000 * h + top
+        bw = max(24.0, float(data.get("w") or 40) / 1000 * w)
+        bh = max(18.0, float(data.get("h") or 30) / 1000 * h)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return {"name": str(data.get("label") or target)[:80], "x": round(cx - bw / 2), "y": round(cy - bh / 2),
+            "w": round(bw), "h": round(bh)}
+
+
+def check(png: bytes, done_when: str, key: str, transport: Any = None) -> tuple[bool, str]:
+    """Is the step done? True when the window now shows `done_when`."""
+    data = _json(_ask(png, (
+        "The user is following a lesson and was asked to do one step. The step is done when this is true: "
+        f"\"{done_when}\". Look at this window. Is it true now? Be strict: only say yes when you can clearly see it. "
+        "Reply only with JSON: {\"done\": true/false, \"why\": \"a few words\"}"), key, transport, max_tokens=200))
+    return bool(data.get("done")), str(data.get("why", ""))[:160]
 
 
 def capture_foreground(hwnd: int | None = None) -> tuple[bytes, tuple[int, int, int, int]] | None:
     """A PNG of the foreground window (or `hwnd`), scaled to at most MAX_WIDTH wide, and the
     window's rectangle in screen pixels. Only that window is drawn, not what overlaps it."""
+    shot = grab_foreground(hwnd)
+    if shot is None:
+        return None
+    pixels, window = shot
+    step = max(1, -(-pixels.shape[1] // MAX_WIDTH))
+    return encode_png(np.ascontiguousarray(pixels[::step, ::step])), window
+
+
+def grab_foreground(hwnd: int | None = None) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
+    """The foreground window's pixels (RGB, full size) and its rectangle in screen pixels."""
     if sys.platform != "win32":
         return None
     import ctypes
@@ -78,8 +174,7 @@ def capture_foreground(hwnd: int | None = None) -> tuple[bytes, tuple[int, int, 
         gdi32.DeleteObject(bmp)
         gdi32.DeleteDC(mem)
         user32.ReleaseDC(0, screen)
-    step = max(1, -(-w // MAX_WIDTH))
-    return encode_png(np.ascontiguousarray(pixels[::step, ::step])), (left, top, w, h)
+    return pixels.copy(), (left, top, w, h)
 
 
 def encode_png(rgb: np.ndarray) -> bytes:

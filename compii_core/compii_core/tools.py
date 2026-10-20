@@ -83,6 +83,8 @@ class Toolbox:
         # so the character can point at it ("watch me").
         self.on_point: Callable[[dict[str, Any]], None] | None = None
         self.on_draw: Callable[[dict[str, Any]], None] | None = None  # marker drawings on the overlay
+        # Finds an item in a picture of the window (set by the server when vision is available).
+        self.see_item: Callable[[str], dict[str, Any] | None] | None = None
         # The latest screen snapshot (screen-aware turns): point_at accepts its ids.
         self.snapshot: dict[str, Any] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
@@ -355,8 +357,29 @@ class Toolbox:
         _refuse_secrets(a["field"], a["value"])
         return self._browser_call(lambda: self.browser.fill(a["field"], a["value"], bool(a.get("submit"))))
 
+    def _locate(self, target: str):
+        """An on-screen item by snapshot id or label. In apps whose labels don't match what you
+        see (or when nothing matches), look for it in a picture of the window instead."""
+        from .screen import Found
+        from .vision import needs_picture
+
+        found = self._from_snapshot(target)
+        if found is not None and not target.strip().lower().startswith("e"):
+            return found  # a v-id: already from the picture
+        snap = self.snapshot
+        name = found.name if found is not None else target
+        if self.see_item and (found is None or (snap and needs_picture(snap))):
+            try:
+                seen = self.see_item(_words(name))
+            except Exception:  # noqa: BLE001 - vision is a bonus
+                seen = None
+            if seen:
+                return Found(seen["name"], "Seen", (snap or {}).get("title", ""), seen["x"], seen["y"],
+                             seen["x"] + seen["w"], seen["y"] + seen["h"])
+        return found or self._find(target)
+
     def point_at(self, a: dict[str, Any]) -> ToolResult:
-        found = self._from_snapshot(a["target"]) or self._find(a["target"])
+        found = self._locate(a["target"])
         if found is None:
             raise ToolError(
                 f"Couldn't find anything named “{a['target']}” in the open windows. "
@@ -376,13 +399,13 @@ class Toolbox:
             kind = sh.get("kind", "circle")
             if kind not in DRAW_KINDS:
                 raise ToolError(f"Unknown shape “{kind}”. Use one of: {', '.join(DRAW_KINDS)}.")
-            found = self._from_snapshot(sh.get("target", "")) or self._find(sh.get("target", ""))
+            found = self._locate(sh.get("target", ""))
             if found is None:
                 missing.append(sh.get("target", ""))
                 continue
             shape = {"kind": kind, **found.as_event()}
             if kind == "arrow" and sh.get("from"):
-                start = self._from_snapshot(sh["from"]) or self._find(sh["from"])
+                start = self._locate(sh["from"])
                 if start is not None:
                     shape["from"] = start.as_event()
             shapes.append(shape)
@@ -625,3 +648,17 @@ def _refuse_secrets(field: str, value: str) -> None:
             "That looks like a password, payment detail or one-time code. Compii doesn't type those; "
             "ask the user to enter it themselves, then continue."
         )
+
+
+def _code_like(name: str) -> bool:
+    """Internal names like "Tab_Effect" or "FFPlayerToolBarBase" rather than words on screen."""
+    import re
+
+    return " " not in name and bool("_" in name or re.search(r"[a-z][A-Z]", name))
+
+
+def _words(name: str) -> str:
+    """ "Tab_Effect" -> "Tab Effect", "FFPlayerToolBar" -> "FF Player Tool Bar": what to look for in a picture."""
+    import re
+
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name.replace("_", " ")).strip() if _code_like(name) else name
