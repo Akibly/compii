@@ -35,6 +35,8 @@ PRESETS: dict[str, dict[str, str]] = {
                "signup": "https://build.nvidia.com/settings/api-keys"},
     "ollama_cloud": {"label": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "gpt-oss:120b",
                      "key": "ollama", "where": "cloud", "price": "free tier", "signup": "https://ollama.com/settings/keys"},
+    "mistral": {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest",
+                "key": "mistral", "where": "cloud", "price": "free tier", "signup": "https://console.mistral.ai/api-keys"},
     "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "", "key": "openrouter",
                    "where": "cloud", "price": "free models", "signup": "https://openrouter.ai/keys"},
     "ollama": {"label": "Ollama on this PC", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:4b",
@@ -289,7 +291,7 @@ class FallbackBrain:
             return await self.backup.step(system, messages, tools)
 
 
-ENV_KEYS = {"nvidia": "NVIDIA_API_KEY", "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY", "ollama": "OLLAMA_API_KEY",
+ENV_KEYS = {"mistral": "MISTRAL_API_KEY", "nvidia": "NVIDIA_API_KEY", "groq": "GROQ_API_KEY", "gemini": "GEMINI_API_KEY", "ollama": "OLLAMA_API_KEY",
             "openrouter": "OPENROUTER_API_KEY", "openai": "OPENAI_API_KEY"}
 
 
