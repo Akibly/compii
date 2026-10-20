@@ -74,3 +74,84 @@ def test_over_the_limit_hands_to_the_backup_without_waiting():
     start = time.monotonic()
     reply = asyncio.run(brain.step("s", [{"role": "user", "content": "hi"}], []))
     assert reply.text == "Hi!" and hits["main"] == 1 and time.monotonic() - start < 1
+
+
+class Recorder(ScriptBrain):
+    def __init__(self, answers):
+        super().__init__([])
+        self.answers = answers
+        self.sent: list[list[dict]] = []
+
+    async def step(self, system, messages, tools):
+        from compii_core.agent import BrainReply
+
+        self.sent.append(messages)
+        text = self.answers[len(self.sent) - 1]
+        return BrainReply([{"type": "text", "text": text}], text, [], "end_turn")
+
+
+def test_follow_ups_remember_the_conversation_compactly(home):
+    brain = Recorder(["Ghana uses GMT.", "Yes, London is the same in winter."])
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    agent = app.state.agent
+
+    async def go():
+        t = agent.start("What time zone is Ghana in?\n\n<untrusted_data>a long screen reading</untrusted_data>",
+                        origin={"buddy": True})
+        await asyncio.wait_for(t.runner, 10)
+        t2 = agent.reply(t.id, "Is that the same as London?")
+        await asyncio.wait_for(t2.runner, 10)
+
+    asyncio.run(go())
+    second = brain.sent[1]
+    assert [m["role"] for m in second] == ["user", "assistant", "user"]
+    assert second[0]["content"] == "What time zone is Ghana in?"  # old screen reading left out
+    assert second[1]["content"] == "Ghana uses GMT." and second[2]["content"] == "Is that the same as London?"
+
+
+def test_compact_history_drops_tool_details_and_keeps_roles_alternating():
+    from compii_core.agent import compact_history
+
+    msgs = [
+        {"role": "user", "content": "find my invoice"},
+        {"role": "assistant", "content": [{"type": "text", "text": "Looking."},
+                                          {"type": "tool_use", "id": "a", "name": "find_files", "input": {}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "huge listing"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Found it in Downloads."}]},
+    ]
+    out = compact_history(msgs)
+    assert out == [{"role": "user", "content": "find my invoice"},
+                   {"role": "assistant", "content": "Looking.\nFound it in Downloads."}]
+
+
+def test_buddy_continues_the_last_conversation_until_new_topic():
+    import time as _t
+
+    from compii_core import buddy as b
+
+    class V:
+        settings = type("S", (), {"speak_replies": False})()
+        on_auto_end = None
+        def annotate(self, t): return t
+        def say(self, t): pass
+
+    class A:
+        def __init__(self): self.calls = []
+        def start(self, text, origin=None, screen=None):
+            self.calls.append(("start", text)); return type("T", (), {"id": f"t{len(self.calls)}"})()
+        def reply(self, tid, text, screen=None):
+            self.calls.append(("reply", tid)); return type("T", (), {"id": tid})()
+
+    async def no_intent(text): return False
+
+    agent = A()
+    bud = b.Buddy(V(), agent, lambda e: None, no_intent, lambda: None, snapshot=lambda: None, cursor=lambda: (0, 0))
+    asyncio.run(bud._handle("what time zone is Ghana in", None))
+    bud.on_task_event({"type": "task_finished", "task_id": "t1", "text": "GMT."})
+    asyncio.run(bud._handle("and London?", None))
+    asyncio.run(bud._handle("new topic", None))
+    asyncio.run(bud._handle("how tall is Kilimanjaro", None))
+    assert [c[0] for c in agent.calls] == ["start", "reply", "start"]
+    bud._last_done = _t.monotonic() - b.FOLLOW_UP_SECONDS - 1
+    asyncio.run(bud._handle("and Everest?", None))
+    assert agent.calls[-1][0] == "start"  # too long ago: a fresh conversation

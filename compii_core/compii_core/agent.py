@@ -181,6 +181,8 @@ class Agent:
             raise RuntimeError("Compii is still working on this; wait or stop it first.")
         task.stop = asyncio.Event()
         task.pending_screen = screen
+        if NEEDS_ALL_TOOLS.search(text):
+            task.all_tools = True
         task.approved_kinds = set()
         task.status = "running"
         task.runner = asyncio.create_task(self._run(task, text))
@@ -266,12 +268,19 @@ class Agent:
         if messages and messages[-1]["role"] == "user" and isinstance(messages[-1]["content"], list):
             # The last turn ended right after showing something: keep roles alternating.
             messages[-1]["content"] = [*messages[-1]["content"], {"type": "text", "text": text}]
+            # Send the whole previous exchange as is: these tool results answer its tool calls.
+            turn_start = len(messages) - 2
+            while turn_start > 0 and not (messages[turn_start]["role"] == "user"
+                                          and isinstance(messages[turn_start]["content"], str)):
+                turn_start -= 1
         else:
             messages.append({"role": "user", "content": text})
+            turn_start = len(messages) - 1
         try:
             for _ in range(MAX_STEPS):
                 await self.emit(task, "thinking")
-                reply = await self._until_stopped(task, self.brain.step(system, messages, self._schemas(task)))
+                sent = messages if turn_start <= 0 else compact_history(messages[:turn_start]) + messages[turn_start:]
+                reply = await self._until_stopped(task, self.brain.step(system, sent, self._schemas(task)))
                 messages.append({"role": "assistant", "content": reply.content})
                 if reply.stop_reason == "refusal":
                     return await self._finish(task, "failed", "I can't help with that one.")
@@ -440,3 +449,36 @@ def _close_open_calls(messages: list[dict[str, Any]]) -> None:
             {"type": "tool_result", "tool_use_id": i, "content": "Not run: the user stopped the task.", "is_error": True}
             for i in ids
         ]})
+
+
+HISTORY_TURNS = 12  # earlier messages kept (compact) when a conversation goes on
+
+
+def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Earlier turns of a conversation, small: what the user said and what Compii answered,
+    without tool details or old screen readings. Keeps follow-ups in context while
+    staying inside free plans' per-minute limits."""
+    out: list[dict[str, Any]] = []
+    for m in messages:
+        content = m["content"]
+        if isinstance(content, str):
+            texts = [content]
+        else:
+            texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+        text = " ".join(t for t in texts if t.strip()).strip()
+        if m["role"] == "user":
+            text = text.split("\n\n")[0][:600]  # drop screen readings and notes
+        else:
+            text = text[:800]
+        if not text:
+            continue
+        if out and out[-1]["role"] == m["role"]:
+            out[-1]["content"] += "\n" + text
+        else:
+            out.append({"role": m["role"], "content": text})
+    out = out[-HISTORY_TURNS:]
+    while out and out[0]["role"] != "user":
+        out.pop(0)
+    while out and out[-1]["role"] != "assistant":
+        out.pop()  # the turn being answered follows; roles must alternate
+    return out

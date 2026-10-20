@@ -265,6 +265,8 @@ class Voice:
             self._wake.stop()
 
     def _warm_listen(self) -> None:
+        if self._cloud_key():
+            return  # recognised on Groq: no need to load the on-device model
         try:
             self._whisper()
         except Exception:  # noqa: BLE001 - only an optimisation; the real call reports problems
@@ -472,6 +474,8 @@ class Voice:
             self._last_partial = now
             if time.monotonic() - started > MAX_SECONDS:
                 break
+            if self._cloud_key():
+                continue  # recognised on Groq when you let go: spare your PC the live preview
             if self._stt_lock.locked():
                 continue  # still working on the previous preview
             try:

@@ -8,6 +8,8 @@ Shortcuts (all work in any app; the Compii window can stay closed):
   (dictation), never into password fields.
 - Say "watch me", show Compii a task, then say "done": it saves the steps
   as a skill. Say "say that again", "hide" or "show yourself" too.
+- Questions within 10 minutes of the last answer continue the same
+  conversation, so "and what about…" works. Say "new topic" to start fresh.
 
 The moment you press, Compii notes the window you're in (items and labels
 only, never passwords), but only sends it to the AI when you ask about the
@@ -33,6 +35,8 @@ ACKS = ["On it.", "Let me look.", "One sec.", "Sure, let me check.", "Okay, look
 WATCH_START = re.compile(r"^(?:ok(?:ay)?\s+)?(?:watch me|watch this|let me show you|i'?ll show you)\b[\s,.:]*(?P<goal>.*)$", re.I)
 REPEAT = re.compile(r"^(?:ok(?:ay)?\s+)?(?:say (?:that|it) again|repeat (?:that|it)?|what did you say|come again)[?.!]?$", re.I)
 HIDE = re.compile(r"^(?:ok(?:ay)?\s+)?(?:hide|go away|hide yourself|disappear)[.!]?$", re.I)
+NEW_TOPIC = re.compile(r"^(?:ok(?:ay)?\s+)?(?:new (?:topic|conversation|question)|start over|forget (?:that|it)|never ?mind)[.!]?$", re.I)
+FOLLOW_UP_SECONDS = 600  # questions this close together continue one conversation
 SHOW = re.compile(r"^(?:ok(?:ay)?\s+)?(?:show yourself|come back|show up|appear)[.!]?$", re.I)
 WATCH_STOP = re.compile(r"^(?:ok(?:ay)?\s+)?(?:done|i'?m done|that'?s it|stop watching|finished|all done)[.!]?$", re.I)
 
@@ -60,6 +64,8 @@ class Buddy:
         self._busy = threading.Lock()
         self.tasks: set[str] = set()  # conversations started from the buddy
         self.last_answer = ""
+        self.conversation: str | None = None  # the buddy conversation follow-ups continue
+        self._last_done = 0.0
         self.visible = True
         self.dictating = False
         self.watch_goal = ""
@@ -191,8 +197,20 @@ class Buddy:
         if await self._intent(text):
             self.emit("idle")
             return
+        if NEW_TOPIC.match(said):
+            self.conversation = None
+            return self.emit("idle", text="Okay, fresh start.")
         self.say(random.choice(ACKS))  # instant, human acknowledgement while the AI thinks
-        task = self.agent.start(self.voice.annotate(text), origin={"buddy": True, "title": "Asked from the cursor"}, screen=snap)
+        task = None
+        if self.conversation and time.monotonic() - self._last_done < FOLLOW_UP_SECONDS:
+            try:  # a follow-up: Compii remembers what you were just talking about
+                task = self.agent.reply(self.conversation, self.voice.annotate(text), screen=snap)
+            except (KeyError, RuntimeError):
+                task = None
+        if task is None:
+            task = self.agent.start(self.voice.annotate(text), origin={"buddy": True, "title": "Asked from the cursor"},
+                                    screen=snap)
+            self.conversation = task.id
         self.tasks.add(task.id)
         self.emit("thinking", heard=text, task_id=task.id, screen=(snap or {}).get("title", ""))
 
@@ -275,6 +293,7 @@ class Buddy:
             return
         kind = event.get("type")
         if kind == "task_finished":
+            self._last_done = time.monotonic()
             self.last_answer = event.get("text", "")
             self.emit("answer", task_id=tid, text=self.last_answer, status=event.get("status"))
         elif kind == "approval_needed":
