@@ -230,6 +230,7 @@ class Toolbox:
                 capture_output=True,
                 text=True,
                 timeout=120,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),  # never flash a console window
             )
         except subprocess.TimeoutExpired as e:
             raise ToolError("The script ran longer than 2 minutes and was stopped.") from e

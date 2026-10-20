@@ -197,7 +197,13 @@ Future<bool> ensureCore() async {
   final dir = _findCore();
   if (dir == null) return false;
   try {
-    await Process.start('uv', ['run', 'compii-core'], workingDirectory: dir, mode: ProcessStartMode.detached, runInShell: true);
+    // pythonw: Core runs quietly in the background, with no black console window.
+    final quiet = '$dir${Platform.pathSeparator}.venv${Platform.pathSeparator}Scripts${Platform.pathSeparator}pythonw.exe';
+    if (Platform.isWindows && File(quiet).existsSync()) {
+      await Process.start(quiet, ['-m', 'compii_core.server'], workingDirectory: dir, mode: ProcessStartMode.detached);
+    } else {
+      await Process.start('uv', ['run', 'compii-core'], workingDirectory: dir, mode: ProcessStartMode.detached, runInShell: true);
+    }
     return true;
   } on Object catch (e) {
     debugPrint('Could not start Compii Core: $e');

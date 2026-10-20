@@ -952,10 +952,6 @@ def _log_to_file() -> None:
         sys.stdout = sys.stderr = out
 
 
-if __name__ == "__main__":
-    main()
-
-
 def _proactive_tools(toolbox, plans: "pro.Proactive") -> None:
     """Tools the agent uses when you ask for routines and watches in plain language."""
     from .tools import ToolError, ToolResult
@@ -1048,3 +1044,7 @@ def _restore_voice(voice: Voice, path: Path) -> None:
             voice.set_wake(True)
         except Exception:  # noqa: BLE001 - no microphone right now; the setting stays saved
             voice.settings.wake_word = True
+
+
+if __name__ == "__main__":
+    main()

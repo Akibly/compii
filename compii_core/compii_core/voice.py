@@ -597,14 +597,10 @@ class _Speaker:
                 self._jobs.get_nowait()
             except queue.Empty:
                 break
-        if self.speaking:
-            try:
-                import sounddevice as sd
-
-                sd.stop()
-            except Exception:  # noqa: BLE001
-                pass
-            # The Windows voice is purged by its own thread (COM objects stay on one thread).
+        # Playback notices the new generation within a few milliseconds and stops itself.
+        # Never touch the audio device from here: stopping it from another thread
+        # crashed Core (PortAudio isn't thread-safe). The Windows voice is purged by its
+        # own thread too (COM objects stay on one thread).
 
     def _set(self, on: bool) -> None:
         if self.speaking != on:
@@ -637,8 +633,6 @@ class _Speaker:
     def _speak_kokoro(self, text: str, generation: int) -> None:
         """Pipelined: the next phrase is generated while the current one plays,
         so speech flows even when generation is close to real time."""
-        import sounddevice as sd
-
         s = self.voice.settings
         ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=2)
 
@@ -659,8 +653,33 @@ class _Speaker:
             samples, rate = item
             samples = _trim(samples)
             pause = np.zeros(int(rate * 0.12), dtype=samples.dtype)  # a breath between sentences
-            sd.play(np.concatenate([samples, pause]), rate)
-            sd.wait()
+            self._play(np.concatenate([samples, pause]), rate, generation)
+
+    def _play(self, audio: np.ndarray, rate: int, generation: int) -> None:
+        """Play on this (the speaker) thread only; stops early when interrupted."""
+        import sounddevice as sd
+
+        audio = audio.astype(np.float32)
+        pos = 0
+        done = threading.Event()
+
+        def fill(out, frames, _time, _status) -> None:
+            nonlocal pos
+            if generation != self._generation:
+                out.fill(0)
+                raise sd.CallbackStop
+            chunk = audio[pos:pos + frames]
+            out[:len(chunk), 0] = chunk
+            pos += frames
+            if len(chunk) < frames:
+                out[len(chunk):] = 0
+                raise sd.CallbackStop
+
+        with sd.OutputStream(samplerate=rate, channels=1, dtype="float32", callback=fill,
+                             finished_callback=done.set):
+            while not done.wait(0.05):
+                if generation != self._generation:
+                    break  # leaving the block stops and closes the stream, here on this thread
 
     def _speak_windows(self, text: str, generation: int) -> None:
         if self._sapi is None:
