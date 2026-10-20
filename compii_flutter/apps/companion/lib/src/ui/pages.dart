@@ -9,6 +9,7 @@ import 'voice.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 import '../app_control.dart';
+import 'first_run.dart';
 
 class _Page extends StatelessWidget {
   const _Page({required this.title, required this.subtitle, required this.children});
@@ -305,6 +306,32 @@ class _SettingsPageState extends State<SettingsPage> {
           ),
         ),
         const SizedBox(height: 28),
+        Text('Help', style: context.type.titleLarge),
+        const SizedBox(height: 12),
+        _Card(
+          child: OptionRow(
+            glyph: G.shield,
+            title: 'Save a diagnostic report',
+            subtitle: 'If something isn’t working, save a report and send it to whoever helps you. Keys, tokens and '
+                'your user name are removed, and nothing is sent automatically.',
+            color: c.muted,
+            trailing: OutlinedButton(
+              onPressed: () => widget.run(() => TrustApi.call('POST', '/diagnostics')),
+              child: const Text('Save report'),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        _Card(
+          child: OptionRow(
+            glyph: G.wand,
+            title: 'Run setup again',
+            subtitle: 'Walk through keys, voice, a first try and your privacy choices again.',
+            color: c.muted,
+            trailing: OutlinedButton(onPressed: () => firstRunRequested.value = true, child: const Text('Set up')),
+          ),
+        ),
+        const SizedBox(height: 10),
         _Card(
           child: OptionRow(
             glyph: G.power,

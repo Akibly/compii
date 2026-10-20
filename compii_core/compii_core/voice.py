@@ -129,6 +129,10 @@ class Voice:
         return self.models / f"faster-whisper-{WHISPER_MODEL}"
 
     def can_listen(self) -> bool:
+        """Ready to hear you: the on-PC model is downloaded, or speech is recognised on Groq."""
+        return self.has_local_listening() or bool(self._cloud_key())
+
+    def has_local_listening(self) -> bool:
         return (self.whisper_dir / "model.bin").exists()
 
     def has_natural_voice(self) -> bool:
@@ -157,6 +161,7 @@ class Voice:
     def status(self) -> dict[str, Any]:
         return {
             "listen_ready": self.can_listen(),
+            "local_listening": self.has_local_listening(),
             "listen_hq": self.has_hq(),
             "speak_hq": (self.models / KOKORO_HQ[0]).exists(),
             "natural_voice": self.has_natural_voice(),
@@ -228,7 +233,7 @@ class Voice:
 
     def set_wake(self, on: bool) -> None:
         """Turn hands-free listening on or off."""
-        if on and not self.can_listen():
+        if on and not self.has_local_listening():  # "Hey Compii" listens on this PC
             raise RuntimeError("Download speech recognition first (Settings → Voice).")
         self.settings.wake_word = on
         if on:
@@ -349,6 +354,8 @@ class Voice:
                 return text, list(dict.fromkeys(unclear))[:6]
             except Exception:  # noqa: BLE001 - offline or over the free limit: recognise on this PC
                 pass
+        if not self.has_local_listening():
+            return "", []  # no on-PC model to fall back to: "I didn't catch that"
 
         def run(model) -> str:
             segments, _ = model.transcribe(

@@ -7,10 +7,12 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'src/app_control.dart';
+import 'src/diagnostics.dart';
 import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
 import 'src/overlay/overlay_app.dart';
+import 'src/ui/first_run.dart';
 import 'src/ui/proactive.dart';
 import 'src/ui/quick_bar.dart';
 import 'src/ui/shell.dart';
@@ -21,6 +23,7 @@ import 'src/ui/voice.dart';
 Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
   WidgetsFlutterBinding.ensureInitialized();
+  CrashLog.install();
   await ensureCore();
   keepCoreAlive();
   final core = CoreClient()..start();
@@ -132,7 +135,7 @@ class CompiiApp extends StatelessWidget {
       ),
       home: quick?.active == true
           ? QuickBar(core: core, quick: quick!)
-          : ConsoleScreen(core: core, state: state),
+          : FirstRunGate(core: core, voice: state.voice, child: ConsoleScreen(core: core, state: state)),
     ),
   );
 }

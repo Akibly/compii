@@ -7,6 +7,7 @@ import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../console/character.dart';
+import '../diagnostics.dart';
 import '../console/core_client.dart';
 import 'buddy_layer.dart';
 
@@ -26,6 +27,7 @@ const overlayWindow = Size(460, 360);
 /// leaves its picture stretched or blank on Windows.
 Future<void> runOverlay() async {
   WidgetsFlutterBinding.ensureInitialized();
+  CrashLog.install(role: 'overlay');
   await windowManager.ensureInitialized();
   final display = await screenRetriever.getPrimaryDisplay();
   // The overlay spans every monitor; its own scale and origin turn screen pixels into its coordinates.

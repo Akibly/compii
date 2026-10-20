@@ -453,6 +453,21 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 else "not_found",
                 "lockdown": agent.gate.lockdown}
 
+    # ---- diagnostics: a report you can save and send ----
+
+    @app.post("/diagnostics", dependencies=[Depends(auth_local)])
+    def diagnostics() -> dict[str, Any]:
+        from .diagnostics import build_report
+
+        stored = {n: keys.has(n) or bool(prov._env_key(n)) for n in sorted(KEY_NAMES)}
+        secrets_ = [token] + [k for k in (keys.get(n) for n in KEY_NAMES if stored.get(n)) if k]
+        facts = {"brain": prov.asdict(brain_settings), "keys_stored": stored, "voice": vars(voice.settings),
+                 "tasks": len(agent.tasks), "buddy_shortcuts": os.environ.get("COMPII_HOTKEY", "1") != "0"}
+        path = build_report(workspace, facts, secrets_)
+        if sys.platform == "win32":
+            subprocess.Popen(["explorer.exe", f"/select,{path}"])
+        return {"path": str(path)}
+
     # ---- brain: which AI thinks, and its keys ----
 
     def brain_view() -> dict[str, Any]:
