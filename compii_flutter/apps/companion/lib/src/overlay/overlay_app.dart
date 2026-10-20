@@ -28,7 +28,15 @@ Future<void> runOverlay() async {
   WidgetsFlutterBinding.ensureInitialized();
   await windowManager.ensureInitialized();
   final display = await screenRetriever.getPrimaryDisplay();
-  final scale = (display.scaleFactor ?? 1).toDouble();
+  // The overlay spans every monitor; its own scale and origin turn screen pixels into its coordinates.
+  final scale = WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+  var origin = Offset.zero;
+  try {
+    final o = await _overlayChannel.invokeListMethod<double>('origin');
+    if (o != null) origin = Offset(o[0], o[1]);
+  } on Object {
+    // Older runner: only the main monitor, at 0,0.
+  }
   // Full-screen, topmost, click-through (layered + transparent), no focus and
   // hidden from the taskbar: all set natively when the popup is created.
   await windowManager.setBackgroundColor(Colors.transparent);
@@ -38,7 +46,16 @@ Future<void> runOverlay() async {
       scale: scale,
       screen: display.size,
       onPlace: windowManager.setPosition,
-      cursor: screenRetriever.getCursorScreenPoint,
+      origin: origin,
+      cursor: () async {
+        try {
+          final p = await _overlayChannel.invokeListMethod<double>('cursor');
+          if (p != null) return Offset(p[0] / scale, p[1] / scale);
+        } on Object {
+          // fall back below
+        }
+        return screenRetriever.getCursorScreenPoint();
+      },
     ),
   );
 }
@@ -51,7 +68,11 @@ class OverlayApp extends StatelessWidget {
     required this.screen,
     required this.onPlace,
     this.cursor,
+    this.origin = Offset.zero,
   });
+
+  /// Top left of the overlay on the virtual desktop (physical pixels).
+  final Offset origin;
   final CoreClient core;
   final double scale;
   final Size screen;
@@ -71,6 +92,7 @@ class OverlayApp extends StatelessWidget {
       events: core.voiceEvents.stream,
       points: core.lastPoint,
       scale: scale,
+      origin: origin,
       cursor: cursor ?? () async => Offset.zero,
       onDecide: (id, approved) => core.decide(id, approved: approved),
       setClickThrough: (through) async {

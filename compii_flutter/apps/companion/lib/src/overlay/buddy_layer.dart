@@ -23,7 +23,12 @@ class BuddyLayer extends StatefulWidget {
     this.alwaysVisible = true,
     this.onDecide,
     this.setClickThrough,
+    this.origin = Offset.zero,
   });
+
+  /// Top left of this layer on the virtual desktop, in physical pixels (negative when a
+  /// monitor sits left of or above the main one). Core's screen positions are relative to it.
+  final Offset origin;
 
   /// Answer an approval from the Yes / No card beside the cursor.
   final Future<void> Function(String approvalId, bool approved)? onDecide;
@@ -237,7 +242,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     if (p == null) return;
     double n(String k) => (p[k] as num).toDouble() / widget.scale;
     setState(() {
-      _target = Rect.fromLTWH(n('x'), n('y'), n('w'), n('h'));
+      _target = Rect.fromLTWH(n('x') - widget.origin.dx / widget.scale, n('y') - widget.origin.dy / widget.scale,
+          n('w'), n('h'));
       final message = (p['message'] as String?)?.trim() ?? '';
       _targetLabel = message.isNotEmpty ? message : '${p['name'] ?? ''}';
       _flyFrom = _pos;
@@ -300,7 +306,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         }
       case 'voice_draw':
         double n(Map m, String k) => (m[k] as num).toDouble() / widget.scale;
-        Rect r(Map m) => Rect.fromLTWH(n(m, 'x'), n(m, 'y'), n(m, 'w'), n(m, 'h'));
+        Rect r(Map m) => Rect.fromLTWH(n(m, 'x') - widget.origin.dx / widget.scale,
+            n(m, 'y') - widget.origin.dy / widget.scale, n(m, 'w'), n(m, 'h'));
         final shapes = [
           for (final m in (e['shapes'] as List? ?? const []).cast<Map>())
             _Mark('${m['kind']}', r(m), m['from'] is Map ? r(m['from'] as Map) : null),

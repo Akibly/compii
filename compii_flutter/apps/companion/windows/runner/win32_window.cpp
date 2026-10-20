@@ -137,13 +137,12 @@ bool Win32Window::Create(const std::wstring& title,
   int x = Scale(origin.x, scale_factor), y = Scale(origin.y, scale_factor);
   int width = Scale(size.width, scale_factor), height = Scale(size.height, scale_factor);
   if (popup_ && size.width == 0 && size.height == 0) {
-    // Full-screen overlay: exactly the primary monitor, in physical pixels.
-    MONITORINFO info = {sizeof(info)};
-    GetMonitorInfo(MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY), &info);
-    x = info.rcMonitor.left;
-    y = info.rcMonitor.top;
-    width = info.rcMonitor.right - info.rcMonitor.left;
-    height = info.rcMonitor.bottom - info.rcMonitor.top;
+    // Full-screen overlay: every monitor (the whole virtual desktop), in physical pixels,
+    // so the buddy follows the cursor onto any screen.
+    x = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    y = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
   }
   HWND window = CreateWindowEx(
       popup_ ? (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) : 0,

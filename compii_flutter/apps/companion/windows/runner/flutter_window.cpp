@@ -34,6 +34,21 @@ bool FlutterWindow::OnCreate() {
   overlay_channel_->SetMethodCallHandler(
       [this](const flutter::MethodCall<flutter::EncodableValue>& call,
              std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() == "cursor" || call.method_name() == "origin") {
+          // Physical pixels: the cursor relative to this window, or the window's top left
+          // on the virtual desktop (monitors left of or above the main one are negative).
+          RECT r;
+          GetWindowRect(GetHandle(), &r);
+          POINT p = {r.left, r.top};
+          if (call.method_name() == "cursor") {
+            GetCursorPos(&p);
+            p.x -= r.left;
+            p.y -= r.top;
+          }
+          result->Success(flutter::EncodableValue(flutter::EncodableList{
+              flutter::EncodableValue(static_cast<double>(p.x)), flutter::EncodableValue(static_cast<double>(p.y))}));
+          return;
+        }
         if (call.method_name() != "clickThrough") {
           result->NotImplemented();
           return;
