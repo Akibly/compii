@@ -213,7 +213,15 @@ def strip_thinking(text: str) -> str:
     import re
 
     text = text.translate(PLAIN_TYPOGRAPHY)
-    return re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S).strip()
+    text = re.sub(r"<think>.*?(</think>|$)", "", text, flags=re.S)
+    # gpt-oss sometimes leaks its internal channel markers ("<|channel|>analysis", "commentary to=…").
+    if "<|" in text or "to=functions" in text:
+        # Keep only what follows the last "final" marker when there is one; drop the scaffolding.
+        final = re.split(r"<\|channel\|>\s*final\s*<\|message\|>", text)
+        text = final[-1]
+        text = re.sub(r"<\|[^|>]{1,40}\|>", " ", text)
+        text = re.sub(r"\b(?:assistant\s*)?(?:analysis|commentary)\s+to=\S+[^\n]*", "", text)
+    return text.strip()
 
 
 PLAIN_TYPOGRAPHY = str.maketrans({" ": " ", " ": " ", " ": " ", " ": " ", " ": " ",

@@ -31,7 +31,7 @@ from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import make_dpi_aware
 from .tools import Toolbox, ToolError, default_roots
-from .voice import Voice
+from .voice import Voice, spoken_reply
 from .remote import Pairing, RemoteHost, lan_ip, pairing_link
 from . import proactive as pro
 from .tools import Tool
@@ -238,7 +238,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         plans.post(update)
         await hub.emit({"type": "update", "task_id": "", "at": time.time(), **pro.asdict(update)})
         if speak and voice.settings.speak_replies:
-            voice.say(update.body if update.kind == "brief" else f"{update.title}. {update.body}")
+            voice.say(spoken_reply(update.body if update.kind == "brief" else f"{update.title}. {update.body}"))
 
     async def agent_emit(event: dict[str, Any]) -> None:
         await hub.emit(event)
@@ -262,11 +262,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         # Jarvis-style: Compii says its answers and its questions out loud.
         if voice.settings.speak_replies:
             if event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
-                voice.say(event.get("text", ""))
+                voice.say(spoken_reply(event.get("text", "")))
             elif event["type"] == "approval_needed":
-                answer = {"spend": " Press the button to pay.", "delete": " Say yes, delete it, or no."}.get(
-                    str(event.get("kind")), " Say yes or no.")
-                voice.say(f"I need your okay. {event.get('label', '')}.{answer if voice.status().get('listen_ready') else ''}")
+                voice.say(spoken_reply(f"Can I go ahead? {event.get('label', '')}", sentences=2, longest=160))
 
     async def _finish_ai_watch(watch_id: str, text: str) -> None:
         w = plans.watches.get(watch_id)

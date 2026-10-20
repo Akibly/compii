@@ -17,10 +17,10 @@ String moodLabel(Mood mood) => switch (mood) {
   Mood.offline => 'Offline',
 };
 
-/// Compii is an Orbling: an invented creature that carries its own little
-/// orbit. Each golden mote circling it is a job it is working on, so you can
-/// see at a glance how busy it is. Its mitten hands float free of its body
-/// so they can go and do things.
+/// Compii is an Orbling: a small, warm creature that carries its own little
+/// orbit. Each golden firefly circling it is a job it is working on, so you can
+/// see at a glance how busy it is. Its hands float free of its body so they can
+/// go and do things. Soft, glowing indigo with a golden sprout on top: gentle, like its voice.
 class CharacterSlot extends StatelessWidget {
   const CharacterSlot({
     super.key,
@@ -47,14 +47,28 @@ class CharacterSlot extends StatelessWidget {
 }
 
 class OrblingPalette {
-  static const body = Color(0xFF4B3FE0);
-  static const bodyDeep = Color(0xFF3226B8);
-  static const bodyLight = Color(0xFF7468F0);
-  static const mitten = Color(0xFFFFF1DA);
-  static const mittenShade = Color(0xFFF1D9B5);
+  // The app's own indigo, softly lit from within.
+  static const body = Color(0xFF5B4FE6);
+  static const bodyDeep = Color(0xFF3A2EC4);
+  static const bodyLight = Color(0xFF9A90FF);
+  static const belly = Color(0xFFECE9FF);
+  // Cream hands with indigo cuffs.
+  static const mitten = Color(0xFFFFF4E2);
+  static const mittenShade = Color(0xFFF1DDBE);
+  // Eyes and lines in the app's ink.
   static const ink = Color(0xFF15122E);
+  static const brow = Color(0xFF221A6E);
   static const cheek = Color(0xFFFF8FA3);
+  // The golden sprout on top: its signature outline, in the app's sparkle gold.
+  static const sprout = Color(0xFFFFC94D);
+  static const sproutDeep = Color(0xFFE09A1E);
   static const gold = Color(0xFFFFC94D);
+  // Asleep / offline.
+  static const dim = Color(0xFF8C86C8);
+  static const dimDeep = Color(0xFF6A63B8);
+
+  /// The glow behind the character in the app.
+  static const glow = Color(0xFF4B3FE0);
 
   static Color mote(Mood mood) => switch (mood) {
     Mood.thinking => const Color(0xFF7CC8FF),
@@ -256,8 +270,8 @@ class OrblingPainter extends CustomPainter {
 
     // Ground shadow shrinks as it floats up.
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.5, .88), width: .46 - hover * 2, height: .04),
-      Paint()..color = OrblingPalette.ink.withValues(alpha: .1),
+      Rect.fromCenter(center: const Offset(.5, .88), width: .48 - hover * 2, height: .042),
+      Paint()..color = OrblingPalette.bodyDeep.withValues(alpha: .16),
     );
 
     final motes = _motes();
@@ -307,49 +321,83 @@ class OrblingPainter extends CustomPainter {
     _ => math.sin(t * 2 * math.pi + (left ? 0 : 1.3)) * .008,
   };
 
+  /// A soft, round mochi shape: a gentle dome on a wide, settled base.
   Path _bodyPath() => Path()
-    ..moveTo(.29, .82)
-    ..quadraticBezierTo(.5, .865, .71, .82)
-    ..cubicTo(.81, .78, .82, .6, .72, .45)
-    ..cubicTo(.64, .33, .57, .275, .5, .275)
-    ..cubicTo(.43, .275, .36, .33, .28, .45)
-    ..cubicTo(.18, .6, .19, .78, .29, .82)
+    ..moveTo(.27, .825)
+    ..quadraticBezierTo(.5, .87, .73, .825)
+    ..cubicTo(.83, .79, .835, .6, .77, .48)
+    ..cubicTo(.7, .35, .6, .29, .5, .29)
+    ..cubicTo(.4, .29, .3, .35, .23, .48)
+    ..cubicTo(.165, .6, .17, .79, .27, .825)
     ..close();
 
   void _drawBody(Canvas canvas) {
     final body = _bodyPath();
     final dim = mood == Mood.offline;
-    for (final x in [.4, .6]) {
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(x, .845), width: .1, height: .06),
-        Paint()..color = dim ? const Color(0xFF524B9C) : OrblingPalette.bodyDeep,
-      );
+    final base = dim ? OrblingPalette.dim : OrblingPalette.body;
+    final deep = dim ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep;
+    // Little feet.
+    for (final x in [.405, .595]) {
+      canvas.drawOval(Rect.fromCenter(center: Offset(x, .848), width: .1, height: .055), Paint()..color = deep);
     }
-    canvas.drawPath(body, Paint()..color = dim ? const Color(0xFF6A63B8) : OrblingPalette.body);
-    // Soft underside for volume.
+    // Warm glow from within: light at the top left, deeper at the base.
+    canvas.drawPath(
+      body,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-.35, -.55),
+          radius: 1.05,
+          colors: [dim ? const Color(0xFFAAA5DA) : OrblingPalette.bodyLight, base, deep],
+          stops: const [0, .5, 1],
+        ).createShader(const Rect.fromLTRB(.17, .29, .83, .87)),
+    );
     canvas.save();
     canvas.clipPath(body);
+    // Soft lavender belly.
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.56, .88), width: .7, height: .3),
-      Paint()..color = (dim ? const Color(0xFF524B9C) : OrblingPalette.bodyDeep).withValues(alpha: .55),
+      Rect.fromCenter(center: const Offset(.5, .79), width: .4, height: .2),
+      Paint()..color = (dim ? const Color(0xFFB9B5DE) : OrblingPalette.belly).withValues(alpha: .5),
     );
+    // Soft sheen.
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.41, .41), width: .16, height: .09),
-      Paint()..color = OrblingPalette.bodyLight.withValues(alpha: .7),
+      Rect.fromCenter(center: const Offset(.38, .4), width: .15, height: .075),
+      Paint()..color = Colors.white.withValues(alpha: dim ? .2 : .38),
     );
     canvas.restore();
-    // The curl: its signature silhouette.
-    canvas.drawPath(
-      Path()
-        ..moveTo(.5, .285)
-        ..cubicTo(.49, .2, .6, .16, .615, .225)
-        ..cubicTo(.625, .27, .565, .275, .57, .235),
-      Paint()
-        ..color = dim ? const Color(0xFF6A63B8) : OrblingPalette.body
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = .04
-        ..strokeCap = StrokeCap.round,
-    );
+    _drawSprout(canvas, dim);
+  }
+
+  /// Two rounded golden petals on a tiny stem: you can recognise Compii from this alone.
+  void _drawSprout(Canvas canvas, bool dim) {
+    final sway = still ? 0.0 : math.sin(t * 2 * math.pi) * .05;
+    canvas.save();
+    canvas.translate(.5, .3);
+    canvas.rotate(sway + (mood == Mood.offline ? .35 : 0));
+    final stem = Paint()
+      ..color = dim ? OrblingPalette.dimDeep : OrblingPalette.sproutDeep
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = .016
+      ..strokeCap = StrokeCap.round;
+    canvas.drawPath(Path()..moveTo(0, .005)..quadraticBezierTo(.004, -.03, 0, -.05), stem);
+    for (final side in [-1.0, 1.0]) {
+      final petal = Path()
+        ..moveTo(0, -.048)
+        ..cubicTo(side * .02, -.1, side * .085, -.105, side * .09, -.07)
+        ..cubicTo(side * .092, -.04, side * .04, -.035, 0, -.048)
+        ..close();
+      canvas.drawPath(petal, Paint()..color = dim ? OrblingPalette.dim : OrblingPalette.sprout);
+      canvas.drawPath(
+        Path()
+          ..moveTo(side * .012, -.055)
+          ..quadraticBezierTo(side * .045, -.075, side * .07, -.072),
+        Paint()
+          ..color = Colors.white.withValues(alpha: .45)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = .006
+          ..strokeCap = StrokeCap.round,
+      );
+    }
+    canvas.restore();
   }
 
   void _drawFace(Canvas canvas, _Pose pose) {
@@ -358,92 +406,109 @@ class OrblingPainter extends CustomPainter {
       ..color = OrblingPalette.ink
       ..style = PaintingStyle.stroke
       ..strokeCap = StrokeCap.round
-      ..strokeWidth = .016;
+      ..strokeWidth = .015;
 
-    // Cheeks.
-    for (final x in [.355, .645]) {
+    // Rosy cheeks with a tiny shine.
+    for (final x in [.345, .655]) {
       canvas.drawOval(
-        Rect.fromCenter(center: Offset(x, .645), width: .07, height: .034),
-        Paint()..color = OrblingPalette.cheek.withValues(alpha: mood == Mood.happy ? .85 : .5),
+        Rect.fromCenter(center: Offset(x, .64), width: .085, height: .044),
+        Paint()..color = OrblingPalette.cheek.withValues(alpha: mood == Mood.happy ? .75 : .45),
       );
+      canvas.drawCircle(Offset(x + .016, .632), .006, Paint()..color = Colors.white.withValues(alpha: .55));
     }
 
     final blink = mood == Mood.idle && !still && t > .62 && t < .645;
-    for (final (x, side) in [(.405, -1.0), (.595, 1.0)]) {
-      final c = Offset(x, .555);
+    for (final (x, side) in [(.41, -1.0), (.59, 1.0)]) {
+      final c = Offset(x, .56);
       if (mood == Mood.happy) {
         canvas.drawPath(
           Path()
-            ..moveTo(c.dx - .035, c.dy + .01)
-            ..quadraticBezierTo(c.dx, c.dy - .045, c.dx + .035, c.dy + .01),
-          stroke..strokeWidth = .019,
+            ..moveTo(c.dx - .032, c.dy + .008)
+            ..quadraticBezierTo(c.dx, c.dy - .04, c.dx + .032, c.dy + .008),
+          stroke..strokeWidth = .018,
         );
       } else if (mood == Mood.offline || blink) {
         canvas.drawPath(
           Path()
-            ..moveTo(c.dx - .032, c.dy)
-            ..quadraticBezierTo(c.dx, c.dy + .022, c.dx + .032, c.dy),
-          stroke..strokeWidth = .016,
+            ..moveTo(c.dx - .03, c.dy)
+            ..quadraticBezierTo(c.dx, c.dy + .02, c.dx + .03, c.dy),
+          stroke..strokeWidth = .015,
         );
       } else {
-        final w = .1, h = mood == Mood.acting ? .115 : .14;
-        canvas.drawOval(Rect.fromCenter(center: c, width: w, height: h), Paint()..color = Colors.white);
-        final pw = mood == Mood.problem ? .04 : .058;
-        final ph = mood == Mood.problem ? .056 : .08;
+        // Gentle dark eyes that look around; two soft highlights.
+        final w = .064, h = mood == Mood.acting ? .07 : (mood == Mood.problem ? .064 : .09);
         final gz = _gaze(pose);
-        final g = Offset(gz.dx * (w - pw) / 2 * .9, gz.dy * (h - ph) / 2 * .9);
-        final pc = c + g;
-        canvas.drawOval(Rect.fromCenter(center: pc, width: pw, height: ph), ink);
-        canvas.drawCircle(pc + Offset(-pw * .22, -ph * .22), pw * .24, Paint()..color = Colors.white);
-        canvas.drawCircle(pc + Offset(pw * .2, ph * .22), pw * .1, Paint()..color = Colors.white);
+        final pc = c + Offset(gz.dx * .012, gz.dy * .01);
+        canvas.drawOval(Rect.fromCenter(center: pc, width: w, height: h), ink);
+        canvas.drawOval(Rect.fromCenter(center: pc + Offset(-w * .18, -h * .2), width: w * .42, height: h * .36),
+            Paint()..color = Colors.white.withValues(alpha: .95));
+        canvas.drawCircle(pc + Offset(w * .2, h * .22), w * .1, Paint()..color = Colors.white.withValues(alpha: .8));
+        // A tiny lash flick at the outer corner.
+        canvas.drawPath(
+          Path()
+            ..moveTo(pc.dx + side * w * .42, pc.dy - h * .3)
+            ..quadraticBezierTo(pc.dx + side * w * .62, pc.dy - h * .42, pc.dx + side * w * .7, pc.dy - h * .58),
+          stroke..strokeWidth = .009,
+        );
       }
-      // Brows: inner end rises when worried or eager, drops when focused.
+      // Soft brows: inner end rises when worried or eager, drops when focused.
       if (mood != Mood.offline) {
-        final inner = Offset(c.dx - side * .025, .462 - pose.brow * .02);
-        final outer = Offset(c.dx + side * .035, .47 + pose.brow * .008);
-        canvas.drawLine(inner, outer, stroke..strokeWidth = .014);
+        final inner = Offset(c.dx - side * .022, .476 - pose.brow * .02);
+        final outer = Offset(c.dx + side * .03, .482 + pose.brow * .008);
+        final mid = Offset((inner.dx + outer.dx) / 2, math.min(inner.dy, outer.dy) - .008);
+        canvas.drawPath(
+          Path()
+            ..moveTo(inner.dx, inner.dy)
+            ..quadraticBezierTo(mid.dx, mid.dy, outer.dx, outer.dy),
+          Paint()
+            ..color = OrblingPalette.brow
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeWidth = .012,
+        );
       }
     }
 
     // Mouth.
     final m = const Offset(.5, .655);
+    final tongue = Paint()..color = OrblingPalette.cheek;
     switch (mood) {
       case Mood.happy:
         final open = Path()
-          ..moveTo(m.dx - .045, m.dy - .008)
-          ..quadraticBezierTo(m.dx, m.dy + .07, m.dx + .045, m.dy - .008)
+          ..moveTo(m.dx - .042, m.dy - .008)
+          ..quadraticBezierTo(m.dx, m.dy + .065, m.dx + .042, m.dy - .008)
           ..close();
         canvas.drawPath(open, ink);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .025), width: .035, height: .018), Paint()..color = OrblingPalette.cheek);
+        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .024), width: .034, height: .017), tongue);
       case Mood.waiting:
-        canvas.drawOval(Rect.fromCenter(center: m, width: .028, height: .034), ink);
+        canvas.drawOval(Rect.fromCenter(center: m, width: .026, height: .03), ink);
       case Mood.problem:
         canvas.drawPath(
           Path()
-            ..moveTo(m.dx - .03, m.dy + .008)
-            ..quadraticBezierTo(m.dx - .015, m.dy - .01, m.dx, m.dy + .004)
-            ..quadraticBezierTo(m.dx + .015, m.dy + .016, m.dx + .03, m.dy - .002),
-          stroke..strokeWidth = .013,
+            ..moveTo(m.dx - .028, m.dy + .008)
+            ..quadraticBezierTo(m.dx - .014, m.dy - .008, m.dx, m.dy + .004)
+            ..quadraticBezierTo(m.dx + .014, m.dy + .015, m.dx + .028, m.dy - .002),
+          stroke..strokeWidth = .012,
         );
       case Mood.acting:
-        // Tongue-tip of concentration.
-        canvas.drawLine(m + const Offset(-.022, 0), m + const Offset(.022, 0), stroke..strokeWidth = .013);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.016, .01), width: .018, height: .016), Paint()..color = OrblingPalette.cheek);
+        canvas.drawLine(m + const Offset(-.02, 0), m + const Offset(.02, 0), stroke..strokeWidth = .012);
+        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.014, .009), width: .016, height: .014), tongue);
       case Mood.thinking:
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.012, 0), width: .02, height: .012), ink);
+        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.012, 0), width: .018, height: .011), ink);
       case Mood.listening:
-        canvas.drawOval(Rect.fromCenter(center: m, width: .022, height: .026), ink);
+        canvas.drawOval(Rect.fromCenter(center: m, width: .02, height: .022), ink);
       case Mood.speaking:
         // Mouth opens and closes while it talks.
         final open = .35 + .65 * (math.sin(t * 2 * math.pi * 24) * .5 + .5);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .004), width: .05, height: .012 + .03 * open), ink);
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, .006 + .008 * open), width: .026, height: .008 + .008 * open), Paint()..color = OrblingPalette.cheek);
+        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .004), width: .046, height: .012 + .028 * open), ink);
+        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, .006 + .008 * open), width: .024, height: .008 + .008 * open), tongue);
       case Mood.idle || Mood.offline:
+        // A small, warm smile.
         canvas.drawPath(
           Path()
-            ..moveTo(m.dx - .03, m.dy - .004)
-            ..quadraticBezierTo(m.dx, m.dy + .026, m.dx + .03, m.dy - .004),
-          stroke..strokeWidth = .014,
+            ..moveTo(m.dx - .028, m.dy - .006)
+            ..quadraticBezierTo(m.dx, m.dy + .028, m.dx + .028, m.dy - .006),
+          stroke..strokeWidth = .013,
         );
     }
   }
@@ -455,12 +520,12 @@ class OrblingPainter extends CustomPainter {
     if (mirror) canvas.scale(-1, 1);
     canvas.scale(1.3);
     final palm = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: Offset.zero, width: .085, height: .095),
-      const Radius.circular(.042),
+      Rect.fromCenter(center: Offset.zero, width: .082, height: .09),
+      const Radius.circular(.041),
     );
     canvas.drawRRect(palm, Paint()..color = OrblingPalette.mitten);
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.038, .006), width: .036, height: .05),
+      Rect.fromCenter(center: const Offset(.036, .004), width: .032, height: .044),
       Paint()..color = OrblingPalette.mitten,
     );
     canvas.drawRRect(
@@ -476,7 +541,7 @@ class OrblingPainter extends CustomPainter {
         Rect.fromCenter(center: const Offset(0, .047), width: .07, height: .02),
         const Radius.circular(.01),
       ),
-      Paint()..color = mood == Mood.offline ? const Color(0xFF6A63B8) : OrblingPalette.body,
+      Paint()..color = mood == Mood.offline ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep,
     );
     canvas.restore();
   }
@@ -521,6 +586,10 @@ class OrblingPainter extends CustomPainter {
         canvas.drawCircle(p, m.r * (1 - k * .22), Paint()..color = m.color.withValues(alpha: .35 - k * .09));
       }
     }
+    // A soft halo, like a firefly.
+    canvas.drawCircle(m.at, m.r * 2.1, Paint()
+      ..color = m.color.withValues(alpha: .22)
+      ..maskFilter = MaskFilter.blur(BlurStyle.normal, m.r * .9));
     canvas.drawCircle(m.at, m.r, Paint()..color = m.color);
     // Four-point glint.
     final g = m.r * .55;
@@ -556,7 +625,7 @@ class OrblingPainter extends CustomPainter {
         for (var i = 0; i < 3; i++) {
           final lit = ((t * 6).floor() % 4) > i;
           canvas.drawCircle(Offset(.73 + i * .045, .2 - i * .03), .012 + i * .004,
-              Paint()..color = (lit ? OrblingPalette.body : OrblingPalette.bodyLight).withValues(alpha: lit ? 1 : .35));
+              Paint()..color = (lit ? OrblingPalette.bodyDeep : OrblingPalette.bodyLight).withValues(alpha: lit ? 1 : .5));
         }
       case Mood.waiting:
         // A small speech card: it has a question for you.
@@ -580,7 +649,7 @@ class OrblingPainter extends CustomPainter {
         );
       case Mood.offline:
         final z = Paint()
-          ..color = OrblingPalette.body.withValues(alpha: .45)
+          ..color = OrblingPalette.dimDeep.withValues(alpha: .8)
           ..style = PaintingStyle.stroke
           ..strokeWidth = .011
           ..strokeCap = StrokeCap.round
@@ -613,7 +682,7 @@ class OrblingPainter extends CustomPainter {
         }
       case Mood.speaking:
         final wave = Paint()
-          ..color = OrblingPalette.body.withValues(alpha: .5)
+          ..color = OrblingPalette.bodyDeep.withValues(alpha: .55)
           ..style = PaintingStyle.stroke
           ..strokeWidth = .01
           ..strokeCap = StrokeCap.round;
@@ -643,9 +712,9 @@ class _Mote {
   final double speed;
 }
 
-/// The phone's Face View: the screen is Compii's head. Its curl peeks in at
+/// The phone's Face View: the screen is Compii's head. Its sprout peeks in at
 /// the top, its eyes fill the middle, its hands rise from the bottom edge
-/// and its motes drift across the front.
+/// and its fireflies drift across the front.
 class OrblingFacePainter extends CustomPainter {
   OrblingFacePainter({
     required this.mood,
@@ -675,7 +744,7 @@ class OrblingFacePainter extends CustomPainter {
     final w = size.width, h = size.height;
     final pose = _Pose.lerp(_Pose.of(previous), _Pose.of(mood), blend);
     final dim = mood == Mood.offline;
-    final body = dim ? const Color(0xFF6A63B8) : OrblingPalette.body;
+    final body = dim ? OrblingPalette.dim : OrblingPalette.body;
 
     // Night sky behind the head.
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF1B1550));
@@ -690,33 +759,46 @@ class OrblingFacePainter extends CustomPainter {
       ..cubicTo(w * .7, top, w * 1.02, top + h * .12, w * 1.1, h * .62)
       ..lineTo(w * 1.1, h * 1.1)
       ..close();
-    canvas.drawPath(head, Paint()..color = body);
+    canvas.drawPath(
+      head,
+      Paint()
+        ..shader = RadialGradient(
+          center: const Alignment(-.4, -.7),
+          radius: 1.2,
+          colors: [dim ? const Color(0xFFAAA5DA) : OrblingPalette.bodyLight, body,
+            dim ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep],
+          stops: const [0, .45, 1],
+        ).createShader(Offset.zero & size),
+    );
     canvas.save();
     canvas.clipPath(head);
     canvas.drawOval(
-      Rect.fromCenter(center: Offset(w * .3, top + h * .14), width: w * .32, height: h * .12),
-      Paint()..color = OrblingPalette.bodyLight.withValues(alpha: .55),
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: Offset(w * .55, h * 1.05), width: w * 1.3, height: h * .35),
-      Paint()..color = OrblingPalette.bodyDeep.withValues(alpha: .6),
+      Rect.fromCenter(center: Offset(w * .3, top + h * .14), width: w * .3, height: h * .1),
+      Paint()..color = Colors.white.withValues(alpha: dim ? .15 : .3),
     );
     canvas.restore();
 
-    // The curl peeking in at the top.
+    // The golden sprout peeking in at the top.
     final u = math.min(w, h);
     final cx = w * .5;
-    canvas.drawPath(
-      Path()
-        ..moveTo(cx, top + u * .01)
-        ..cubicTo(cx - u * .02, top - u * .12, cx + u * .14, top - u * .17, cx + u * .16, top - u * .08)
-        ..cubicTo(cx + u * .17, top - u * .02, cx + u * .09, top - u * .02, cx + u * .1, top - u * .07),
-      Paint()
-        ..color = body
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = u * .06
-        ..strokeCap = StrokeCap.round,
-    );
+    canvas.save();
+    canvas.translate(cx, top + u * .01);
+    canvas.rotate(still ? 0 : _wave * .05);
+    canvas.drawLine(Offset.zero, Offset(0, -u * .07), Paint()
+      ..color = dim ? OrblingPalette.dimDeep : OrblingPalette.sproutDeep
+      ..strokeWidth = u * .022
+      ..strokeCap = StrokeCap.round);
+    for (final side in [-1.0, 1.0]) {
+      canvas.drawPath(
+        Path()
+          ..moveTo(0, -u * .065)
+          ..cubicTo(side * u * .03, -u * .14, side * u * .12, -u * .15, side * u * .13, -u * .1)
+          ..cubicTo(side * u * .13, -u * .055, side * u * .055, -u * .05, 0, -u * .065)
+          ..close(),
+        Paint()..color = dim ? OrblingPalette.dim : OrblingPalette.sprout,
+      );
+    }
+    canvas.restore();
 
     // Face geometry scales with the shorter side so portrait and landscape both work.
     final eyeH = math.min(h * .36, w * .3);
@@ -755,23 +837,29 @@ class OrblingFacePainter extends CustomPainter {
           stroke,
         );
       } else {
-        final eh = mood == Mood.acting ? eyeH * .82 : eyeH;
-        canvas.drawOval(Rect.fromCenter(center: c, width: eyeW, height: eh), Paint()..color = Colors.white);
-        final small = mood == Mood.problem;
-        final pw = eyeW * (small ? .42 : .6);
-        final ph = eh * (small ? .42 : .6);
+        final eh = (mood == Mood.acting ? .5 : mood == Mood.problem ? .46 : .62) * eyeH;
+        final ew = eyeW * .62;
         final gz = _gaze(pose);
-        final g = Offset(gz.dx * (eyeW - pw) / 2 * .9, gz.dy * (eh - ph) / 2 * .9);
-        final pc = c + g;
-        canvas.drawOval(Rect.fromCenter(center: pc, width: pw, height: ph), ink);
-        canvas.drawCircle(pc + Offset(-pw * .22, -ph * .22), pw * .22, Paint()..color = Colors.white);
-        canvas.drawCircle(pc + Offset(pw * .2, ph * .2), pw * .09, Paint()..color = Colors.white);
+        final pc = c + Offset(gz.dx * eyeW * .18, gz.dy * eyeH * .12);
+        canvas.drawOval(Rect.fromCenter(center: pc, width: ew, height: eh), ink);
+        canvas.drawOval(Rect.fromCenter(center: pc + Offset(-ew * .18, -eh * .2), width: ew * .42, height: eh * .36),
+            Paint()..color = Colors.white.withValues(alpha: .95));
+        canvas.drawCircle(pc + Offset(ew * .2, eh * .22), ew * .1, Paint()..color = Colors.white.withValues(alpha: .8));
       }
       if (!dim) {
-        final browY = eyeY - eyeH * .68;
-        final inner = Offset(c.dx - side * eyeW * .28, browY - pose.brow * eyeH * .14);
-        final outer = Offset(c.dx + side * eyeW * .4, browY + pose.brow * eyeH * .05);
-        canvas.drawLine(inner, outer, stroke);
+        final browY = eyeY - eyeH * .6;
+        final inner = Offset(c.dx - side * eyeW * .26, browY - pose.brow * eyeH * .14);
+        final outer = Offset(c.dx + side * eyeW * .36, browY + pose.brow * eyeH * .05);
+        canvas.drawPath(
+          Path()
+            ..moveTo(inner.dx, inner.dy)
+            ..quadraticBezierTo((inner.dx + outer.dx) / 2, math.min(inner.dy, outer.dy) - eyeH * .06, outer.dx, outer.dy),
+          Paint()
+            ..color = OrblingPalette.brow
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeWidth = eyeH * .055,
+        );
       }
     }
 
@@ -858,6 +946,7 @@ class OrblingFacePainter extends CustomPainter {
       canvas.restore();
     }
   }
+
 
   void _motes(Canvas canvas, Size size, double u) {
     if (mood == Mood.happy) {

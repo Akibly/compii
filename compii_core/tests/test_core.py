@@ -378,7 +378,7 @@ def test_replies_and_questions_are_spoken_and_stop_silences(home, monkeypatch):
                 client.post(f"/approvals/{e['approval_id']}", json={"approved": True}, headers=h)
             if e["type"] == "task_finished":
                 break
-        assert any(s.startswith("I need your okay") for s in voice._speaker.said)
+        assert any(s.startswith("Can I go ahead?") for s in voice._speaker.said)
         assert "spreadsheet is ready" in voice._speaker.said[-1]
         client.post("/stop", headers=h)
         assert voice._speaker.stops >= 1

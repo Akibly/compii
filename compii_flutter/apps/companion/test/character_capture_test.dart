@@ -38,14 +38,14 @@ class _Sheet extends StatelessWidget {
                     children: [
                       const SizedBox(height: 30),
                       const Text('Compii', style: TextStyle(color: _ink, fontSize: 56, fontWeight: FontWeight.w700)),
-                      const Text('An Orbling: a small invented creature that carries its own orbit.',
+                      const Text('An Orbling: a small, gentle creature that carries its own orbit.',
                           style: TextStyle(color: _ink, fontSize: 22)),
                       const SizedBox(height: 24),
                       for (final line in const [
-                        'Each golden mote circling it is a job it is doing. Three tasks running, three motes.',
-                        'Its mitten hands float free, so they can go and do things: point, type, carry.',
-                        'The curl on top is its signature: you can recognise it from the outline alone.',
-                        'Calm by default. It never bounces for attention.',
+                        'Each golden firefly circling it is a job it is doing.',
+                        'Its soft hands float free, so they can go and do things: point, type, carry.',
+                        'The golden sprout on top is its signature outline.',
+                        'Warm and gentle, like its voice.',
                       ])
                         Padding(
                           padding: const EdgeInsets.only(bottom: 10),
@@ -56,9 +56,9 @@ class _Sheet extends StatelessWidget {
                         children: [
                           for (final (c, name) in const [
                             (OrblingPalette.body, 'Orbling indigo'),
-                            (OrblingPalette.mitten, 'Mitten cream'),
-                            (OrblingPalette.gold, 'Mote gold'),
-                            (OrblingPalette.cheek, 'Cheek coral'),
+                            (OrblingPalette.mitten, 'Cream'),
+                            (OrblingPalette.gold, 'Firefly gold'),
+                            (OrblingPalette.cheek, 'Cheek pink'),
                             (OrblingPalette.ink, 'Ink'),
                           ])
                             Padding(

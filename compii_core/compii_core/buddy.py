@@ -29,9 +29,11 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .hotkey import TAP_MAX, VK_CONTROL, VK_WIN, HoldToTalk
+from .voice import spoken_reply
 from .watch import Watcher
 
-ACKS = ["On it.", "Let me look.", "One sec.", "Sure, let me check.", "Okay, looking."]
+ACKS = ["One sec.", "Let me look.", "Okay, looking.", "Sure, one moment."]
+ACK_AFTER = 1.6  # seconds; most answers arrive sooner and need no filler
 WATCH_START = re.compile(r"^(?:ok(?:ay)?\s+)?(?:watch me|watch this|let me show you|i'?ll show you)\b[\s,.:]*(?P<goal>.*)$", re.I)
 REPEAT = re.compile(r"^(?:ok(?:ay)?\s+)?(?:say (?:that|it) again|repeat (?:that|it)?|what did you say|come again)[?.!]?$", re.I)
 HIDE = re.compile(r"^(?:ok(?:ay)?\s+)?(?:hide|go away|hide yourself|disappear)[.!]?$", re.I)
@@ -65,6 +67,7 @@ class Buddy:
         self.tasks: set[str] = set()  # conversations started from the buddy
         self.last_answer = ""
         self.conversation: str | None = None  # the buddy conversation follow-ups continue
+        self._ack: threading.Timer | None = None
         self._last_done = 0.0
         self.visible = True
         self.dictating = False
@@ -200,7 +203,7 @@ class Buddy:
         if NEW_TOPIC.match(said):
             self.conversation = None
             return self.emit("idle", text="Okay, fresh start.")
-        self.say(random.choice(ACKS))  # instant, human acknowledgement while the AI thinks
+        self._ack_later()  # a quick "One sec." only if the answer takes a moment
         task = None
         if self.conversation and time.monotonic() - self._last_done < FOLLOW_UP_SECONDS:
             try:  # a follow-up: Compii remembers what you were just talking about
@@ -222,7 +225,7 @@ class Buddy:
         elif letter == "R":
             if self.last_answer:
                 self.emit("answer", text=self.last_answer)
-                self.say(self.last_answer)
+                self.say(spoken_reply(self.last_answer))
             else:
                 self.emit("idle", text="Nothing to repeat yet.")
         elif letter == "H":
@@ -287,11 +290,22 @@ class Buddy:
 
     # ---- task events → buddy states ----
 
+    def _ack_later(self) -> None:
+        """Say a short acknowledgement only if the answer isn't back within a moment,
+        so a fast answer is never cut off by "One sec."."""
+        if self._ack is not None:
+            self._ack.cancel()
+        self._ack = threading.Timer(ACK_AFTER, lambda: self.say(random.choice(ACKS)))
+        self._ack.daemon = True
+        self._ack.start()
+
     def on_task_event(self, event: dict[str, Any]) -> None:
         tid = event.get("task_id", "")
         if tid not in self.tasks:
             return
         kind = event.get("type")
+        if kind in ("task_finished", "approval_needed") and self._ack is not None:
+            self._ack.cancel()
         if kind == "task_finished":
             self._last_done = time.monotonic()
             self.last_answer = event.get("text", "")

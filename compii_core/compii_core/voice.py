@@ -744,16 +744,45 @@ def _sentences(text: str) -> list[str]:
     return parts or [text]
 
 
+FILE_KINDS = {"pdf": "PDF", "xlsx": "spreadsheet", "xls": "spreadsheet", "csv": "spreadsheet", "docx": "document",
+              "doc": "document", "pptx": "slides", "png": "picture", "jpg": "picture", "jpeg": "picture",
+              "mp4": "video", "mp3": "audio", "zip": "zip file"}
+
+
+def spoken_reply(text: str, sentences: int = 2, longest: int = 280) -> str:
+    """What Compii says out loud: the first sentence or two of its reply, cleaned up.
+    The full reply stays in the bubble; reading reports aloud is tiring and odd."""
+    out = ""
+    for sentence in _sentences(speakable(text)):
+        if out and (len(out) + len(sentence) > longest or out.count(". ") + out.count("? ") + 1 >= sentences):
+            break
+        out = f"{out} {sentence}".strip()
+    return out
+
+
 def speakable(text: str) -> str:
     """Turn a written reply into something natural to say: no markdown, bullets,
-    code, raw links or long paths."""
+    code, raw links, long paths, ids, emoji or abbreviations read letter by letter."""
     import re
 
     t = re.sub(r"```.*?```", " ", text, flags=re.S)
+    t = re.sub(r"^\s*\|.*\|\s*$", " ", t, flags=re.M)  # tables
+    t = re.sub(r"\((?:[^()]{40,})\)", "", t)  # long asides in brackets
+    t = re.sub(r"\b(e\.g|i\.e|etc|vs)\.", lambda m: {"e.g": "for example", "i.e": "that is", "etc": "and so on",
+                                                       "vs": "versus"}[m.group(1).lower()], t, flags=re.I)
+    t = re.sub(r"\b[eE]\d{1,4}\b", "", t)  # screen item ids (e12)
+    t = re.sub(r"\bCtrl\b", "Control", t)
+    t = re.sub(r"(?<=\w)\s*\+\s*(?=[A-Z])", " ", t)  # Control+Alt -> Control Alt
+    t = t.replace("→", " to ").replace("&", " and ").replace("–", " to ")
+    t = re.sub(r"\s*—\s*", ", ", t)
+    t = re.sub(r"[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F]", "", t)  # emoji
     t = re.sub(r"`([^`]*)`", r"\1", t)
     t = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", t)  # [label](link) -> label
-    t = re.sub(r"https?://\S+", "a link", t)
+    t = re.sub(r"https?://\S+?(?=[.,!?)]*(?:\s|$))", "a link", t)  # keeps the full stop after a link
     t = re.sub(r"(?:[A-Za-z]:)?(?:[\\/][^\\/\s]+){2,}[\\/]([^\\/\s]+)", r"\1", t)  # paths -> file name
+    t = re.sub(r"\b([\w-]+)\.(\w{2,4})\b", lambda m: f"{m.group(1)} {FILE_KINDS[m.group(2).lower()]}"
+               if m.group(2).lower() in FILE_KINDS else (m.group(1) if m.group(2).lower() in
+               ("md", "txt", "json", "py", "html", "log") else m.group(0)), t)  # report.md -> report
     t = re.sub(r"[*_#>|]+", "", t)
     t = re.sub(r"^\s*(?:[-•]|\d+[.)])\s+", "", t, flags=re.M)  # list markers
     t = re.sub(r"[:;]?\s*\n+\s*", ". ", t)
