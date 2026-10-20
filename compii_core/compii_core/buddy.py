@@ -297,7 +297,8 @@ class Buddy:
             self.last_answer = event.get("text", "")
             self.emit("answer", task_id=tid, text=self.last_answer, status=event.get("status"))
         elif kind == "approval_needed":
-            self.emit("needs_you", task_id=tid, text=f"{event.get('label', '')} — say yes or no.")
+            self.emit("needs_you", task_id=tid, approval_id=event.get("approval_id", ""),
+                      text=f"{event.get('label', '')}?")  # Yes / No buttons beside the cursor, or say it
         elif kind == "action_started":
             self.emit("thinking", task_id=tid, step=event.get("label", ""))
 

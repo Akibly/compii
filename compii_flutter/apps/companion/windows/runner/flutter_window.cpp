@@ -2,6 +2,8 @@
 
 #include <optional>
 
+#include <flutter/standard_method_codec.h>
+
 #include "flutter/generated_plugin_registrant.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
@@ -25,6 +27,25 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+
+  overlay_channel_ = std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+      flutter_controller_->engine()->messenger(), "compii/overlay",
+      &flutter::StandardMethodCodec::GetInstance());
+  overlay_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        if (call.method_name() != "clickThrough") {
+          result->NotImplemented();
+          return;
+        }
+        const auto* through = std::get_if<bool>(call.arguments());
+        HWND hwnd = GetHandle();
+        LONG ex = GetWindowLong(hwnd, GWL_EXSTYLE);
+        // Only the click-through bit changes; the window stays layered (and so visible).
+        ex = (through == nullptr || *through) ? (ex | WS_EX_TRANSPARENT) : (ex & ~WS_EX_TRANSPARENT);
+        SetWindowLong(hwnd, GWL_EXSTYLE, ex);
+        result->Success();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {

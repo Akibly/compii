@@ -155,3 +155,20 @@ def test_buddy_continues_the_last_conversation_until_new_topic():
     bud._last_done = _t.monotonic() - b.FOLLOW_UP_SECONDS - 1
     asyncio.run(bud._handle("and Everest?", None))
     assert agent.calls[-1][0] == "start"  # too long ago: a fresh conversation
+
+
+def test_compii_draws_on_screen_by_item_id(home):
+    from compii_core.tools import Toolbox
+
+    tb = Toolbox([home["downloads"]], home["workspace"])
+    tb.snapshot = {"title": "Blender", "elements": [
+        {"id": "e1", "role": "Button", "name": "Add", "x": 10, "y": 20, "w": 40, "h": 20},
+        {"id": "e2", "role": "MenuItem", "name": "Mesh", "x": 10, "y": 60, "w": 60, "h": 20}]}
+    drawn = []
+    tb.on_draw = drawn.append
+    r = tb.tools["draw_on_screen"].run({"shapes": [{"kind": "circle", "target": "e1"},
+                                                   {"kind": "arrow", "target": "e2", "from": "e1"}],
+                                        "message": "Add, then Mesh"})
+    assert "Drew 2" in r.text
+    assert drawn[0]["shapes"][0]["kind"] == "circle" and drawn[0]["shapes"][0]["x"] == 10
+    assert drawn[0]["shapes"][1]["from"]["y"] == 20 and drawn[0]["message"] == "Add, then Mesh"

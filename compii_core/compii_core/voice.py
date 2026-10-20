@@ -45,6 +45,9 @@ KOKORO_HQ = ("kokoro-v1.0.fp16.onnx",
 CLOUD_WHISPER = "whisper-large-v3-turbo"
 WHISPER_HQ = "small.en"  # sharper final transcripts (optional download)
 KOKORO_VOICES = {
+    "compii_warm": "Compii (warm)",
+    "compii_bright": "Compii (bright)",
+    "compii_playful": "Compii (playful)",
     "af_heart": "Heart (warm, US)",
     "af_bella": "Bella (bright, US)",
     "am_michael": "Michael (calm, US)",
@@ -52,13 +55,26 @@ KOKORO_VOICES = {
     "bm_george": "George (British)",
 }
 
+# Compii's own voices: blends of Kokoro's voices, so it sounds like itself.
+VOICE_BLENDS = {
+    "compii_warm": {"af_heart": .6, "af_bella": .4},
+    "compii_bright": {"af_heart": .55, "af_sky": .45},
+    "compii_playful": {"af_heart": .5, "am_puck": .5},
+}
+
+
+def kokoro_lang(voice: str) -> str:
+    """British voices need British pronunciation, or they sound off."""
+    return "en-gb" if voice.startswith(("bf_", "bm_")) else "en-us"
+
+
 Emit = Callable[[dict[str, Any]], None]
 
 
 @dataclass
 class VoiceSettings:
     speak_replies: bool = True
-    voice: str = "af_heart"
+    voice: str = "compii_warm"
     speed: float = 1.05
     # "natural" uses Kokoro when downloaded; "windows" is the instant built-in voice.
     engine: str = "natural"
@@ -123,7 +139,7 @@ class Voice:
         if self.has_natural_voice():
             def run() -> None:
                 try:
-                    self._kokoro().create("Ready.", voice=self.settings.voice, lang="en-us")
+                    self._kokoro().create("Ready.", voice=self.kokoro_voice(), lang=kokoro_lang(self.settings.voice))
                 except Exception:  # noqa: BLE001 - warm-up is best effort
                     pass
             threading.Thread(target=run, daemon=True).start()
@@ -360,6 +376,20 @@ class Voice:
                     unclear = differ(sharp, text)
                     text = sharp
         return text, unclear[:6]
+
+    def kokoro_voice(self) -> Any:
+        """The chosen voice: a Kokoro name, or the mixed style of one of Compii's own voices."""
+        name = self.settings.voice
+        blend = VOICE_BLENDS.get(name)
+        if not blend:
+            return name
+        cached = getattr(self, "_blend", None)
+        if cached and cached[0] == name:
+            return cached[1]
+        k = self._kokoro()
+        style = sum(k.get_voice_style(v) * w for v, w in blend.items())
+        self._blend = (name, style)
+        return style
 
     def _cloud_key(self) -> str | None:
         if not self.settings.cloud_listening or self.cloud_key is None:
@@ -641,7 +671,8 @@ class _Speaker:
                 for phrase in _phrases(text):
                     if generation != self._generation:
                         break
-                    ready.put(self.voice._kokoro().create(phrase, voice=s.voice, speed=s.speed, lang="en-us"))
+                    ready.put(self.voice._kokoro().create(phrase, voice=self.voice.kokoro_voice(), speed=s.speed,
+                                                          lang=kokoro_lang(s.voice)))
             finally:
                 ready.put(None)
 
@@ -751,8 +782,8 @@ def _phrases(text: str, longest: int = 220) -> list[str]:
         if chunk:
             out.append(chunk)
     # A long first sentence: start with its opening clause.
-    # The voice is made on this PC, so a shorter first piece means it starts talking sooner.
-    if out and len(out[0]) > 60 and "," in out[0][:70]:
-        cut = out[0].index(",") + 1
-        out[0:1] = [out[0][:cut], out[0][cut:].strip()]
+    # A long first sentence: start with its opening clause (whole sentences sound most natural).
+    if out and len(out[0]) > 110 and "," in out[0][:90]:
+        head, _, rest = out[0].partition(",")
+        out[0:1] = [head + ",", rest.strip()]
     return out

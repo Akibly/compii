@@ -3,6 +3,8 @@
 
 #include <flutter/dart_project.h>
 #include <flutter/flutter_view_controller.h>
+#include <flutter/method_channel.h>
+#include <flutter/encodable_value.h>
 
 #include <memory>
 
@@ -28,6 +30,10 @@ class FlutterWindow : public Win32Window {
 
   // The Flutter instance hosted by this window.
   std::unique_ptr<flutter::FlutterViewController> flutter_controller_;
+
+  // "compii/overlay": lets the overlay take clicks only while the mouse is
+  // over its Yes / No card (the rest of the time clicks pass straight through).
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> overlay_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

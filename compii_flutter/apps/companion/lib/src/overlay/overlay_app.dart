@@ -2,12 +2,16 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'buddy_layer.dart';
+
+/// Native switch for click-through (windows/runner/flutter_window.cpp).
+const _overlayChannel = MethodChannel('compii/overlay');
 
 /// Size of the overlay's popup window, matching windows/runner/main.cpp.
 const overlayWindow = Size(460, 360);
@@ -68,6 +72,14 @@ class OverlayApp extends StatelessWidget {
       points: core.lastPoint,
       scale: scale,
       cursor: cursor ?? () async => Offset.zero,
+      onDecide: (id, approved) => core.decide(id, approved: approved),
+      setClickThrough: (through) async {
+        try {
+          await _overlayChannel.invokeMethod<void>('clickThrough', through);
+        } on Object {
+          // Not running in the native overlay (tests, previews).
+        }
+      },
     ),
   );
 }

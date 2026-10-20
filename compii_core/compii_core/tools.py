@@ -29,6 +29,9 @@ class ToolError(Exception):
     """A tool failed in a way the agent should hear about and can recover from."""
 
 
+DRAW_KINDS = ("circle", "underline", "box", "arrow")
+
+
 @dataclass
 class ToolResult:
     text: str
@@ -79,6 +82,7 @@ class Toolbox:
         # Called with a screen rectangle just before Compii clicks or types there,
         # so the character can point at it ("watch me").
         self.on_point: Callable[[dict[str, Any]], None] | None = None
+        self.on_draw: Callable[[dict[str, Any]], None] | None = None  # marker drawings on the overlay
         # The latest screen snapshot (screen-aware turns): point_at accepts its ids.
         self.snapshot: dict[str, Any] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
@@ -365,6 +369,31 @@ class Toolbox:
             point=point,
         )
 
+    def draw_on_screen(self, a: dict[str, Any]) -> ToolResult:
+        """Circle, underline, box or arrow things on screen, like a teacher with a marker."""
+        shapes, missing = [], []
+        for sh in a.get("shapes") or []:
+            kind = sh.get("kind", "circle")
+            if kind not in DRAW_KINDS:
+                raise ToolError(f"Unknown shape “{kind}”. Use one of: {', '.join(DRAW_KINDS)}.")
+            found = self._from_snapshot(sh.get("target", "")) or self._find(sh.get("target", ""))
+            if found is None:
+                missing.append(sh.get("target", ""))
+                continue
+            shape = {"kind": kind, **found.as_event()}
+            if kind == "arrow" and sh.get("from"):
+                start = self._from_snapshot(sh["from"]) or self._find(sh["from"])
+                if start is not None:
+                    shape["from"] = start.as_event()
+            shapes.append(shape)
+        if not shapes:
+            raise ToolError(f"Couldn't find {', '.join(map(repr, missing)) or 'anything to draw on'} on screen.")
+        drawing = {"shapes": shapes, "message": a.get("message", "")}
+        if self.on_draw:
+            self.on_draw(drawing)
+        note = f" (couldn't find {', '.join(missing)})" if missing else ""
+        return ToolResult(f"Drew {len(shapes)} mark(s) on screen{note}.", point=None)
+
     def _from_snapshot(self, target: str):
         """An item id (e12) from the screen snapshot, so the AI never has to guess pixels."""
         import re
@@ -512,6 +541,16 @@ class Toolbox:
                   "message": {**s, "description": "One short sentence for the speech bubble."}},
                  ["target", "message"], ActionKind.READ, self.point_at,
                  lambda a: f"Point at “{a['target']}”"),
+            Tool("draw_on_screen", "Draw on the user's screen like a teacher with a marker: circle, underline, box or "
+                 "arrow items (by snapshot id or visible label). Great when teaching or showing several things at once.",
+                 {"shapes": {"type": "array", "items": {"type": "object", "properties": {
+                     "kind": {"type": "string", "enum": list(DRAW_KINDS)},
+                     "target": {**s, "description": "Item id (e12) or visible label."},
+                     "from": {**s, "description": "For an arrow between two items: where it starts."}},
+                     "required": ["kind", "target"]}},
+                  "message": {**s, "description": "One short sentence for the speech bubble."}},
+                 ["shapes"], ActionKind.READ, self.draw_on_screen,
+                 lambda a: "Draw on the screen"),
             Tool("update_plan", "Show the user your plan as a checklist, and update it as you go. "
                  "Call it before multi-step work and again when a step starts or finishes.",
                  {"steps": {"type": "array", "items": {

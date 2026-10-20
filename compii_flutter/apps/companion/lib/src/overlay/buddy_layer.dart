@@ -21,7 +21,15 @@ class BuddyLayer extends StatefulWidget {
     this.points,
     this.scale = 1,
     this.alwaysVisible = true,
+    this.onDecide,
+    this.setClickThrough,
   });
+
+  /// Answer an approval from the Yes / No card beside the cursor.
+  final Future<void> Function(String approvalId, bool approved)? onDecide;
+
+  /// Let clicks through the overlay (true) or catch them (false, only over the card).
+  final Future<void> Function(bool through)? setClickThrough;
 
   /// Core's voice_* events (voice_buddy, voice_partial, voice_level, voice_caption, voice_speaking).
   final Stream<Map<String, dynamic>> events;
@@ -47,6 +55,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   Timer? _follow;
   late final AnimationController _pulse = AnimationController(vsync: this, duration: const Duration(milliseconds: 2200));
   late final AnimationController _fly = AnimationController(vsync: this, duration: const Duration(milliseconds: 650));
+  // Compii drawing on screen like a teacher with a marker (draw_on_screen).
+  late final AnimationController _marker = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+  List<_Mark> _marks = const [];
+  Timer? _marksOff;
   Timer? _hide;
   Timer? _flyBack;
 
@@ -70,6 +82,22 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   String _targetLabel = '';
   Offset _flyFrom = Offset.zero;
 
+  // Asking for permission: a Yes / No card that stays put where it appeared.
+  String _approvalId = '';
+  Offset? _askAt;
+  final _card = GlobalKey();
+  bool _catching = false; // the overlay is taking clicks (mouse over the card, or drawing)
+
+  // Drawing: while you hold Ctrl+Alt, press the mouse button and drag to draw on screen.
+  // The overlay takes the mouse only while the keys are held, so nothing underneath gets clicked.
+  final List<List<Offset>> _ink = [];
+  bool _catchAll = false;
+  @visibleForTesting
+  int get inkStrokes => _ink.length;
+  Timer? _catchAllSafety;
+
+  bool get asking => state == 'needs_you' && _approvalId.isNotEmpty;
+
   bool get talking => state != 'idle';
 
   @override
@@ -86,6 +114,9 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   void dispose() {
     widget.points?.removeListener(_onPoint);
     _follow?.cancel();
+    _catchAllSafety?.cancel();
+    _marksOff?.cancel();
+    _marker.dispose();
     _pulse.dispose();
     _fly.dispose();
     _sub?.cancel();
@@ -113,6 +144,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     }
     final c = _cursor;
     if (c == null) return;
+    _catchClicksOverCard(c);
     if ((state == 'answer' || state == 'note') && !speaking && _answerAt != null && (c - _answerAt!).distance > 220) {
       _answerAt = null;
       _hide?.cancel();
@@ -143,8 +175,11 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         changed = true;
       }
     } else if (_trailFade > 0) {
-      _trailFade = math.max(0, _trailFade - .02); // fades over ~1 s after you let go
-      if (_trailFade == 0) _trail.clear();
+      _trailFade = math.max(0, _trailFade - (_ink.isEmpty ? .02 : .006)); // drawings linger ~3 s
+      if (_trailFade == 0) {
+        _trail.clear();
+        _ink.clear();
+      }
       changed = true;
     }
     if (changed) {
@@ -153,6 +188,46 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         _tilt = _tilt + (tilt - _tilt) * .3;
       });
     }
+  }
+
+  /// Clicks pass through the overlay to your apps, except while the mouse is over
+  /// the Yes / No card, so you can answer right where you are.
+  void _catchClicksOverCard(Offset c) {
+    var over = false;
+    if (asking) {
+      final box = _card.currentContext?.findRenderObject() as RenderBox?;
+      if (box != null && box.hasSize) {
+        over = (box.localToGlobal(Offset.zero) & box.size).inflate(6).contains(c);
+      }
+    }
+    final want = _catchAll || over;
+    if (want != _catching) {
+      _catching = want;
+      widget.setClickThrough?.call(!want);
+    }
+  }
+
+  void _setCatchAll(bool on) {
+    _catchAll = on;
+    _catchAllSafety?.cancel();
+    if (on) {
+      // Never hold on to the mouse for long, whatever happens to Core.
+      _catchAllSafety = Timer(const Duration(seconds: 30), () => _setCatchAll(false));
+    }
+    if (_cursor != null) _catchClicksOverCard(_cursor!);
+  }
+
+  Future<void> _decide(bool approved) async {
+    final id = _approvalId;
+    setState(() {
+      _approvalId = '';
+      state = 'thinking';
+      text = approved ? 'Okay…' : '';
+    });
+    _catching = false;
+    await widget.setClickThrough?.call(true);
+    await widget.onDecide?.call(id, approved);
+    if (!approved) _goIdle();
   }
 
   Offset _anchor(Rect r) => Offset(r.right - math.min(10, r.width / 3), r.bottom - math.min(8, r.height / 3));
@@ -185,6 +260,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         final s = '${e['state']}';
         setState(() {
           state = s;
+          _approvalId = s == 'needs_you' ? '${e['approval_id'] ?? ''}' : '';
+          _askAt = s == 'needs_you' ? _pos : null;
           switch (s) {
             case 'listening':
               text = '';
@@ -202,6 +279,13 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
           }
         });
         _hide?.cancel();
+        if (s == 'listening') {
+          _ink.clear();
+          _marks = const [];
+          _setCatchAll(true);
+        } else if (_catchAll) {
+          _setCatchAll(false);
+        }
         if (s == 'idle') {
           if (text.isNotEmpty) {
             setState(() => state = 'note');
@@ -214,6 +298,20 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
           _answerAt = _cursor;
           _hide = Timer(Duration(milliseconds: (2500 + text.length * 45).clamp(3000, 12000)), _closeIfQuiet);
         }
+      case 'voice_draw':
+        double n(Map m, String k) => (m[k] as num).toDouble() / widget.scale;
+        Rect r(Map m) => Rect.fromLTWH(n(m, 'x'), n(m, 'y'), n(m, 'w'), n(m, 'h'));
+        final shapes = [
+          for (final m in (e['shapes'] as List? ?? const []).cast<Map>())
+            _Mark('${m['kind']}', r(m), m['from'] is Map ? r(m['from'] as Map) : null),
+        ];
+        setState(() => _marks = shapes);
+        _marker.duration = Duration(milliseconds: 700 + 500 * shapes.length);
+        _marker.forward(from: 0);
+        _marksOff?.cancel();
+        _marksOff = Timer(const Duration(seconds: 12), () {
+          if (mounted) setState(() => _marks = const []);
+        });
       case 'voice_buddy_visible':
         setState(() => _hidden = e['visible'] == false);
       case 'voice_partial' when state == 'listening' || state == 'dictating':
@@ -278,92 +376,188 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
       _ => (text, false),
     };
     final showLabel = line.isNotEmpty || listening || thinking || watching;
-    final flipX = _pos.dx + 330 > screen.width;
-    final flipY = _pos.dy + 90 > screen.height;
+    final at = asking ? (_askAt ?? _pos) : _pos; // the permission card stays put so you can reach it
+    final flipX = at.dx + 330 > screen.width;
+    final flipY = at.dy + (asking ? 130 : 90) > screen.height;
 
-    return Stack(
-      clipBehavior: Clip.none,
-      children: [
-        if (_trail.length > 1)
-          Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _TrailPainter(List.of(_trail), _tint, _trailFade)))),
-        if (_target != null)
-          Positioned.fromRect(
-            rect: _target!.inflate(5),
-            child: IgnorePointer(
-              child: Opacity(
-                opacity: _fly.value > .8 ? 1 : 0,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(9),
-                    border: Border.all(color: const Color(0xFF6E8BFF), width: 2),
-                    boxShadow: const [BoxShadow(color: Color(0x666E8BFF), blurRadius: 14)],
+    return MouseRegion(
+      cursor: listening ? SystemMouseCursors.precise : MouseCursor.defer,
+      child: Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: listening ? (e) => setState(() => _ink.add([e.localPosition])) : null,
+        onPointerMove: listening
+            ? (e) {
+                if (e.down && _ink.isNotEmpty) setState(() => _ink.last.add(e.localPosition));
+              }
+            : null,
+        child: SizedBox.expand(
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              if (_marks.isNotEmpty)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: AnimatedBuilder(
+                      animation: _marker,
+                      builder: (context, _) => CustomPaint(painter: _MarkerPainter(_marks, _marker.value)),
+                    ),
+                  ),
+                ),
+              for (final stroke in _ink)
+                if (stroke.length > 1)
+                  Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _InkPainter(List.of(stroke), _tint,
+                      listening ? 1 : _trailFade)))),
+              if (_trail.length > 1 && _ink.isEmpty)
+                Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _TrailPainter(List.of(_trail), _tint, _trailFade)))),
+              if (_target != null)
+                Positioned.fromRect(
+                  rect: _target!.inflate(5),
+                  child: IgnorePointer(
+                    child: Opacity(
+                      opacity: _fly.value > .8 ? 1 : 0,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(9),
+                          border: Border.all(color: const Color(0xFF6E8BFF), width: 2),
+                          boxShadow: const [BoxShadow(color: Color(0x666E8BFF), blurRadius: 14)],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              Positioned(
+                left: _pos.dx - 17,
+                top: _pos.dy - 17,
+                child: RepaintBoundary(
+                  child: AnimatedBuilder(
+                    animation: _pulse,
+                    builder: (context, _) => CustomPaint(
+                      size: const Size(34, 34),
+                      painter: SparkPainter(t: _pulse.value, tint: _tint, listening: listening, thinking: thinking,
+                          level: listening ? level : 0, active: talking || _target != null, tilt: _tilt, recording: watching),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ),
-        Positioned(
-          left: _pos.dx - 17,
-          top: _pos.dy - 17,
-          child: RepaintBoundary(
-            child: AnimatedBuilder(
-              animation: _pulse,
-              builder: (context, _) => CustomPaint(
-                size: const Size(34, 34),
-                painter: SparkPainter(t: _pulse.value, tint: _tint, listening: listening, thinking: thinking,
-                    level: listening ? level : 0, active: talking || _target != null, tilt: _tilt, recording: watching),
-              ),
-            ),
+              if (showLabel)
+                Positioned(
+                  left: flipX ? null : at.dx + 16,
+                  right: flipX ? screen.width - at.dx + 16 : null,
+                  top: flipY ? null : at.dy - 2,
+                  bottom: flipY ? screen.height - at.dy - 2 : null,
+                  child: _GlassLabel(
+                    key: _card,
+                    tint: _tint,
+                    child: asking ? _askCard(line) : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (listening) ...[
+                          AnimatedBuilder(
+                            animation: _pulse,
+                            builder: (context, _) => CustomPaint(size: const Size(14, 12), painter: _WavePainter(_pulse.value, level, _tint)),
+                          ),
+                          const SizedBox(width: 8),
+                        ],
+                        Flexible(
+                          child: line.isEmpty
+                              ? _Shimmer(text: state == 'dictating' ? 'Dictating' : (listening ? 'Listening' : 'Thinking'), t: _pulse)
+                              : Text(
+                                  line,
+                                  maxLines: state == 'answer' ? 6 : 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    color: muted ? const Color(0xB3FFFFFF) : const Color(0xF2FFFFFF),
+                                    fontSize: 13,
+                                    height: 1.42,
+                                    letterSpacing: .1,
+                                    fontWeight: FontWeight.w500,
+                                    decoration: TextDecoration.none,
+                                    fontFamily: 'Segoe UI Variable Text',
+                                  ),
+                                ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
           ),
         ),
-        if (showLabel)
-          Positioned(
-            left: flipX ? null : _pos.dx + 16,
-            right: flipX ? screen.width - _pos.dx + 16 : null,
-            top: flipY ? null : _pos.dy - 2,
-            bottom: flipY ? screen.height - _pos.dy - 2 : null,
-            child: _GlassLabel(
-              tint: _tint,
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (listening) ...[
-                    AnimatedBuilder(
-                      animation: _pulse,
-                      builder: (context, _) => CustomPaint(size: const Size(14, 12), painter: _WavePainter(_pulse.value, level, _tint)),
-                    ),
-                    const SizedBox(width: 8),
-                  ],
-                  Flexible(
-                    child: line.isEmpty
-                        ? _Shimmer(text: state == 'dictating' ? 'Dictating' : (listening ? 'Listening' : 'Thinking'), t: _pulse)
-                        : Text(
-                            line,
-                            maxLines: state == 'answer' ? 6 : 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              color: muted ? const Color(0xB3FFFFFF) : const Color(0xF2FFFFFF),
-                              fontSize: 13,
-                              height: 1.42,
-                              letterSpacing: .1,
-                              fontWeight: FontWeight.w500,
-                              decoration: TextDecoration.none,
-                              fontFamily: 'Segoe UI Variable Text',
-                            ),
-                          ),
-                  ),
-                ],
-              ),
-            ),
-          ),
-      ],
+      ),
     );
   }
+
+  Widget _askCard(String line) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        line.isEmpty ? 'May I go ahead?' : line,
+        maxLines: 4,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Color(0xF2FFFFFF), fontSize: 13, height: 1.42, fontWeight: FontWeight.w500,
+            decoration: TextDecoration.none, fontFamily: 'Segoe UI Variable Text'),
+      ),
+      const SizedBox(height: 8),
+      Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _Pill(label: 'Yes', primary: true, tint: _tint, onTap: () => _decide(true)),
+          const SizedBox(width: 6),
+          _Pill(label: 'No', tint: _tint, onTap: () => _decide(false)),
+        ],
+      ),
+    ],
+  );
+}
+
+/// A small button on the permission card.
+class _Pill extends StatefulWidget {
+  const _Pill({required this.label, required this.tint, required this.onTap, this.primary = false});
+  final String label;
+  final Color tint;
+  final VoidCallback onTap;
+  final bool primary;
+  @override
+  State<_Pill> createState() => _PillState();
+}
+
+class _PillState extends State<_Pill> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) => MouseRegion(
+    cursor: SystemMouseCursors.click,
+    onEnter: (_) => setState(() => _hover = true),
+    onExit: (_) => setState(() => _hover = false),
+    child: GestureDetector(
+      onTap: widget.onTap,
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 120),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(99),
+          color: widget.primary
+              ? widget.tint.withValues(alpha: _hover ? 1 : .88)
+              : Color(_hover ? 0x33FFFFFF : 0x1FFFFFFF),
+        ),
+        child: Text(
+          widget.label,
+          style: TextStyle(
+            color: widget.primary ? const Color(0xFF1A1630) : const Color(0xF2FFFFFF),
+            fontSize: 12.5,
+            fontWeight: FontWeight.w600,
+            decoration: TextDecoration.none,
+            fontFamily: 'Segoe UI Variable Text',
+          ),
+        ),
+      ),
+    ),
+  );
 }
 
 /// Small, dark, frosted label: Compii's voice on screen.
 class _GlassLabel extends StatelessWidget {
-  const _GlassLabel({required this.child, required this.tint});
+  const _GlassLabel({super.key, required this.child, required this.tint});
   final Widget child;
   final Color tint;
   @override
@@ -514,6 +708,136 @@ Path _rounded(List<Offset> pts, List<double> radii) {
 
 /// The paint trail left while you hold Ctrl+Alt and move the mouse: circle or
 /// wave at something to show Compii what you mean.
+/// Something Compii drew: a circle, underline, box or arrow around an item.
+class _Mark {
+  const _Mark(this.kind, this.rect, this.from);
+  final String kind;
+  final Rect rect;
+  final Rect? from;
+}
+
+/// Compii's marker: shapes appear stroke by stroke, slightly hand-drawn, one after another.
+class _MarkerPainter extends CustomPainter {
+  _MarkerPainter(this.marks, this.t);
+  final List<_Mark> marks;
+  final double t;
+  static const ink = Color(0xFFFF5C93);
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (var i = 0; i < marks.length; i++) {
+      final local = (t * marks.length - i).clamp(0.0, 1.0);
+      if (local <= 0) continue;
+      final m = marks[i];
+      final path = _path(m, size);
+      final metrics = path.computeMetrics().toList();
+      final total = metrics.fold<double>(0, (a, x) => a + x.length);
+      var left = total * Curves.easeOutCubic.transform(local);
+      final drawn = Path();
+      for (final metric in metrics) {
+        if (left <= 0) break;
+        drawn.addPath(metric.extractPath(0, math.min(left, metric.length)), Offset.zero);
+        left -= metric.length;
+      }
+      final pen = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round;
+      canvas.drawPath(drawn, pen..strokeWidth = 11..color = ink.withValues(alpha: .22)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+      canvas.drawPath(drawn, Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..strokeWidth = 4
+        ..color = ink);
+    }
+  }
+
+  Path _path(_Mark m, Size size) {
+    final r = m.rect;
+    switch (m.kind) {
+      case 'underline':
+        return Path()
+          ..moveTo(r.left - 4, r.bottom + 5)
+          ..quadraticBezierTo(r.center.dx, r.bottom + 9, r.right + 6, r.bottom + 3);
+      case 'box':
+        return Path()..addRRect(RRect.fromRectAndRadius(r.inflate(7), const Radius.circular(8)));
+      case 'arrow':
+        // Edge to edge: from the side of the first item that faces the second.
+        final f = m.from;
+        final vertical = f != null && (r.center.dy - f.center.dy).abs() > (r.center.dx - f.center.dx).abs();
+        final down = f != null && r.center.dy > f.center.dy;
+        final right = f != null && r.center.dx > f.center.dx;
+        final end = !vertical
+            ? Offset(f == null || right ? r.left - 6 : r.right + 6, r.center.dy)
+            : Offset(r.center.dx, down ? r.top - 6 : r.bottom + 6);
+        final start = f == null
+            ? Offset(math.max(8, end.dx - 110), math.max(8, end.dy - 80))
+            : vertical
+                ? Offset(f.center.dx, down ? f.bottom + 14 : f.top - 14)
+                : Offset(right ? f.right + 16 : f.left - 16, f.center.dy);
+        final mid = Offset((start.dx + end.dx) / 2, math.min(start.dy, end.dy) - 30);
+        final dir = end - mid;
+        final a = math.atan2(dir.dy, dir.dx);
+        Offset head(double turn) => end - Offset(math.cos(a + turn), math.sin(a + turn)) * 16;
+        return Path()
+          ..moveTo(start.dx, start.dy)
+          ..quadraticBezierTo(mid.dx, mid.dy, end.dx, end.dy)
+          ..moveTo(head(.5).dx, head(.5).dy)
+          ..lineTo(end.dx, end.dy)
+          ..lineTo(head(-.5).dx, head(-.5).dy);
+      default: // circle: a loose, hand-drawn loop that overshoots a little
+        final c = r.center;
+        final rx = r.width / 2 + 14, ry = r.height / 2 + 12;
+        final p = Path();
+        const start = -2.3;
+        for (var k = 0; k <= 60; k++) {
+          final th = start + k / 60 * math.pi * 2.12;
+          final wobble = 1 + .045 * math.sin(th * 3 + 1);
+          final pt = Offset(c.dx + math.cos(th) * rx * wobble, c.dy + math.sin(th) * ry * wobble);
+          k == 0 ? p.moveTo(pt.dx, pt.dy) : p.lineTo(pt.dx, pt.dy);
+        }
+        return p;
+    }
+  }
+
+  @override
+  bool shouldRepaint(_MarkerPainter o) => o.t != t || o.marks != marks;
+}
+
+/// What you drew while holding Ctrl+Alt: a bright marker line.
+class _InkPainter extends CustomPainter {
+  _InkPainter(this.points, this.color, this.fade);
+  final List<Offset> points;
+  final Color color;
+  final double fade;
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2 || fade <= 0) return;
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var i = 1; i < points.length; i++) {
+      final a = points[i - 1], b = points[i];
+      path.quadraticBezierTo(a.dx, a.dy, (a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+    }
+    final pen = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round;
+    canvas.drawPath(path, pen..strokeWidth = 12..color = color.withValues(alpha: .25 * fade)
+      ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 5));
+    canvas.drawPath(path, Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeJoin = StrokeJoin.round
+      ..strokeWidth = 4.5
+      ..color = color.withValues(alpha: .95 * fade));
+  }
+
+  @override
+  bool shouldRepaint(_InkPainter o) => true;
+}
+
 class _TrailPainter extends CustomPainter {
   _TrailPainter(this.points, this.color, this.fade);
   final List<Offset> points;

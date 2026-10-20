@@ -193,6 +193,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     hub = Hub()
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
+    toolbox.on_draw = lambda d: hub.emit_threadsafe({"type": "voice_draw", **d})  # the overlay draws it
     voice_file = workspace / "voice.json"
     voice.cloud_key = lambda: keys.get("groq") or prov._env_key("groq")  # fast speech recognition, if stored
 
@@ -369,8 +370,11 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     for t in web_tools():
         toolbox.tools[t.name] = t
     skills = Skills(workspace / "skills.json")
-    agent.extra_context = skills.context
-    for t in skill_tools(skills):
+    from .lessons import Lessons, lesson_tools
+
+    lessons = Lessons(workspace / "lesson.json")  # "teach me Blender" → "what next?" carries on
+    agent.extra_context = lambda: "\n".join(c for c in (skills.context(), lessons.context()) if c)
+    for t in [*skill_tools(skills), *lesson_tools(lessons)]:
         toolbox.tools[t.name] = t
 
     def say_step(text: str) -> None:
@@ -407,6 +411,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             toolbox._browser.close()
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
+    app.state.lessons = lessons
     app.state.agent = agent
     remote = RemoteHost(app, pairing, REMOTE_PORT)
     app.state.pairing = pairing
