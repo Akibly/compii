@@ -64,12 +64,21 @@ NEVER_RULE = {ActionKind.SPEND}
 FRESH_AFTER_INJECTION = {ActionKind.SEND, ActionKind.DELETE, ActionKind.SPEND}
 
 
+_SCOPE_PATH_KEYS = ("path", "src", "source", "folder", "destination", "into")
+_SCOPE_KEYS = _SCOPE_PATH_KEYS + ("url", "to", "window", "target")
+
+
+def has_scopable_arg(args: dict) -> bool:
+    """Whether the action names a folder, site, window, target or recipient a rule can bind to."""
+    return any(args.get(key) for key in _SCOPE_KEYS)
+
+
 def scope_for(tool: str, args: dict) -> str:
-    """What an "Always allow" covers: this tool on this folder, site, window or recipients."""
+    """What an "Always allow" covers: this tool on this folder, site, window, target or recipients."""
     import urllib.parse
     from pathlib import Path
 
-    for key in ("path", "src", "folder"):
+    for key in _SCOPE_PATH_KEYS:
         if args.get(key):
             p = Path(str(args[key]))
             return str(p.parent if p.suffix else p)
@@ -80,6 +89,8 @@ def scope_for(tool: str, args: dict) -> str:
         return ",".join(sorted(str(t).lower() for t in to))
     if args.get("window"):
         return str(args["window"]).lower()
+    if args.get("target"):
+        return str(args["target"]).lower()
     return ""
 
 
@@ -96,7 +107,8 @@ class Rule:
         if tool != self.tool:
             return False
         if not self.scope:
-            return True
+            # Only read actions may be always-allowed without a scope to bind to.
+            return not scope and self.kind == ActionKind.READ
         if scope == self.scope:
             return True
         # A folder rule also covers what is inside it.
@@ -134,7 +146,10 @@ class Gate:
 
         if kind in NEVER_RULE:
             raise ValueError("Payments always need your approval.")
-        rule = Rule(tool, scope_for(tool, args), kind.value, label, "r" + uuid.uuid4().hex[:8], time.time())
+        scope = scope_for(tool, args)
+        if not scope and kind is not ActionKind.READ and not has_scopable_arg(args):
+            raise ValueError("This action has no folder, site or window to bind to, so it can't be always-allowed.")
+        rule = Rule(tool, scope, kind.value, label, "r" + uuid.uuid4().hex[:8], time.time())
         self.rules = [r for r in self.rules if not (r.tool == rule.tool and r.scope == rule.scope)] + [rule]
         return rule
 

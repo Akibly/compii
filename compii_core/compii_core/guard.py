@@ -13,7 +13,19 @@ import re
 from typing import Any
 
 # Tools whose output is text from the outside world (files, windows, web pages).
-UNTRUSTED_TOOLS = {"read_file", "read_window", "browse", "read_page", "recall", "search_web", "read_web_page"}
+UNTRUSTED_TOOLS = {"read_file", "search_in_files", "read_window", "browse", "read_page", "recall", "clipboard",
+                   "search_web", "read_web_page", "look_at_screen"}
+
+# The one rule for "this is a secret": never typed, never stored in the profile, never filled into a form.
+SECRET_FIELD = re.compile(
+    r"\b(password|passcode|passphrase|pin|cvv|cvc|otp|2fa|mfa)\b|card number|card no|security code|"
+    r"one[- ]time|verification code|sort code|iban|routing number|social security", re.I)
+_LONG_DIGITS = re.compile(r"[\d\s-]{13,23}")
+
+
+def is_secret(field: str = "", value: str = "") -> bool:
+    """Whether a form field or a piece of text holds a password, card or one-time code."""
+    return bool(SECRET_FIELD.search(field or "")) or bool(_LONG_DIGITS.fullmatch((value or "").strip() or "x"))
 
 _BLOCKED_KEYS = {
     "win+l": "locking the computer",
@@ -36,6 +48,13 @@ _SECURITY_TARGETS = re.compile(
     re.I,
 )
 _MONEY = re.compile(r"\b(pay now|place order|buy now|confirm purchase|complete purchase|send money|transfer funds|checkout)\b", re.I)
+# A script that deletes for real is the one thing Compii's own tools refuse to do,
+# so it must not be possible by writing the code instead of calling the tool.
+_HARD_DELETE = re.compile(
+    r"\b(os\.(remove|unlink)|shutil\.rmtree|DeleteFile)\b|\.unlink\(\)"
+    r"|\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*|--force|--no-preserve-root)|\bdel\s+/[fsq]\b|\bRemove-Item\b[^\n]*-Recurse",
+    re.I,
+)
 
 
 def blocked_reason(tool: str, args: dict[str, Any]) -> str | None:
@@ -47,6 +66,9 @@ def blocked_reason(tool: str, args: dict[str, Any]) -> str | None:
                 return f"Compii never presses {keys} ({what})."
     if tool == "run_python" and _INSTALL.search(str(args.get("code", ""))):
         return "Compii never installs software, edits the registry or changes system security or power settings."
+    if tool == "run_python" and _HARD_DELETE.search(str(args.get("code", ""))):
+        return ("Compii never deletes files for good, not even from a script. Use move_to_trash so the user "
+                "can still restore them from the Recycle Bin.")
     if tool == "open_item":
         target = str(args.get("target", args.get("path", "")))
         if _SECURITY_TARGETS.search(target):

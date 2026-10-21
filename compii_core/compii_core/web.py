@@ -90,7 +90,9 @@ def web_tools(client_factory=None) -> list[Tool]:
     def run_read(a: dict[str, Any]) -> ToolResult:
         title, text = page_text(a["url"], client=client())
         more = f"\n[… {len(text) - PAGE_CHARS} more characters not shown]" if len(text) > PAGE_CHARS else ""
-        return ToolResult(f"{title}\n{a['url']}\n\n{text[:PAGE_CHARS]}{more}")
+        # The page was really opened and read: record it as a source the user can check.
+        return ToolResult(f"{title}\n{a['url']}\n\n{text[:PAGE_CHARS]}{more}",
+                          sources=[{"title": title or a["url"], "url": a["url"]}])
 
     return [
         Tool("search_web", "Search the web (free). Returns titles, links and snippets. Use for current facts, prices, "

@@ -7,6 +7,7 @@ dependencies = [
   "anthropic>=1.11",
   "fastapi>=0.115",
   "uvicorn[standard]>=0.30",
+  "httpx>=0.27",  # used directly by providers, web search and voice downloads — not only via anthropic
   "openpyxl>=3.1",
   "pypdf>=5.0",
   "uiautomation>=2.0 ; sys_platform == 'win32'",

@@ -31,6 +31,9 @@ class ToolError(Exception):
 
 DRAW_KINDS = ("circle", "underline", "box", "arrow")
 
+# A screen read that couldn't happen: Compii says less rather than guessing.
+UNCHECKED = object()
+
 
 @dataclass
 class ToolResult:
@@ -39,6 +42,8 @@ class ToolResult:
     point: dict[str, Any] | None = None  # something on screen for the character to point at
     plan: list[dict[str, str]] | None = None  # the checklist the user watches
     files: list[tuple[str, str]] = field(default_factory=list)  # (path, "created" | "changed" | "moved")
+    # Real web pages this action read, so an answer built on them can show its sources.
+    sources: list[dict[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -85,6 +90,8 @@ class Toolbox:
         self.on_draw: Callable[[dict[str, Any]], None] | None = None  # marker drawings on the overlay
         # Finds an item in a picture of the window (set by the server when vision is available).
         self.see_item: Callable[[str], dict[str, Any] | None] | None = None
+        # Reads the screen by picture: (question, whole screen?) -> {"text", "snap"} or None.
+        self.read_screen: Callable[[str, bool], dict[str, Any] | None] | None = None
         # The latest screen snapshot (screen-aware turns): point_at accepts its ids.
         self.snapshot: dict[str, Any] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
@@ -151,12 +158,20 @@ class Toolbox:
         p = self.path(a["path"])
         if not p.is_file():
             raise ToolError(f"{p} does not exist.")
+        return ToolResult(self._file_text(p))
+
+    def _file_text(self, p: Path) -> str:
+        """The words inside a file, whatever kind it is."""
         suffix = p.suffix.lower()
         if suffix == ".pdf":
             from pypdf import PdfReader
 
-            text = "\n\n".join((page.extract_text() or "") for page in PdfReader(p).pages)
-        elif suffix in {".xlsx", ".xlsm"}:
+            return "\n\n".join((page.extract_text() or "") for page in PdfReader(p).pages)
+        if suffix == ".docx":
+            from .documents import docx_text
+
+            return docx_text(p)
+        if suffix in {".xlsx", ".xlsm"}:
             from openpyxl import load_workbook
 
             wb = load_workbook(p, data_only=True, read_only=True)
@@ -165,20 +180,185 @@ class Toolbox:
                 parts.append(f"# Sheet {ws.title}")
                 for row in ws.iter_rows(values_only=True):
                     parts.append("\t".join("" if v is None else str(v) for v in row))
-            text = "\n".join(parts)
-        else:
-            text = p.read_text(encoding="utf-8", errors="replace")
-        return ToolResult(text)
+            return "\n".join(parts)
+        return p.read_text(encoding="utf-8", errors="replace")
+
+    # A folder can hold anything: only look inside files that really are text.
+    SEARCHABLE = {".txt", ".md", ".csv", ".tsv", ".json", ".xml", ".html", ".htm", ".log", ".ini", ".cfg",
+                  ".yaml", ".yml", ".toml", ".py", ".js", ".ts", ".css", ".srt", ".vtt", ".eml", ".bat",
+                  ".ps1", ".tex", ".rtf", ".pdf", ".docx", ".xlsx", ".xlsm"}
+
+    def search_in_files(self, a: dict[str, Any]) -> ToolResult:
+        root = self.path(a["folder"])
+        if not root.is_dir():
+            raise ToolError(f"{root} is not a folder.")
+        needle = str(a["text"]).lower()
+        name_pat = (a.get("pattern") or "*").lower()
+        walker = root.rglob("*") if a.get("recursive", True) else root.glob("*")
+        limit = int(a.get("max_results") or 40)
+        hits = []
+        for f in walker:
+            if len(hits) >= limit:
+                break
+            if not f.is_file() or f.suffix.lower() not in self.SEARCHABLE:
+                continue
+            if not fnmatch.fnmatch(f.name.lower(), name_pat):
+                continue
+            try:
+                if f.stat().st_size > 8_000_000:
+                    continue
+                text = self._file_text(f)
+            except Exception:  # noqa: BLE001 - an unreadable file is simply not a match
+                continue
+            for n, line in enumerate(text.splitlines(), start=1):
+                if needle in line.lower():
+                    hits.append({"path": str(f), "line": n, "match": line.strip()[:200]})
+                    break  # one line per file: wider is more useful than deeper
+        return ToolResult(json.dumps({"folder": str(root), "text": a["text"], "count": len(hits), "hits": hits}))
+
+    def move_to_trash(self, a: dict[str, Any]) -> ToolResult:
+        p = self.path(a["path"])
+        if not p.exists():
+            raise ToolError(f"{p} does not exist.")
+        _recycle(p)
+        return ToolResult(f"Sent {p.name} to the Recycle Bin. Restore it from there if you need it back.",
+                          files=[(str(p), "deleted")])
+
+    def zip_files(self, a: dict[str, Any]) -> ToolResult:
+        import zipfile
+
+        dest = self.path(a["destination"])
+        if dest.suffix.lower() != ".zip":
+            dest = dest.with_suffix(".zip")
+        if dest.exists():
+            raise ToolError(f"{dest} already exists; choose another name.")
+        items = [self.path(raw) for raw in a["items"]]
+        for p in items:
+            if not p.exists():
+                raise ToolError(f"{p} does not exist.")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        files = 0
+        with zipfile.ZipFile(dest, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in items:
+                if p.is_dir():
+                    for f in sorted(p.rglob("*")):
+                        if f.is_file():
+                            z.write(f, (p.name / f.relative_to(p)).as_posix())
+                            files += 1
+                else:
+                    z.write(p, p.name)
+                    files += 1
+        return ToolResult(f"Packed {files} file(s) from {len(items)} item(s) into {dest}.",
+                          {"op": "created", "path": str(dest)}, files=[(str(dest), "created")])
+
+    def unzip(self, a: dict[str, Any]) -> ToolResult:
+        import zipfile
+
+        src = self.path(a["zip"])
+        if not src.is_file() or src.suffix.lower() != ".zip":
+            raise ToolError(f"{src} is not a .zip file.")
+        into = self.path(a.get("into") or str(src.with_suffix("")))
+        if into.exists() and any(into.iterdir()):
+            raise ToolError(f"{into} already has files in it; choose another folder.")
+        with zipfile.ZipFile(src) as z:
+            root = into.resolve()
+            names = z.namelist()
+            for name in names:
+                # A hand-made zip can name a path that climbs out of the folder ("zip slip").
+                if not (root / name).resolve().is_relative_to(root):
+                    raise ToolError(f"“{name}” in that zip points outside {into}, so Compii left it alone.")
+            if sum(i.file_size for i in z.infolist()) > 500_000_000:
+                raise ToolError("That zip unpacks to more than 500 MB, which is more than Compii writes at once.")
+            z.extractall(into)
+        return ToolResult(f"Unpacked {len(names)} item(s) into {into}.", files=[(str(into), "created")])
+
+    def screenshot(self, a: dict[str, Any]) -> ToolResult:
+        """A real picture of the screen, saved where the user can open it."""
+        from . import vision
+
+        if a.get("window"):
+            self.screen.focus_window(a["window"])
+        shot = vision.grab_screen() if a.get("full") else vision.grab_foreground()
+        if shot is None:
+            raise ToolError("Compii couldn't capture the screen right now.")
+        pixels, (left, top, w, h) = shot
+        p = self.path(a["path"]) if a.get("path") else self.workspace / f"screenshot-{time.strftime('%Y%m%d-%H%M%S')}.png"
+        if p.suffix.lower() != ".png":
+            p = p.with_suffix(".png")
+        if p.exists():
+            raise ToolError(f"{p} already exists; choose another name.")
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(vision.encode_png(pixels))
+        where = "all of the screen" if a.get("full") else "the window in front"
+        return ToolResult(f"Saved a {w}x{h} PNG of {where} to {p}", {"op": "created", "path": str(p)},
+                          files=[(str(p), "created")])
+
+    def look_at_screen(self, a: dict[str, Any]) -> ToolResult:
+        """Read what is on screen right now: by picture when Compii can see, else by the window's labels."""
+        question = a.get("question") or "What is on the screen?"
+        if self.read_screen is not None:
+            try:
+                seen = self.read_screen(question, bool(a.get("full")))
+            except Exception:  # noqa: BLE001 - fall back to the labels below
+                seen = None
+            if seen:
+                if seen.get("snap"):
+                    self.snapshot = seen["snap"]
+                return ToolResult(seen["text"])
+        from .screen import describe_snapshot, snapshot_foreground
+
+        snap = snapshot_foreground()
+        if not snap:
+            raise ToolError("Compii can't see the screen right now (only Compii's own window is in front).")
+        self.snapshot = snap
+        return ToolResult("Read from the window's labels (no picture):\n" + describe_snapshot(snap))
+
+    def clipboard(self, a: dict[str, Any]) -> ToolResult:
+        text = a.get("text")
+        if sys.platform != "win32":
+            raise ToolError("Compii reads and writes the clipboard on Windows only.")
+        if text is None:
+            out = _powershell("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-Clipboard -Raw")
+            got = (out or "").strip()
+            if not got:
+                return ToolResult("The clipboard holds no text right now.")
+            return ToolResult(got[:6000] + ("\n[clipboard longer than 6000 characters]" if len(got) > 6000 else ""))
+        # The text goes through an environment variable, never into the command line,
+        # so quotes and newlines in it can't change what the command does.
+        _powershell("Set-Clipboard -Value $env:COMPII_CLIPBOARD_TEXT", {"COMPII_CLIPBOARD_TEXT": str(text)})
+        words = str(text).split()
+        shown = " ".join(words[:8]) + ("…" if len(words) > 8 else "")
+        return ToolResult(f"Copied to the clipboard: “{shown}”")
 
     def write_text_file(self, a: dict[str, Any]) -> ToolResult:
         p = self.path(a["path"])
         existed = p.exists()
         if existed and not a.get("overwrite"):
             raise ToolError(f"{p} already exists. Set overwrite to true to replace it.")
+        content = a["content"]
+        if p.suffix.lower() in (".md", ".markdown"):
+            from .documents import tidy_markdown
+            content = tidy_markdown(content)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(a["content"], encoding="utf-8")
+        p.write_text(content, encoding="utf-8")
         return ToolResult(f"Wrote {p}", None if existed else {"op": "created", "path": str(p)},
                           files=[(str(p), "changed" if existed else "created")])
+
+    def create_document(self, a: dict[str, Any]) -> ToolResult:
+        """Write a Word document from Markdown: styled headings, lists, tables and links."""
+        from .documents import docx_bytes
+
+        p = self.path(a["path"])
+        if p.suffix.lower() not in (".docx", ".md", ""):
+            raise ToolError(f"{p.name} is not a Word document; give it a .docx name.")
+        if p.suffix.lower() != ".docx":
+            p = p.with_suffix(".docx")
+        if p.exists():
+            raise ToolError(f"{p} already exists; choose another name.")
+        md = a["content"]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(docx_bytes(md, title=(a.get("title") or "").strip() or None))
+        return ToolResult(f"Wrote {p}", {"op": "created", "path": str(p)}, files=[(str(p), "created")])
 
     def create_folder(self, a: dict[str, Any]) -> ToolResult:
         p = self.path(a["path"])
@@ -202,7 +382,8 @@ class Toolbox:
 
     def create_spreadsheet(self, a: dict[str, Any]) -> ToolResult:
         from openpyxl import Workbook
-        from openpyxl.styles import Font
+
+        from .documents import style_worksheet
 
         p = self.path(a["path"])
         if p.suffix.lower() != ".xlsx":
@@ -214,13 +395,9 @@ class Toolbox:
         for sheet in a["sheets"]:
             ws = wb.create_sheet(sheet["name"][:31])
             ws.append(sheet["header"])
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
             for row in sheet["rows"]:
                 ws.append(row)
-            for col in ws.columns:
-                width = max(len(str(c.value or "")) for c in col)
-                ws.column_dimensions[col[0].column_letter].width = min(max(10, width + 2), 60)
+            style_worksheet(ws)
         p.parent.mkdir(parents=True, exist_ok=True)
         wb.save(p)
         return ToolResult(f"Saved spreadsheet {p}", {"op": "created", "path": str(p)}, files=[(str(p), "created")])
@@ -306,6 +483,15 @@ class Toolbox:
         except ScreenError as e:
             raise ToolError(str(e)) from e
 
+    def _probe(self, fn: Callable[[], Any]) -> Any:
+        """Read the screen to check an action. A check that fails must not hide what was done,
+        so it reports UNCHECKED and the result simply says less. (Apps and COM can refuse in
+        any shape, so this catches widely on purpose - it only ever costs a sentence.)"""
+        try:
+            return self._screen_call(fn)
+        except Exception:  # noqa: BLE001
+            return UNCHECKED
+
     def list_windows(self, a: dict[str, Any]) -> ToolResult:
         wins = self._screen_call(self.screen.list_windows)
         return ToolResult("\n".join(f"- {w['title']}" for w in wins) or "No windows are open.")
@@ -318,21 +504,58 @@ class Toolbox:
         return ToolResult(self._screen_call(lambda: self.screen.read_window(a.get("window"))))
 
     def click_on(self, a: dict[str, Any]) -> ToolResult:
+        from .screen import how_found, what_changed
+
+        win_before = self._probe(self.screen.user_foreground)
         found = self._screen_call(lambda: self.screen.click(
             a["target"], a.get("window"), before=lambda f: self._show(f, f"Clicking “{a['target']}”")))
-        return ToolResult(f"Clicked {found.role.replace('Control', '').lower()} “{found.name}” in “{found.window}”.")
+        role = found.role.replace("Control", "").lower()
+        said = f"Clicked {role} “{found.name}” in “{found.window}” — {how_found(found)}."
+        after = self._probe(lambda: self.screen.read_back(a["target"], a.get("window")))
+        if after is UNCHECKED:
+            return ToolResult(said)
+        note = what_changed(found, after, window_before=_title_of(win_before),
+                            window_after=_title_of(self._probe(self.screen.user_foreground)))
+        return ToolResult(f"{said} Checked afterwards: {note}." if note else said)
 
     def type_into(self, a: dict[str, Any]) -> ToolResult:
-        _refuse_secrets(a.get("target") or "", a["text"])
+        from .screen import how_found, what_changed
+
+        target, text = a.get("target"), a["text"]
+        _refuse_secrets(target or "", text)
+        # Without a named field the caret's own control is the only thing to compare against.
+        before = UNCHECKED if target else self._probe(self.screen.focus_found)
+        win_before = self._probe(self.screen.user_foreground)
         found = self._screen_call(lambda: self.screen.type_text(
-            a["text"], a.get("target"), a.get("window"),
-            before=lambda f: self._show(f, f"Typing into “{a.get('target')}”")))
-        where = f"“{found.name}” in “{found.window}”" if found else "the active window"
-        return ToolResult(f"Typed {len(a['text'])} characters into {where}.")
+            text, target, a.get("window"),
+            before=lambda f: self._show(f, f"Typing into “{target}”")))
+        where = f"“{found.name}” in “{found.window}” — {how_found(found)}" if found else "the active window"
+        said = f"Typed {len(text)} characters into {where}."
+        if target:
+            if found is None:
+                return ToolResult(said)
+            base, after = found, self._probe(lambda: self.screen.read_back(target, a.get("window")))
+        else:
+            base, after = before, self._probe(self.screen.focus_found)
+        if after is UNCHECKED or base is UNCHECKED:
+            return ToolResult(said)
+        note = what_changed(base, after, typed=text, window_before=_title_of(win_before),
+                            window_after=_title_of(self._probe(self.screen.user_foreground)))
+        return ToolResult(f"{said} Checked afterwards: {note}." if note else said)
 
     def press_keys(self, a: dict[str, Any]) -> ToolResult:
+        from .screen import what_changed
+
+        before = self._probe(self.screen.focus_found)
+        win_before = self._probe(self.screen.user_foreground)
         title = self._screen_call(lambda: self.screen.press_keys(a["keys"], a.get("window")))
-        return ToolResult(f"Pressed {a['keys']}" + (f" in “{title}”." if title else "."))
+        after = self._probe(self.screen.focus_found)
+        said = f"Pressed {a['keys']}" + (f" in “{title}”." if title else ".")
+        if before is UNCHECKED or after is UNCHECKED:
+            return ToolResult(said)
+        note = what_changed(before, after, window_before=_title_of(win_before),
+                            window_after=_title_of(self._probe(self.screen.user_foreground)))
+        return ToolResult(f"{said} Checked afterwards: {note}." if note else said)
 
     # ---- hands: the web (Compii's own Edge window) ---------------------------------
 
@@ -375,20 +598,22 @@ class Toolbox:
                 seen = None
             if seen:
                 return Found(seen["name"], "Seen", (snap or {}).get("title", ""), seen["x"], seen["y"],
-                             seen["x"] + seen["w"], seen["y"] + seen["h"])
+                             seen["x"] + seen["w"], seen["y"] + seen["h"], src="picture")
         return found or self._find(target)
 
     def point_at(self, a: dict[str, Any]) -> ToolResult:
+        from .screen import how_found
+
         found = self._locate(a["target"])
         if found is None:
             raise ToolError(
                 f"Couldn't find anything named “{a['target']}” in the open windows. "
-                "Try the exact label shown on screen."
+                "Use look_at_screen or read_window to get the exact labels or item ids."
             )
         point = {**found.as_event(), "message": a.get("message", "")}
         return ToolResult(
             f"Pointing at {found.role} “{found.name}” in “{found.window}” "
-            f"at x={point['x']}, y={point['y']} ({point['w']}x{point['h']}).",
+            f"at x={point['x']}, y={point['y']} ({point['w']}x{point['h']}) — {how_found(found)}.",
             point=point,
         )
 
@@ -418,7 +643,11 @@ class Toolbox:
         return ToolResult(f"Drew {len(shapes)} mark(s) on screen{note}.", point=None)
 
     def _from_snapshot(self, target: str):
-        """An item id (e12) from the screen snapshot, so the AI never has to guess pixels."""
+        """An item id (e12) from the screen snapshot, so the AI never has to guess pixels.
+
+        The snapshot's labels and values came straight from the app's controls, so pointing
+        at one of its ids is exact; "v" ids came from a picture of the screen.
+        """
         import re
 
         snap = self.snapshot
@@ -428,7 +657,9 @@ class Toolbox:
 
         for e in snap.get("elements", []):
             if e["id"] == target.strip():
-                return Found(e["name"], e["role"], snap.get("title", ""), e["x"], e["y"], e["x"] + e["w"], e["y"] + e["h"])
+                return Found(e["name"], e["role"], snap.get("title", ""), e["x"], e["y"], e["x"] + e["w"],
+                             e["y"] + e["h"], src=e.get("src", "control"), value=e.get("value", ""),
+                             can=tuple(e.get("can") or ()))
         return None
 
     def _find(self, target: str):  # indirection so tests can stub the screen
@@ -493,17 +724,66 @@ class Toolbox:
                   "modified_within_days": {"type": "integer"}, "recursive": {"type": "boolean"}},
                  ["folder"], ActionKind.READ, self.find_files,
                  lambda a: f"Search {_short(a['folder'])} for {a.get('pattern') or 'files'}"),
-            Tool("read_file", "Read a file's contents. Handles text, PDF and Excel files.",
+            Tool("read_file", "Read a file's contents. Handles text, PDF, Word (.docx) and Excel files.",
                  {"path": s}, ["path"], ActionKind.READ, self.read_file, lambda a: f"Read {_short(a['path'])}"),
-            Tool("write_text_file", "Write a text file (notes, CSV, Markdown, code). Refuses to replace an existing file unless overwrite is true.",
+            Tool("search_in_files", "Search INSIDE files for a word or phrase (text, PDF, Word, Excel) and list the file, line "
+                 "and matching line. Use it to find which file mentions something, e.g. 'which invoice says overdue'.",
+                 {"folder": {**s, "description": "Folder to search inside; ~ is the user's home."},
+                  "text": {**s, "description": "The words to look for, case-insensitive."},
+                  "pattern": {**s, "description": "Optional glob on the file name, e.g. *.pdf."},
+                  "recursive": {"type": "boolean"}, "max_results": {"type": "integer"}},
+                 ["folder", "text"], ActionKind.READ, self.search_in_files,
+                 lambda a: f"Search inside files in {_short(a['folder'])} for “{a['text']}”"),
+            Tool("write_text_file", "Write a text file (notes, CSV, Markdown, code). Markdown is tidied as it is "
+                 "saved. Refuses to replace an existing file unless overwrite is true.",
                  {"path": s, "content": s, "overwrite": {"type": "boolean"}}, ["path", "content"],
                  lambda a: ActionKind.CHANGE if a.get("overwrite") else ActionKind.CREATE,
                  self.write_text_file, lambda a: f"Write {_short(a['path'])}"),
+            Tool("create_document", "Write a real Word (.docx) document from Markdown. Headings (#, ##), bullet and "
+                 "numbered lists, | tables | and [links](https://…) all come out styled; put the title in `title`. "
+                 "Use this for anything the user will open in Word or hand to someone - reports, essays, letters, "
+                 "applications. Use write_text_file instead for notes, code and CSV.",
+                 {"path": {**s, "description": "Where to save it, with a .docx name."},
+                  "content": {**s, "description": "The whole document as Markdown."},
+                  "title": {**s, "description": "The big line at the top; defaults to the first heading."}},
+                 ["path", "content"], ActionKind.CREATE, self.create_document,
+                 lambda a: f"Write document {_short(a['path'])}"),
             Tool("create_folder", "Create a folder.", {"path": s}, ["path"], ActionKind.CREATE,
                  self.create_folder, lambda a: f"Create folder {_short(a['path'])}"),
             Tool("move_file", "Move or rename a file or folder. Can be undone.",
                  {"source": s, "destination": s}, ["source", "destination"], ActionKind.CHANGE,
                  self.move_file, lambda a: f"Move {_short(a['source'])} to {_short(a['destination'])}"),
+            Tool("move_to_trash", "Put one file or folder in the Recycle Bin, where the user can still restore it. "
+                 "This is how Compii clears something away; it never deletes for good.",
+                 {"path": s}, ["path"], ActionKind.DELETE, self.move_to_trash,
+                 lambda a: f"Put {_short(a['path'])} in the Recycle Bin"),
+            Tool("zip_files", "Bundle files and folders into one new .zip archive (folders are included with everything in them).",
+                 {"items": {"type": "array", "items": s, "description": "Files or folders to pack."},
+                  "destination": {**s, "description": "Path for the new .zip."}},
+                 ["items", "destination"], ActionKind.CREATE, self.zip_files,
+                 lambda a: f"Zip {len(a['items'])} item(s) to {_short(a['destination'])}"),
+            Tool("unzip", "Extract a .zip archive into a folder.", {"zip": s,
+                 "into": {**s, "description": "Folder to create and unpack into; defaults next to the zip."}},
+                 ["zip"], ActionKind.CREATE, self.unzip, lambda a: f"Unzip {_short(a['zip'])}"),
+            Tool("screenshot", "Take a picture of the screen and save it as a PNG file the user can open. "
+                 "Use it when asked for a screenshot, or to keep proof of how something looked.",
+                 {"path": {**s, "description": "Where to save the PNG; defaults to Compii's workspace folder."},
+                  "full": {"type": "boolean", "description": "true for every monitor; default is the window in front."},
+                  "window": {**s, "description": "Bring this app to the front first, by part of its title."}},
+                 [], ActionKind.CREATE, self.screenshot,
+                 lambda a: f"Screenshot to {_short(a['path'])}" if a.get("path") else "Take a screenshot"),
+            Tool("look_at_screen", "Look at the screen right now and read it closely: answers the question, copies the "
+                 "important visible text exactly, and lists items with ids — e1, e2… are read straight from the app's own "
+                 "controls (exact labels, values and what can be done to each), v1, v2… are spotted in a picture. "
+                 "Use those ids in point_at, click_on or type_into. Use this whenever the answer depends on what the user "
+                 "is seeing, an error on screen, or anything 'this'/'here' refers to.",
+                 {"question": {**s, "description": "What to find out from the screen."},
+                  "full": {"type": "boolean", "description": "true to read every monitor; default is the window in front."}},
+                 [], ActionKind.READ, self.look_at_screen, lambda a: "Look at the screen"),
+            Tool("clipboard", "Read the text on the clipboard, or put text on it so the user can paste it somewhere.",
+                 {"text": {**s, "description": "Text to copy onto the clipboard. Leave out to read what is there."}},
+                 [], lambda a: ActionKind.CHANGE if a.get("text") is not None else ActionKind.READ,
+                 self.clipboard, lambda a: "Copy to the clipboard" if a.get("text") is not None else "Read the clipboard"),
             Tool("create_spreadsheet", "Create an Excel (.xlsx) workbook. Cells starting with '=' are formulas, e.g. =SUM(B2:B9).",
                  {"path": s, "sheets": {"type": "array", "items": {
                      "type": "object",
@@ -528,22 +808,29 @@ class Toolbox:
             Tool("focus_window", "Bring a window to the front, by part of its title.",
                  {"window": s}, ["window"], ActionKind.CREATE, self.focus_window,
                  lambda a: f"Switch to {a['window']}"),
-            Tool("read_window", "Read the text, buttons, menus and fields of a window (the topmost one if no title given). "
-                 "Use it to see exact labels before clicking or typing.",
+            Tool("read_window", "Read a window (the topmost one if no title given) from the app's own controls: exact "
+                 "labels, what each field holds, and [can click/type/toggle…] for each item. Nothing here is guessed "
+                 "from pixels. Use it to get exact labels before clicking or typing.",
                  {"window": {**s, "description": "Part of the window title, optional."}}, [], ActionKind.READ,
                  self.read_window, lambda a: f"Read {a.get('window') or 'the window'}"),
-            Tool("click_on", "Click a button, menu, tab, link or checkbox in a Windows app by its visible label. "
-                 "The user sees Compii point at it first.",
-                 {"target": s, "window": {**s, "description": "Part of the window title, optional."}}, ["target"],
+            Tool("click_on", "Click a button, menu, tab, link or checkbox in a Windows app — by its item id from "
+                 "look_at_screen (e12, the exact element) or its visible label. Compii uses the control's own button, "
+                 "not a guessed position. The user sees Compii point at it first, and the result says what the app's "
+                 "controls show afterwards — repeat that, don't claim more.",
+                 {"target": {**s, "description": "Item id from look_at_screen (e.g. 'e12') or the exact visible label, e.g. 'Save'."},
+                  "window": {**s, "description": "Part of the window title, optional."}}, ["target"],
                  ActionKind.CHANGE, self.click_on,
                  lambda a: f"Click “{a['target']}”" + (f" in {a['window']}" if a.get("window") else "")),
-            Tool("type_into", "Type text into a field of a Windows app, found by its label; without a target, types where the cursor is. "
+            Tool("type_into", "Type text into a field of a Windows app — by its item id from look_at_screen (e12) or its "
+                 "label, or where the cursor is if neither is given. Sets the field's own value when it can, then reads "
+                 "the field back: the result says whether the app actually shows the text. "
                  "Never type passwords, card numbers or one-time codes.",
-                 {"text": s, "target": {**s, "description": "The field's label, optional."},
+                 {"text": s, "target": {**s, "description": "The field's item id or label, optional."},
                   "window": {**s, "description": "Part of the window title, optional."}}, ["text"],
                  ActionKind.CHANGE, self.type_into,
                  lambda a: f"Type into {a.get('target') or 'the active window'}"),
-            Tool("press_keys", "Press a key or shortcut, e.g. 'ctrl+s', 'enter', 'alt+tab', 'f5'.",
+            Tool("press_keys", "Press a key or shortcut, e.g. 'ctrl+s', 'enter', 'alt+tab', 'f5'. The result says what "
+                 "the window or caret shows afterwards, so a shortcut that did nothing visible is reported as that.",
                  {"keys": s, "window": {**s, "description": "Part of the window title to send them to, optional."}}, ["keys"],
                  ActionKind.CHANGE, self.press_keys, lambda a: f"Press {a['keys']}"),
             Tool("browse", "Open a web page in Compii's own browser window (separate from the user's browser) and read it.",
@@ -552,7 +839,8 @@ class Toolbox:
                  self.read_page, lambda a: "Read the page"),
             Tool("browser_click", "Click a button, link or tab on the page in Compii's browser, by its visible text.",
                  {"text": s}, ["text"], ActionKind.CHANGE, self.browser_click, lambda a: f"Click “{a['text']}” on the page"),
-            Tool("browser_fill", "Fill a field on the page in Compii's browser, by its label or placeholder; "
+            Tool("browser_fill", "Fill a field on the page in Compii's browser, by its label or placeholder; it reads "
+                 "the field back, so the result says whether the page really kept the answer. "
                  "submit=true also presses Enter (this counts as sending and always asks the user). "
                  "Never fill passwords, card numbers or one-time codes: ask the user to do that in the browser window.",
                  {"field": s, "value": s, "submit": {"type": "boolean"}}, ["field", "value"],
@@ -628,22 +916,54 @@ def _default_open(target: str) -> None:
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", target])
 
 
+def _powershell(command: str, env_add: dict[str, str] | None = None) -> str:
+    """Run one short PowerShell command without a console window flashing on screen."""
+    env = {**os.environ, **(env_add or {})}
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                             capture_output=True, text=True, encoding="utf-8", timeout=15, env=env,
+                             creationflags=0x08000000 if sys.platform == "win32" else 0)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise ToolError(f"Windows would not run that ({type(e).__name__}).") from e
+    if out.returncode != 0:
+        raise ToolError(f"Windows refused that: {(out.stderr or out.stdout).strip()[:200]}")
+    return out.stdout
+
+
+def _recycle(p: Path) -> None:
+    """Send a path to the Recycle Bin through the shell, so it stays recoverable.
+
+    Compii never removes anything for good: a plain os.remove would leave the
+    user with no way back if the model picked the wrong file.
+    """
+    if sys.platform != "win32":
+        raise ToolError("Compii only puts things in the Recycle Bin on Windows.")
+    import ctypes
+    from ctypes import wintypes
+
+    class _Op(ctypes.Structure):
+        _fields_ = [("hwnd", wintypes.HWND), ("wFunc", ctypes.c_uint), ("pFrom", ctypes.c_wchar_p),
+                    ("pTo", ctypes.c_wchar_p), ("fFlags", ctypes.c_ushort),
+                    ("fAnyOperationsAborted", ctypes.c_int), ("hNameMappings", ctypes.c_void_p),
+                    ("lpszProgressTitle", ctypes.c_wchar_p), ("fTimeout", wintypes.DWORD),
+                    ("Reserved", ctypes.c_int)]
+
+    op = _Op(0, 3, f"{p}\0\0", None, 0x4 | 0x10 | 0x40 | 0x400, 0, None, None, 0, 0)
+    rc = ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op))
+    if rc or op.fAnyOperationsAborted:
+        raise ToolError(f"Windows would not put {p.name} in the Recycle Bin (code {rc}).")
+
+
 def default_roots() -> list[Path]:
     home = Path.home()
     return [home / d for d in ("Downloads", "Documents", "Desktop", "Pictures")]
 
 
-_SECRET_FIELD = (
-    r"\b(password|passcode|passphrase|pin|cvv|cvc|otp|2fa|mfa)\b|card number|card no|security code|"
-    r"one[- ]time|verification code|sort code|iban|routing number|social security"
-)
-
-
 def _refuse_secrets(field: str, value: str) -> None:
-    """Compii never types passwords, payment details or one-time codes."""
-    import re
+    """Compii never types passwords, payment details or one-time codes (the rule lives in guard.py)."""
+    from .guard import is_secret
 
-    if re.search(_SECRET_FIELD, field.lower()) or re.fullmatch(r"[\d\s-]{13,23}", value.strip() or "x"):
+    if is_secret(field, value):
         raise ToolError(
             "That looks like a password, payment detail or one-time code. Compii doesn't type those; "
             "ask the user to enter it themselves, then continue."
@@ -655,6 +975,11 @@ def _code_like(name: str) -> bool:
     import re
 
     return " " not in name and bool("_" in name or re.search(r"[a-z][A-Z]", name))
+
+
+def _title_of(probed: Any) -> str:
+    """The front window's title from a _probe of user_foreground ("" if the read failed)."""
+    return "" if probed is UNCHECKED else probed[1]
 
 
 def _words(name: str) -> str:

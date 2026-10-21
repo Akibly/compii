@@ -45,6 +45,51 @@ def lan_ip() -> str:
         s.close()
 
 
+def _is_overlay(ip: str) -> bool:
+    """Tailscale and similar mesh VPNs hand out 100.64.0.0/10 addresses that work from anywhere."""
+    import ipaddress
+
+    try:
+        return ipaddress.ip_address(ip) in ipaddress.ip_network("100.64.0.0/10")
+    except ValueError:
+        return False
+
+
+_reach_cache: tuple[float, list[str]] = (0.0, [])
+
+
+def reach_addresses() -> list[str]:
+    """Every address a paired phone can try, best first: home Wi-Fi, then mesh-VPN addresses
+    (Tailscale, ZeroTier, …) that reach this PC from anywhere, then any the user added
+    in COMPII_REMOTE_HOSTS (a DNS name, say)."""
+    global _reach_cache
+    if time.time() - _reach_cache[0] < 60 and _reach_cache[1]:
+        return list(_reach_cache[1])
+    import os
+    import subprocess
+
+    found: list[str] = []
+    try:
+        found += [i[4][0] for i in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)]
+    except OSError:
+        pass
+    try:
+        out = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=3,
+                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        found += out.stdout.split()
+    except (OSError, subprocess.SubprocessError):
+        pass  # Tailscale isn't installed
+    lan = lan_ip()
+    overlay = [ip for ip in found if _is_overlay(ip)]
+    extra = [h.strip() for h in os.environ.get("COMPII_REMOTE_HOSTS", "").split(",") if h.strip()]
+    out_list: list[str] = []
+    for h in [lan, *overlay, *extra]:
+        if h and h != "127.0.0.1" and h not in out_list:
+            out_list.append(h)
+    _reach_cache = (time.time(), out_list or [lan])
+    return list(_reach_cache[1])
+
+
 def _hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -185,9 +230,11 @@ class Pairing:
         return cert.fingerprint(hashes.SHA256()).hex()
 
 
-def pairing_link(host: str, port: int, code: str, fingerprint: str, pc: str) -> str:
-    q = urllib.parse.urlencode({"h": host, "p": port, "c": code, "f": fingerprint, "n": pc})
-    return f"compii://pair?{q}"
+def pairing_link(host: str, port: int, code: str, fingerprint: str, pc: str, also: list[str] | None = None) -> str:
+    q = {"h": host, "p": port, "c": code, "f": fingerprint, "n": pc}
+    if also:
+        q["a"] = ",".join(also)  # more addresses to try, e.g. Tailscale for when you're out
+    return f"compii://pair?{urllib.parse.urlencode(q)}"
 
 
 class RemoteHost:

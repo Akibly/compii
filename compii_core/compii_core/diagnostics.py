@@ -48,6 +48,22 @@ def _tail(path: Path) -> str:
         return f"(no {path.name})"
 
 
+def _os_line() -> str:
+    """Windows' version straight from the system. `platform.platform()` works out the same thing by
+    running `cmd /c ver` on current Windows builds (the registry keys it used are gone), and a report
+    about a sick PC shouldn't need a working shell."""
+    if sys.platform == "win32":
+        v = sys.getwindowsversion()
+        return f"Windows {v.major}.{v.minor} build {v.build}" + (f" {v.service_pack}" if v.service_pack else "")
+    return platform.platform()
+
+
+def _arch() -> str:
+    if sys.platform == "win32":
+        return os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    return platform.machine()
+
+
 def build_report(workspace: Path, facts: dict[str, Any], secrets: list[str]) -> Path:
     out = workspace / "reports"
     out.mkdir(parents=True, exist_ok=True)
@@ -55,8 +71,8 @@ def build_report(workspace: Path, facts: dict[str, Any], secrets: list[str]) -> 
     info = {
         "compii_core": __version__,
         "python": sys.version.split()[0],
-        "windows": platform.platform(),
-        "machine": platform.machine(),
+        "windows": _os_line(),
+        "machine": _arch(),
         "processors": os.cpu_count(),
         "made": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         **facts,

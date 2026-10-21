@@ -28,6 +28,12 @@ class AuditLog:
         path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._last = self._tail_hash()
+        # The app polls /safety ~1/s; re-hashing every line each idle poll is wasteful.
+        # Remember the verdict against a single bulk SHA-256 of the raw bytes: if the file
+        # is byte-identical (append-only writes, or nobody touched it) we reuse it. Any
+        # edit — even one that keeps the size and the mtime — changes the bulk hash and
+        # forces a full chain re-verify. Fresh instances always verify.
+        self._verify_cache: tuple[str, dict[str, Any]] | None = None
 
     def _tail_hash(self) -> str:
         if not self.path.exists():
@@ -56,6 +62,7 @@ class AuditLog:
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps({**body, "prev": self._last, "hash": h}, ensure_ascii=False, default=str) + "\n")
             self._last = h
+            self._verify_cache = None
 
     def entries(self, limit: int = 200) -> list[dict[str, Any]]:
         if not self.path.exists():
@@ -72,9 +79,18 @@ class AuditLog:
     def verify(self) -> dict[str, Any]:
         if not self.path.exists():
             return {"ok": True, "count": 0}
+        raw = self.path.read_bytes()
+        key = hashlib.sha256(raw).hexdigest()
+        if self._verify_cache is not None and self._verify_cache[0] == key:
+            return self._verify_cache[1]
+        result = self._verify_full(raw)
+        self._verify_cache = (key, result)
+        return result
+
+    def _verify_full(self, raw: bytes) -> dict[str, Any]:
         prev = GENESIS
         n = 0
-        for n, line in enumerate((ln for ln in self.path.read_text(encoding="utf-8").splitlines() if ln.strip()), 1):
+        for n, line in enumerate((ln for ln in raw.decode(encoding="utf-8").splitlines() if ln.strip()), 1):
             try:
                 d = json.loads(line)
                 h, p = d.pop("hash"), d.pop("prev")
