@@ -146,7 +146,7 @@ class Workspace extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: Listenable.merge([core, state, ?state.voice]),
+    listenable: Listenable.merge([core, core.sight, state, ?state.voice]),
     builder: (context, _) {
       final c = context.c;
       final task = state.selected == null ? null : core.tasks[state.selected];
@@ -552,6 +552,9 @@ class _StatusLine extends StatelessWidget {
       CoreStatus.connecting => (G.sync, 'Connecting to Compii Core…', c.muted),
       CoreStatus.online when core.brain == 'rehearsal' => (G.flask, 'Rehearsal mode — scripted test runs, not AI.', c.warning),
       CoreStatus.online when !core.credentialsFound => (G.key, 'No AI connected yet. Pick one in Settings → Brain — NVIDIA, Groq, Gemini and Ollama Cloud have free tiers.', c.warning),
+      CoreStatus.online when core.sight.value['screen_aware'] == false =>
+          (G.eyeOff, 'Compii isn’t seeing your screen. Screen reading is off, so it can’t help with the app in front '
+              'of you — turn it on in Settings → Voice.', c.muted),
       _ => null,
     };
     final error = state.error;
@@ -879,6 +882,10 @@ class _Conversation extends StatelessWidget {
                     Row(
                       children: [
                         Pill(label, color: color),
+                        if (core.sight.value['looking'] == true) ...[
+                          const SizedBox(width: 6),
+                          Pill('Seeing your screen', color: c.accent, glyph: G.eye),
+                        ],
                         if (task.fromRoutine) ...[
                           const SizedBox(width: 6),
                           Pill('Routine', color: c.accent, glyph: G.routine),

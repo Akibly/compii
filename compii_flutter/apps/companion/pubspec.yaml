@@ -38,6 +38,10 @@ dependencies:
   window_manager: ^0.5.2
   screen_retriever: ^0.2.2
   hotkey_manager: ^0.2.3
+  qr_flutter: ^4.1.0
+  mobile_scanner: ^7.4.2
+  speech_to_text: ^7.4.0
+  crypto: ^3.0.7
 
 dev_dependencies:
   shared_preferences_platform_interface: ^2.4.2

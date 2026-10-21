@@ -106,6 +106,47 @@ class _Card extends StatelessWidget {
   }
 }
 
+/// Core's scheduled loop stopped: say so plainly instead of listing times
+/// that will quietly never fire.
+class _Offline extends StatelessWidget {
+  const _Offline({required this.error});
+  final String error;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final why = error.length > 140 ? '${error.substring(0, 140)}…' : error;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: c.warningSoft,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.warning.withValues(alpha: .4)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Glyph(G.warning, size: 20, color: c.warning),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Nothing is firing right now', style: context.type.titleSmall),
+                const SizedBox(height: 3),
+                Text(
+                  'Compii stopped checking its schedule, so the routines and watches below will not happen until Core is restarted. Reason: $why',
+                  style: context.type.bodySmall?.copyWith(color: c.muted),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 String _ago(Object? at) {
   if (at == null) return 'never';
   final when = at is num ? DateTime.fromMillisecondsSinceEpoch((at * 1000).round()) : DateTime.tryParse('$at');
@@ -139,6 +180,7 @@ class RoutinesPage extends StatelessWidget {
     builder: (context, v, set) {
       final c = context.c;
       final brief = Map<String, dynamic>.from(v['brief'] as Map);
+      final error = v['error'] as String?;
       final routines = [for (final r in v['routines'] as List) Map<String, dynamic>.from(r as Map)];
       final watches = [for (final w in v['watches'] as List) Map<String, dynamic>.from(w as Map)];
       Future<void> apply(Future<Map<String, dynamic>> Function() f) => run(() async => set(await f()));
@@ -147,6 +189,7 @@ class RoutinesPage extends StatelessWidget {
         title: 'Routines',
         subtitle: 'Things Compii does on its own schedule, and things it keeps an eye on for you. You can also just ask: “every Friday at 5, tidy my Downloads”.',
         children: [
+          if (error != null) ...[_Offline(error: error), const SizedBox(height: 14)],
           Text('Daily brief', style: context.type.titleLarge),
           const SizedBox(height: 10),
           _Card(
@@ -222,7 +265,10 @@ class RoutinesPage extends StatelessWidget {
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
                               Text('${r['title']}', style: context.type.titleSmall),
-                              Text('${r['when']} · ${r['enabled'] == true ? 'next ${_ago(r['next_run'])}' : 'paused'} · last ${_ago(r['last_run'])}',
+                              // A one-off that already ran isn't "paused" waiting for you: it is finished.
+                              Text('${r['when']} · ${(r['schedule'] as Map?)?['kind'] == 'once' && r['enabled'] != true && r['last_run'] != null
+                                  ? 'done · ${_ago(r['last_run'])}'
+                                  : '${r['enabled'] == true ? 'next ${_ago(r['next_run'])}' : 'paused'} · last ${_ago(r['last_run'])}'}',
                                   style: context.type.bodySmall),
                               Text('“${r['instruction']}”', maxLines: 1, overflow: TextOverflow.ellipsis,
                                   style: context.type.bodySmall?.copyWith(fontStyle: FontStyle.italic)),

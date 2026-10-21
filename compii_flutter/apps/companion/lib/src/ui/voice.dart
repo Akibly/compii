@@ -27,6 +27,14 @@ class VoiceController extends ChangeNotifier {
   /// What Compii is saying right now (live caption).
   String caption = '';
 
+  /// When that caption arrived. Only speech tells us when it ended, so in
+  /// "sound" and "caption" mode the line has to fade out on its own.
+  DateTime? captionAt;
+  bool get showCaption =>
+      caption.isNotEmpty &&
+      captionAt != null &&
+      (speaking || DateTime.now().difference(captionAt!) < const Duration(seconds: 12));
+
   /// The last short command handled by voice ("yes", "no", "stop"…), for a moment.
   Map<String, dynamic>? intent;
   DateTime? intentAt;
@@ -37,7 +45,9 @@ class VoiceController extends ChangeNotifier {
 
   bool get canListen => status?['listen_ready'] == true;
   bool get naturalVoice => status?['natural_voice'] == true;
-  bool get speakReplies => (status?['settings'] as Map?)?['speak_replies'] != false;
+
+  /// How Compii answers: "voice", "sound", "caption" or "off".
+  String get outputMode => '${(status?['settings'] as Map?)?['output_mode'] ?? 'voice'}';
 
   /// "Hey Compii" is on and the mic is listening for it.
   bool get wakeListening => status?['wake_listening'] == true;
@@ -59,6 +69,8 @@ class VoiceController extends ChangeNotifier {
   }
 
   void _onEvent(Map<String, dynamic> e) {
+    // A paired phone listens and speaks itself; the PC's microphone and voice aren't its own.
+    if (core.isRemote) return;
     switch (e['type']) {
       case 'voice_listening':
         listening = e['on'] == true;
@@ -73,6 +85,8 @@ class VoiceController extends ChangeNotifier {
         if (!speaking) caption = '';
       case 'voice_caption':
         caption = '${e['text']}';
+        captionAt = DateTime.now();
+        Future<void>.delayed(const Duration(seconds: 12), notifyListeners);
       case 'voice_intent':
         intent = e;
         intentAt = DateTime.now();

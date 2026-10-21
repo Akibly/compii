@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
+import 'reply_text.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'chrome.dart';
@@ -16,8 +17,11 @@ class Turn {
   final List<Map<String, dynamic>> steps = []; // action_done / action_started
   final List<String> notes = [];
   final List<Map<String, dynamic>> files = [];
+  final List<Map<String, dynamic>> sources = []; // web pages Compii actually read for this answer
   final List<Map<String, dynamic>> approvals = [];
   final Set<String> resolved = {};
+  final List<Map<String, dynamic>> questions = [];
+  final Set<String> answered = {};
   final List<Map<String, dynamic>> safety = []; // blocked, injection, redacted, rule used
   List<Map<String, dynamic>>? plan;
   String? reply;
@@ -27,6 +31,9 @@ class Turn {
   bool get active => status == 'running' || status == 'waiting';
   Map<String, dynamic>? get pending => active
       ? approvals.where((a) => !resolved.contains(a['approval_id'])).lastOrNull
+      : null;
+  Map<String, dynamic>? get pendingQuestion => active
+      ? questions.where((q) => !answered.contains(q['question_id'])).lastOrNull
       : null;
   Map<String, dynamic>? get current {
     final last = steps.lastOrNull;
@@ -62,12 +69,20 @@ List<Turn> turnsOf(TaskView task) {
             t.steps.add(e);
           case 'file':
             t.files.add(e);
+          case 'sources':
+            for (final s in (e['items'] as List? ?? const [])) {
+              t.sources.add(Map<String, dynamic>.from(s as Map));
+            }
           case 'action_blocked' || 'injection_warning' || 'redacted' || 'rule_used':
             t.safety.add(e);
           case 'approval_needed':
             t.approvals.add(e);
           case 'approval_resolved':
             t.resolved.add(e['approval_id'] as String);
+          case 'question':
+            t.questions.add(e);
+          case 'question_answered':
+            t.answered.add(e['question_id'] as String);
           case 'task_finished':
             t.reply = e['text'] as String?;
             t.status = e['status'] as String;
@@ -182,9 +197,13 @@ class _AssistantTurn extends StatelessWidget {
                 const SizedBox(height: 10),
                 ApprovalCard(approval: pending, core: core, run: run),
               ],
+              if (turn.pendingQuestion != null) ...[
+                const SizedBox(height: 10),
+                QuestionCard(question: turn.pendingQuestion!, core: core, run: run, compact: compact),
+              ],
               if (turn.reply != null) ...[
                 const SizedBox(height: 8),
-                SelectableText(
+                ReplyText(
                   turn.reply!,
                   style: context.type.bodyLarge?.copyWith(
                     color: turn.status == 'failed' ? c.danger : null,
@@ -197,6 +216,10 @@ class _AssistantTurn extends StatelessWidget {
               if (!turn.active && (turn.files.isNotEmpty || turn.finished.isNotEmpty)) ...[
                 const SizedBox(height: 12),
                 ResultSummary(turn: turn, task: task, core: core, run: run),
+              ],
+              if (!turn.active && turn.sources.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                SourcesRow(sources: turn.sources, core: core, run: run),
               ],
             ],
           ),
@@ -226,8 +249,11 @@ class _StepLedgerState extends State<StepLedger> {
     final failed = t.finished.where((s) => s['ok'] != true).length;
     final seconds = t.endedAt == null ? null : (t.endedAt! - t.at).round();
     final String headline;
+    final waiting = t.pending != null || t.pendingQuestion != null;
     if (t.pending != null) {
       headline = 'Waiting for you · $n ${n == 1 ? 'step' : 'steps'} so far';
+    } else if (t.pendingQuestion != null) {
+      headline = 'Compii is asking you something · $n ${n == 1 ? 'step' : 'steps'} so far';
     } else if (t.active) {
       headline = current != null ? '${current['label']}…' : (n == 0 ? 'Thinking…' : 'Thinking · $n ${n == 1 ? 'step' : 'steps'} done');
     } else {
@@ -248,13 +274,13 @@ class _StepLedgerState extends State<StepLedger> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                if (t.active && t.pending == null)
+                if (t.active && !waiting)
                   SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, color: c.accent))
                 else
                   Glyph(
-                    t.pending != null ? G.hand : (failed > 0 ? G.alert : G.checkCircle),
+                    waiting ? G.hand : (failed > 0 ? G.alert : G.checkCircle),
                     size: 16,
-                    color: t.pending != null ? c.warning : (failed > 0 ? c.danger : c.success),
+                    color: waiting ? c.warning : (failed > 0 ? c.danger : c.success),
                   ),
                 const SizedBox(width: 8),
                 Flexible(
@@ -447,8 +473,11 @@ class ApprovalCard extends StatelessWidget {
                   color: fg,
                 ),
                 const SizedBox(width: 10),
-                Text(_tierTitle(kind), style: context.type.titleMedium?.copyWith(color: fg)),
-                const Spacer(),
+                Expanded(
+                  child: Text(_tierTitle(kind),
+                      maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleMedium?.copyWith(color: fg)),
+                ),
+                const SizedBox(width: 8),
                 Pill('Needs your okay', color: c.warning, glyph: G.hand),
               ],
             ),
@@ -519,6 +548,190 @@ class ApprovalCard extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Compii's question, answered where it was asked: tap a choice, or type it in
+/// the box — the box is there for the answers no choice can hold.
+class QuestionCard extends StatefulWidget {
+  const QuestionCard({super.key, required this.question, required this.core, required this.run, this.compact = false});
+  final Map<String, dynamic> question;
+  final CoreClient core;
+  final Run run;
+  final bool compact;
+
+  @override
+  State<QuestionCard> createState() => _QuestionCardState();
+}
+
+class _QuestionCardState extends State<QuestionCard> {
+  final TextEditingController _typed = TextEditingController();
+  String? _sent;
+
+  @override
+  void dispose() {
+    _typed.dispose();
+    super.dispose();
+  }
+
+  void _answer(String value) {
+    final text = value.trim();
+    if (text.isEmpty || _sent != null) return;
+    _typed.clear();
+    setState(() => _sent = text);
+    final id = '${widget.question['question_id']}';
+    widget.run(() => widget.core.answerQuestion(id, text));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final choices = [for (final v in (widget.question['choices'] as List? ?? const [])) '$v'];
+    final asked = '${widget.question['question']}';
+
+    return Container(
+      decoration: BoxDecoration(
+        color: c.raised,
+        borderRadius: Shapes.r16,
+        border: Border.all(color: c.accent.withValues(alpha: .5), width: 1.2),
+        boxShadow: [
+          ...Shapes.float(c),
+          BoxShadow(color: c.accent.withValues(alpha: .08), blurRadius: 0, spreadRadius: 4),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                GlyphTile(glyph: G.chat, size: 30, color: c.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(asked, style: context.type.titleMedium?.copyWith(fontWeight: FontWeight.w600, height: 1.3)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Pill('Your turn', color: c.accent, glyph: G.hand, soft: true),
+              ],
+            ),
+            const SizedBox(height: 12),
+            if (_sent != null)
+              Row(
+                children: [
+                  Glyph(G.checkCircle, size: 18, color: c.success),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text('“$_sent” — Compii is carrying on.',
+                        style: context.type.bodyMedium?.copyWith(color: c.muted)),
+                  ),
+                ],
+              )
+            else ...[
+              if (choices.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [for (final choice in choices) _AnswerChip(label: choice, onTap: () => _answer(choice))],
+                  ),
+                ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _typed,
+                      minLines: 1,
+                      maxLines: 5,
+                      autofocus: !widget.compact,
+                      textInputAction: TextInputAction.newline,
+                      onSubmitted: _answer,
+                      decoration: InputDecoration(
+                        isDense: true,
+                        filled: true,
+                        fillColor: c.sunken,
+                        hintText: choices.isEmpty ? 'Type your answer' : 'Or type your own answer',
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: c.border),
+                        ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: c.border),
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          borderSide: BorderSide(color: c.accent, width: 1.5),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    onPressed: () => _answer(_typed.text),
+                    icon: const Glyph(G.send, size: 17),
+                    label: const Text('Send'),
+                  ),
+                ],
+              ),
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton(
+                  onPressed: () => _answer('I’d rather you decide — use your best judgement and tell me what you chose.'),
+                  child: const Text('Compii, you decide'),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// One tappable answer.
+class _AnswerChip extends StatefulWidget {
+  const _AnswerChip({required this.label, required this.onTap});
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  State<_AnswerChip> createState() => _AnswerChipState();
+}
+
+class _AnswerChipState extends State<_AnswerChip> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+          decoration: BoxDecoration(
+            color: _hover ? c.accentSoft : c.sunken,
+            borderRadius: BorderRadius.circular(30),
+            border: Border.all(color: _hover ? c.accent.withValues(alpha: .55) : c.border),
+          ),
+          child: Text(widget.label,
+              style: context.type.labelLarge?.copyWith(color: _hover ? c.accent : c.text, fontWeight: FontWeight.w500)),
+        ),
       ),
     );
   }
@@ -614,6 +827,39 @@ class ResultSummary extends StatelessWidget {
   }
 }
 
+/// The pages Compii actually read for this answer, so you can check them yourself.
+class SourcesRow extends StatelessWidget {
+  const SourcesRow({super.key, required this.sources, required this.core, required this.run});
+  final List<Map<String, dynamic>> sources;
+  final CoreClient core;
+  final Run run;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final seen = <String>{};
+    final unique = [for (final s in sources) if (seen.add('${s['url']}')) s];
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text('Sources', style: context.type.labelMedium?.copyWith(color: c.muted)),
+        for (final s in unique)
+          Tooltip(
+            message: '${s['url']}',
+            child: ActionChip(
+              avatar: const Glyph(G.globe, size: 14),
+              label: Text(Uri.tryParse('${s['url']}')?.host.replaceFirst('www.', '') ?? '${s['title']}',
+                  style: context.type.labelMedium),
+              onPressed: () => run(() => core.openUrl('${s['url']}')),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
 class FileChip extends StatelessWidget {
   const FileChip({super.key, required this.file, required this.core, required this.run});
   final Map<String, dynamic> file;
@@ -626,6 +872,7 @@ class FileChip extends StatelessWidget {
     final path = '${file['path']}';
     final name = path.split(RegExp(r'[\\/]')).last;
     final ext = name.contains('.') ? name.split('.').last.toLowerCase() : '';
+    final gone = '${file['action']}' == 'deleted';
     final icon = switch (ext) {
       'xlsx' || 'xls' || 'csv' => G.sheet,
       'pdf' => G.doc,
@@ -644,7 +891,7 @@ class FileChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Glyph(icon, size: 20, color: c.accent),
+          Glyph(gone ? G.trash : icon, size: 20, color: gone ? c.muted : c.accent),
           const SizedBox(width: 8),
           Flexible(
             child: ConstrainedBox(
@@ -653,24 +900,29 @@ class FileChip extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(name, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleSmall),
-                  Text('${file['action']}', maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.labelMedium),
+                  Text(gone ? 'in the Recycle Bin' : '${file['action']}',
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: context.type.labelMedium?.copyWith(color: gone ? c.muted : null)),
                 ],
               ),
             ),
           ),
           const SizedBox(width: 6),
-          IconButton(
-            tooltip: 'Open',
-            visualDensity: VisualDensity.compact,
-            onPressed: () => run(() => core.openFile(path)),
-            icon: const Glyph(G.external, size: 17),
-          ),
-          IconButton(
-            tooltip: 'Show in folder',
-            visualDensity: VisualDensity.compact,
-            onPressed: () => run(() => core.revealFile(path)),
-            icon: const Glyph(G.folder, size: 17),
-          ),
+          // A recycled file is gone from its folder: offering to open it would only fail.
+          if (!gone) ...[
+            IconButton(
+              tooltip: 'Open',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => run(() => core.openFile(path)),
+              icon: const Glyph(G.external, size: 17),
+            ),
+            IconButton(
+              tooltip: 'Show in folder',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => run(() => core.revealFile(path)),
+              icon: const Glyph(G.folder, size: 17),
+            ),
+          ],
         ],
       ),
     );

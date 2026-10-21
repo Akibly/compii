@@ -12,6 +12,7 @@ import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
 import 'src/overlay/overlay_app.dart';
+import 'src/ui/pair.dart';
 import 'src/ui/first_run.dart';
 import 'src/ui/proactive.dart';
 import 'src/ui/quick_bar.dart';
@@ -22,6 +23,8 @@ import 'src/ui/voice.dart';
 
 Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
+  // On a phone (or `--remote` on Windows, for testing) Compii is the remote for a paired PC.
+  if (Platform.isAndroid || Platform.isIOS || args.contains('--remote')) return runPhone();
   WidgetsFlutterBinding.ensureInitialized();
   CrashLog.install();
   await ensureCore();
@@ -37,6 +40,10 @@ Future<void> main(List<String> args) async {
     await windowManager.setMinimumSize(const Size(380, 120));
     // Compii draws its own title bar (drag area and window buttons).
     await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+    if (!args.contains('--background')) {
+      await windowManager.show();
+      await windowManager.focus();
+    }
     quick = QuickMode(state);
     try {
       // Kept simple on purpose: hold Ctrl+Alt (talk) and Ctrl+Win (dictate) live in
@@ -157,20 +164,49 @@ Future<void> _startOverlay() async {
 /// animations pause: the cursor buddy is how Compii shows up while you work elsewhere.
 final windowShown = ValueNotifier<bool>(true);
 
-void _watchWindowShown() {
-  Timer.periodic(const Duration(milliseconds: 700), (_) async {
-    try {
-      windowShown.value = await windowManager.isVisible() && !await windowManager.isMinimized() &&
-          await windowManager.isFocused();
-    } on Object {
-      windowShown.value = true;
-    }
-  });
-}
-
+/// Driven by the window's own focus/show/hide/minimise events (plus one slow
+/// safety check) instead of polling three IPC calls every 700 ms.
 class _HideOnClose with WindowListener {
+  bool _focused = true;
+  bool _visible = true;
+  bool _minimized = false;
+
   @override
   Future<void> onWindowClose() async => windowManager.hide();
+
+  @override
+  void onWindowFocus() => _update(focused: true);
+
+  @override
+  void onWindowBlur() => _update(focused: false);
+
+  @override
+  void onWindowMinimize() => _update(minimized: true);
+
+  @override
+  void onWindowRestore() => _update(minimized: false);
+
+  void _update({bool? focused, bool? visible, bool? minimized}) {
+    _focused = focused ?? _focused;
+    _visible = visible ?? _visible;
+    _minimized = minimized ?? _minimized;
+    windowShown.value = _visible && !_minimized && _focused;
+  }
+}
+
+void _watchWindowShown() {
+  // Safety net in case an event is missed (sleep, focus oddities); cheap at this rate.
+  Timer.periodic(const Duration(seconds: 5), (_) => _syncWindowShown());
+  _syncWindowShown();
+}
+
+void _syncWindowShown() async {
+  try {
+    windowShown.value = await windowManager.isVisible() && !await windowManager.isMinimized() &&
+        await windowManager.isFocused();
+  } on Object {
+    windowShown.value = true;
+  }
 }
 
 /// If Core ever stops (a crash, the PC waking from sleep…), start it again

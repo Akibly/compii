@@ -108,6 +108,7 @@ class _FirstRunState extends State<FirstRun> {
   String heard = '';
   bool busy = false;
   bool? startsWithWindows;
+  String _localNote = '';
   StreamSubscription<Map<String, dynamic>>? _sub;
   final _groq = TextEditingController();
   final _nvidia = TextEditingController();
@@ -181,6 +182,32 @@ class _FirstRunState extends State<FirstRun> {
         'fallback_enabled': _has('nvidia'),
       });
     }
+  });
+
+  /// Think with an AI the user already runs on this PC: no key, nothing leaves the computer.
+  /// If it isn't answering, say so instead of quietly leaving them on a broken choice.
+  Future<void> _useLocal(String provider) => _run(() async {
+    final label = provider == 'ollama' ? 'Ollama' : 'LM Studio';
+    final url = provider == 'ollama' ? 'http://127.0.0.1:11434/v1' : 'http://127.0.0.1:1234/v1';
+    final found = await TrustApi.map(
+        'GET', '/brain/models?base_url=${Uri.encodeQueryComponent(url)}&provider=$provider');
+    if (found['running'] != true) {
+      _localNote = 'Start $label first — nothing is answering on 127.0.0.1, so Compii stayed on the free cloud brain.';
+      return;
+    }
+    final models = [for (final m in found['models'] as List? ?? const []) '$m'];
+    final v = await TrustApi.map('PUT', '/brain', {
+      'primary': {'provider': provider, 'model': models.isEmpty ? '' : models.first, 'base_url': ''},
+      'fallback': _has('nvidia') ? {'provider': 'nvidia', 'model': '', 'base_url': ''} : null,
+      'fallback_enabled': _has('nvidia'),
+    });
+    final tested = await TrustApi.map('POST', '/brain/test');
+    final probe = Map<String, dynamic>.from((tested['probe'] as Map?) ?? {});
+    final which = models.isEmpty ? 'its default model' : models.first;
+    _localNote = probe['ok'] == true
+        ? 'Thinking with $which on $label, on this PC. ${(probe['note'] ?? '')}'.trim()
+        : '$label answered badly (${probe['error'] ?? 'no reply'}), so Compii kept it as a choice you can retry.';
+    if (mounted) setState(() => brain = Map<String, dynamic>.from(v));
   });
 
   void _open(String url) {
@@ -279,13 +306,26 @@ class _FirstRunState extends State<FirstRun> {
         return [
           h('Give me a brain'),
           const SizedBox(height: 8),
-          p('I think with Groq, a free and very fast AI. Make a free key (no card needed), then paste it here. '
-              'It’s stored safely in Windows Credential Manager and never shown again.'),
+          p('Compii thinks with an AI you choose — a free cloud key takes a minute, or an AI already on this PC '
+              'keeps everything local. Keys are stored safely in Windows Credential Manager and never shown again.'),
           const SizedBox(height: 16),
           _keyCard(context, 'groq', 'Groq key', 'Free · thinking and listening', 'https://console.groq.com/keys', _groq),
           const SizedBox(height: 10),
           _keyCard(context, 'nvidia', 'NVIDIA key (optional)', 'Free · a backup brain, and seeing apps like Blender',
               'https://build.nvidia.com/settings/api-keys', _nvidia),
+          const SizedBox(height: 10),
+          _card(context, G.monitor, 'AI on this PC (no key)',
+              'If you already run Ollama or LM Studio, Compii can think with it. Nothing leaves your computer.',
+              Row(mainAxisSize: MainAxisSize.min, children: [
+                OutlinedButton(onPressed: busy ? null : () => _useLocal('ollama'), child: const Text('Ollama')),
+                const SizedBox(width: 8),
+                OutlinedButton(onPressed: busy ? null : () => _useLocal('lmstudio'), child: const Text('LM Studio')),
+              ])),
+          if (_localNote.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Text(_localNote, textAlign: TextAlign.center,
+                style: context.type.bodySmall?.copyWith(color: context.c.muted)),
+          ],
         ];
       case 2:
         final natural = voiceStatus['natural_voice'] == true;
@@ -340,6 +380,12 @@ class _FirstRunState extends State<FirstRun> {
           const SizedBox(height: 8),
           p('You can change these any time in Settings.'),
           const SizedBox(height: 16),
+          _card(context, G.monitor, 'Let Compii see your screen', 'Which windows are open and what\'s in them, so help '
+              'fits the app you\'re using. Off is a real off: nothing is read. A light shows when it looks.', Switch(
+                value: _settings['screen_aware'] != false,
+                onChanged: (v) => _run(() async => widget.voice?.set({'screen_aware': v})),
+              )),
+          const SizedBox(height: 10),
           _card(context, G.mic, 'Recognise speech on Groq', 'Faster and spares your PC. Your recording goes to Groq only '
               'while you hold Ctrl + Alt.', Switch(
                 value: _settings['cloud_listening'] != false,
@@ -424,10 +470,23 @@ class _FirstRunState extends State<FirstRun> {
 
   Widget _nav(BuildContext context) {
     final last = step == steps.length - 1;
-    final canGo = step != 1 || _has('groq') || _has('nvidia');
+    // Step 1 needs a brain: a stored key, or a local AI already chosen as active.
+    final canGo = step != 1 ||
+        _has('groq') ||
+        _has('nvidia') ||
+        const ['ollama', 'lmstudio'].contains('${brain['active'] ?? ''}');
     return Row(
       children: [
         if (step > 0) TextButton(onPressed: () => setState(() => step--), child: const Text('Back')),
+        if (!canGo)
+          Flexible(
+            child: Padding(
+              padding: const EdgeInsets.only(right: 12),
+              child: Text('Choose a brain below first: a free key, or the AI already on this PC.',
+                  textAlign: TextAlign.right,
+                  style: context.type.bodySmall?.copyWith(color: context.c.muted)),
+            ),
+          ),
         const Spacer(),
         if (!last && step > 0)
           TextButton(onPressed: () => setState(() => step++), child: const Text('Skip')),

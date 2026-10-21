@@ -38,6 +38,47 @@ void main() {
     expect(turnsOf(_task(events, status: 'stopped')).single.pending, isNull);
   });
 
+  test('a question stays on screen until it is answered', () {
+    final events = [
+      {'type': 'task_started', 'at': 0},
+      {'type': 'question', 'question_id': 'q1', 'question': 'Which one?', 'choices': ['Nexus', 'Horizon'], 'at': 1},
+    ];
+    final open = turnsOf(_task(events, status: 'waiting')).single;
+    expect(open.pendingQuestion?['question_id'], 'q1');
+    expect(open.pendingQuestion?['choices'], ['Nexus', 'Horizon']);
+    final answered = turnsOf(_task([
+      ...events,
+      {'type': 'question_answered', 'question_id': 'q1', 'text': 'Horizon', 'at': 2},
+    ], status: 'running')).single;
+    expect(answered.pendingQuestion, isNull);
+    expect(turnsOf(_task(events, status: 'stopped')).single.pendingQuestion, isNull);
+  });
+
+  test('web pages Compii actually read become sources on the turn that used them', () {
+    final turns = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'action_started', 'tool': 'read_web_page', 'label': 'Read x', 'at': 1},
+      {'type': 'sources', 'tool': 'read_web_page', 'items': [
+        {'title': 'Laptops', 'url': 'https://example.com/laptops'},
+      ], 'at': 2},
+      {'type': 'user_message', 'text': 'and now y', 'at': 10},
+      {'type': 'sources', 'tool': 'read_web_page', 'items': [
+        {'title': 'Desktops', 'url': 'https://example.com/desktops'},
+        {'title': 'Again', 'url': 'https://example.com/desktops'},
+      ], 'at': 11},
+    ]));
+    expect(turns.first.sources.single['url'], 'https://example.com/laptops');
+    expect(turns.last.sources.map((s) => s['url']), ['https://example.com/desktops', 'https://example.com/desktops']);
+  });
+
+  test('a sources event with nothing usable in it is ignored', () {
+    final turn = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'sources', 'tool': 'read_web_page', 'at': 1},
+    ])).single;
+    expect(turn.sources, isEmpty);
+  });
+
   test('the running step shows until it finishes', () {
     final turn = turnsOf(_task([
       {'type': 'task_started', 'at': 0},

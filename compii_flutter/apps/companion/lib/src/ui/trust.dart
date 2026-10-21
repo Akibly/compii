@@ -51,8 +51,9 @@ class TrustApi {
   static Future<void> lift() => call('DELETE', '/killswitch');
   static Future<void> alwaysAllow(String approvalId) =>
       call('POST', '/approvals/$approvalId', {'approved': true, 'always': true});
-  static Future<Map<String, dynamic>> saveSkill(String taskId, [String name = '']) =>
-      map('POST', '/tasks/$taskId/skill', {'name': name});
+  static Future<Map<String, dynamic>> saveSkill(String taskId, [String name = '', String about = '']) =>
+      map('POST', '/tasks/$taskId/skill', {'name': name, 'about': about});
+  static Future<Map<String, dynamic>> draftSkill(String taskId) => map('POST', '/tasks/$taskId/skill/draft');
 }
 
 // ---- shared bits ----------------------------------------------------------------
@@ -1044,33 +1045,16 @@ class SaveSkillButton extends StatelessWidget {
     icon: const Glyph(G.skill, size: 18),
     label: const Text('Save as skill'),
     onPressed: () async {
-      final name = TextEditingController(text: _suggest(task.request));
-      final ok = await showDialog<bool>(
+      final picked = await showDialog<(String, String)>(
         context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Save as a skill'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Compii keeps what you asked and the steps that worked, so next time you can just say the name.',
-                  style: context.type.bodySmall),
-              const SizedBox(height: 12),
-              TextField(controller: name, autofocus: true, decoration: const InputDecoration(labelText: 'Name')),
-            ],
-          ),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-            FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Save')),
-          ],
-        ),
+        builder: (_) => SaveSkillDialog(request: task.request, draft: () => TrustApi.draftSkill(task.id)),
       );
-      if (ok != true) return;
+      if (picked == null) return;
       await run(() async {
-        final s = await TrustApi.saveSkill(task.id, name.text.trim());
+        final s = await TrustApi.saveSkill(task.id, picked.$1, picked.$2);
         if (context.mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('Saved “${s['name']}” with ${(s['steps'] as List).length} steps. Find it under Skills.')),
+            SnackBar(content: Text('Saved “${s['name']}” with ${(s['steps'] as List).length} steps. Say its name any time to use it.')),
           );
         }
       });
@@ -1079,13 +1063,129 @@ class SaveSkillButton extends StatelessWidget {
 
   static const _small = {'a', 'an', 'the', 'in', 'on', 'of', 'to', 'for', 'and', 'my', 'me', 'it', 'from', 'with', 'into', 'at'};
 
-  static String _suggest(String request) {
+  static String suggest(String request) {
     final words = request.replaceAll(RegExp(r'[^\w\s\x27-]'), '').split(RegExp(r'\s+')).where((w) => w.isNotEmpty).take(5).toList();
     while (words.length > 1 && _small.contains(words.last.toLowerCase())) {
       words.removeLast();
     }
     final name = words.join(' ');
     return name.isEmpty ? 'My skill' : name[0].toUpperCase() + name.substring(1);
+  }
+}
+
+/// Asks what to call a skill. Compii reads the conversation and offers a name
+/// that says what it is for; the user can keep it or type their own.
+class SaveSkillDialog extends StatefulWidget {
+  const SaveSkillDialog({super.key, required this.request, required this.draft});
+  final String request;
+  final Future<Map<String, dynamic>> Function() draft;
+
+  @override
+  State<SaveSkillDialog> createState() => _SaveSkillDialogState();
+}
+
+class _SaveSkillDialogState extends State<SaveSkillDialog> {
+  late final _name = TextEditingController(text: SaveSkillButton.suggest(widget.request));
+  final _about = TextEditingController();
+  bool _thinking = true;
+  bool _typed = false;
+  List<String> _steps = const [];
+  List<String> _names = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _name.addListener(() => setState(() {}));
+    widget.draft().then((d) {
+      if (!mounted) return;
+      setState(() {
+        _thinking = false;
+        if (!_typed && '${d['name'] ?? ''}'.trim().isNotEmpty) _name.text = '${d['name']}'.trim();
+        if (_about.text.isEmpty) _about.text = '${d['about'] ?? ''}';
+        _steps = [for (final s in d['steps'] as List? ?? const []) '$s'];
+        _names = [for (final s in d['names'] as List? ?? const []) '$s'];
+      });
+    }, onError: (_) {
+      if (mounted) setState(() => _thinking = false);
+    });
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _about.dispose();
+    super.dispose();
+  }
+
+  String? get _taken {
+    final want = _name.text.trim().toLowerCase();
+    for (final n in _names) {
+      if (n.toLowerCase() == want) return n;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final taken = _taken;
+    final name = _name.text.trim();
+    return AlertDialog(
+      title: const Text('What should this skill be called?'),
+      content: SizedBox(
+        width: 420,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Next time, just say the name and Compii repeats what worked, adapted to that day.',
+                style: context.type.bodySmall),
+            const SizedBox(height: 14),
+            TextField(
+              controller: _name,
+              autofocus: true,
+              maxLength: 60,
+              onChanged: (_) => _typed = true,
+              onSubmitted: (_) => name.isEmpty ? null : Navigator.pop(context, (name, _about.text.trim())),
+              decoration: InputDecoration(
+                labelText: 'Name',
+                helperText: _thinking ? 'Compii is suggesting a name that fits…' : null,
+                suffixIcon: _thinking
+                    ? const Padding(padding: EdgeInsets.all(14), child: SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2)))
+                    : null,
+              ),
+            ),
+            if (taken != null)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 6),
+                child: Text('You already have “$taken”. Saving replaces it; change the name to keep both.',
+                    style: context.type.bodySmall?.copyWith(color: c.warning)),
+              ),
+            TextField(
+              controller: _about,
+              maxLines: 2,
+              minLines: 1,
+              decoration: const InputDecoration(labelText: 'What it’s for (optional)'),
+            ),
+            if (_steps.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              Text('Steps it keeps', style: context.type.labelLarge),
+              const SizedBox(height: 4),
+              for (final (i, s) in _steps.take(5).indexed)
+                Text('${i + 1}. $s', maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+              if (_steps.length > 5) Text('and ${_steps.length - 5} more', style: context.type.bodySmall?.copyWith(color: c.muted)),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(
+          onPressed: name.isEmpty ? null : () => Navigator.pop(context, (name, _about.text.trim())),
+          child: Text(taken != null ? 'Replace' : 'Save'),
+        ),
+      ],
+    );
   }
 }
 

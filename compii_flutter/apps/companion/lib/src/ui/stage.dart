@@ -4,6 +4,7 @@ import '../console/character.dart';
 import '../console/core_client.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
+import 'reply_text.dart';
 import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
@@ -29,14 +30,16 @@ class Stage extends StatelessWidget {
     final turn = turns.isEmpty ? null : turns.last;
     final voice = state.voice;
     final pending = turn?.pending;
+    final asked = turn?.pendingQuestion;
     final mood = state.moodWith(core);
     final hero = (MediaQuery.sizeOf(context).height * .24).clamp(120.0, 220.0);
-    final speakingCaption = voice != null && voice.speaking && voice.caption.isNotEmpty ? voice.caption : null;
+    final speakingCaption = voice != null && voice.showCaption ? voice.caption : null;
     final (String bubble, bool working) = switch (turn) {
       null => ('', true),
       _ when speakingCaption != null => (speakingCaption, false),
       _ when pending != null => ('I need your okay first: ${pending['label']}', false),
-      final t when t.reply != null => (t.reply!, false),
+      _ when asked != null => ('${asked['question']}', false),
+      final t when t.reply != null => (plainMarkdown(t.reply!), false),
       final t when t.current != null => ('${t.current!['label']}…', true),
       final t when t.notes.isNotEmpty && t.active => (t.notes.last, true),
       final t when t.active => ('Thinking…', true),
@@ -95,6 +98,10 @@ class Stage extends StatelessWidget {
                     if (pending != null) ...[
                       const SizedBox(height: 18),
                       ApprovalCard(approval: pending, core: core, run: run),
+                    ],
+                    if (asked != null) ...[
+                      const SizedBox(height: 18),
+                      QuestionCard(question: asked, core: core, run: run),
                     ],
                     if (turn != null && !turn.active && turn.files.isNotEmpty) ...[
                       const SizedBox(height: 16),

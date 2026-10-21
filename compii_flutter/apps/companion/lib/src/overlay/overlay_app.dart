@@ -97,6 +97,7 @@ class OverlayApp extends StatelessWidget {
       origin: origin,
       cursor: cursor ?? () async => Offset.zero,
       onDecide: (id, approved) => core.decide(id, approved: approved),
+      onAnswer: (id, text) => core.answerQuestion(id, text),
       setClickThrough: (through) async {
         try {
           await _overlayChannel.invokeMethod<void>('clickThrough', through);

@@ -42,7 +42,12 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
 /// What the character says in Face View.
 String bubbleOf(CoreClient core) {
   if (core.status == CoreStatus.connecting) return 'Waking up…';
-  if (core.status == CoreStatus.offline) return "I can't reach Compii Core yet. I'll connect as soon as it's running.";
+  if (core.unauthorized) return '${core.remote?.pc ?? 'Your PC'} doesn’t know this phone any more. Pair it again.';
+  if (core.status == CoreStatus.offline) {
+    return core.isRemote
+        ? "I can't reach ${core.remote!.pc}. Is the phone on the same Wi-Fi, and is the PC awake?"
+        : "I can't reach Compii Core yet. I'll connect as soon as it's running.";
+  }
   final tasks = core.ordered;
   for (final t in tasks) {
     final a = t.pendingApproval;
@@ -63,10 +68,13 @@ String bubbleOf(CoreClient core) {
 /// speech, approvals and the composer float over it; the conversation opens
 /// in a sheet.
 class FaceStage extends StatelessWidget {
-  const FaceStage({super.key, required this.core, required this.state, required this.onExit});
+  const FaceStage({super.key, required this.core, required this.state, required this.onExit, this.menu});
   final CoreClient core;
   final AppState state;
   final VoidCallback? onExit;
+
+  /// Top-right controls on a paired phone (connection, voice, forget this PC).
+  final Widget? menu;
 
   Future<void> _run(Future<void> Function() action) async {
     try {
@@ -126,6 +134,7 @@ class FaceStage extends StatelessWidget {
               ),
             ),
           ),
+          if (menu != null) Positioned(top: 8, right: 8, child: menu!),
           if (onExit != null)
             Positioned(
               top: 8,

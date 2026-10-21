@@ -149,7 +149,7 @@ void main() {
           'downloading': <String, dynamic>{},
           'download_sizes_mb': {'listen': 145, 'speak': 120},
           'voices': {'af_heart': 'Heart (warm, US)'},
-          'settings': {'speak_replies': true, 'voice': 'af_heart', 'speed': 1.05},
+          'settings': {'output_mode': 'voice', 'voice': 'af_heart', 'speed': 1.05},
         };
       state.voice = voice;
       if (surface == 'listening') {

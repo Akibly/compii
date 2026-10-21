@@ -51,6 +51,54 @@ void main() {
     await tester.pump(const Duration(seconds: 13));
   });
 
+  testWidgets('a question: one button per choice, plus “you decide”, answered from beside the cursor', (tester) async {
+    const size = Size(900, 520);
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final events = StreamController<Map<String, dynamic>>.broadcast();
+    var mouse = const Offset(300, 200);
+    final answers = <(String, String)>[];
+    final through = <bool>[];
+    await tester.pumpWidget(MediaQuery(
+      data: const MediaQueryData(size: size, disableAnimations: true),
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: BuddyLayer(
+          events: events.stream,
+          cursor: () async => mouse,
+          onAnswer: (id, text) async => answers.add((id, text)),
+          setClickThrough: (t) async => through.add(t),
+        ),
+      ),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    events.add({
+      'type': 'voice_buddy', 'state': 'needs_you', 'question_id': 'q1',
+      'text': 'Which scholarship should I open?',
+      'choices': ['Nexus', 'Horizon'],
+    });
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Which scholarship should I open?'), findsOneWidget);
+    expect(find.text('Nexus'), findsOneWidget);
+    expect(find.text('Horizon'), findsOneWidget);
+    expect(find.text('You decide'), findsOneWidget);
+
+    final tap = tester.getCenter(find.text('Horizon'));
+    mouse = tap;
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(through, [false]); // clickable only once the mouse is over the card
+    await tester.tap(find.text('Horizon'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(answers, [('q1', 'Horizon')]);
+    expect(find.text('Which scholarship should I open?'), findsNothing, reason: 'the card goes away');
+    expect(find.text('You decide'), findsNothing);
+    expect(through.last, true);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
   testWidgets('hold Ctrl+Alt and drag to draw: the overlay takes the mouse only while you talk', (tester) async {
     const size = Size(900, 520);
     tester.view.physicalSize = size;

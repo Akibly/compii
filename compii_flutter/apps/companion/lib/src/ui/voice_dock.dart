@@ -138,14 +138,15 @@ class _VoiceBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final pending = task?.pendingApproval ?? core.ordered.map((t) => t.pendingApproval).whereType<Map<String, dynamic>>().firstOrNull;
-    final working = task?.active == true && pending == null;
+    final asked = task?.pendingQuestion ?? core.ordered.map((t) => t.pendingQuestion).whereType<Map<String, dynamic>>().firstOrNull;
+    final working = task?.active == true && pending == null && asked == null;
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         AnimatedSize(
           duration: const Duration(milliseconds: 200),
           alignment: Alignment.bottomCenter,
-          child: _Stage(voice: voice, pending: pending, showCaptions: showCaptions),
+          child: _Stage(voice: voice, pending: pending, asked: asked, showCaptions: showCaptions),
         ),
         const SizedBox(height: 12),
         Row(
@@ -174,10 +175,11 @@ class _VoiceBar extends StatelessWidget {
 
 /// What matters right now, in big friendly text.
 class _Stage extends StatelessWidget {
-  const _Stage({required this.voice, this.pending, this.showCaptions = true});
+  const _Stage({required this.voice, this.pending, this.asked, this.showCaptions = true});
   final bool showCaptions;
   final VoiceController voice;
   final Map<String, dynamic>? pending;
+  final Map<String, dynamic>? asked;
 
   @override
   Widget build(BuildContext context) {
@@ -212,8 +214,18 @@ class _Stage extends StatelessWidget {
       };
       return line(text, color, glyph: glyph, big: false);
     }
-    if (showCaptions && voice.speaking && voice.caption.isNotEmpty) {
+    if (showCaptions && voice.showCaption) {
       return line(voice.caption, c.text, glyph: G.speakingHead, big: false);
+    }
+    if (asked != null) {
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          line('${asked!['question']}', c.text, glyph: G.chat),
+          const SizedBox(height: 4),
+          line('Say your answer, talk, or type it below.', c.faint, big: false),
+        ],
+      );
     }
     if (pending != null) {
       final kind = '${pending!['kind']}';

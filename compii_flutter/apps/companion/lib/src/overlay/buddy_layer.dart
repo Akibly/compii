@@ -22,6 +22,7 @@ class BuddyLayer extends StatefulWidget {
     this.scale = 1,
     this.alwaysVisible = true,
     this.onDecide,
+    this.onAnswer,
     this.setClickThrough,
     this.origin = Offset.zero,
   });
@@ -32,6 +33,9 @@ class BuddyLayer extends StatefulWidget {
 
   /// Answer an approval from the Yes / No card beside the cursor.
   final Future<void> Function(String approvalId, bool approved)? onDecide;
+
+  /// Answer one of Compii's questions from the card beside the cursor.
+  final Future<void> Function(String questionId, String text)? onAnswer;
 
   /// Let clicks through the overlay (true) or catch them (false, only over the card).
   final Future<void> Function(bool through)? setClickThrough;
@@ -73,6 +77,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   double level = 0;
   bool speaking = false;
 
+  // Compii's eyes, straight from Core: the user's switch, and whether it is reading right now.
+  // The chip below is only ever lit by Core's own report, so it can't claim a look that didn't happen.
+  bool _seeing = false;
+
   Offset? _cursor; // latest real pointer position
   Offset _pos = Offset.zero; // where the buddy is drawn (trails the cursor)
   bool _asking = false;
@@ -88,7 +96,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   Offset _flyFrom = Offset.zero;
 
   // Asking for permission: a Yes / No card that stays put where it appeared.
+  // Asking a question: the same card with a button per choice.
   String _approvalId = '';
+  String _questionId = '';
+  List<String> _choices = const [];
   Offset? _askAt;
   final _card = GlobalKey();
   bool _catching = false; // the overlay is taking clicks (mouse over the card, or drawing)
@@ -101,7 +112,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   int get inkStrokes => _ink.length;
   Timer? _catchAllSafety;
 
-  bool get asking => state == 'needs_you' && _approvalId.isNotEmpty;
+  bool get asking => state == 'needs_you' && (_approvalId.isNotEmpty || _questionId.isNotEmpty);
 
   bool get talking => state != 'idle';
 
@@ -235,6 +246,20 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     if (!approved) _goIdle();
   }
 
+  /// Tap one of Compii's choices (or "you decide") on the card beside the cursor.
+  Future<void> _answer(String answer, {String? shown}) async {
+    final id = _questionId;
+    setState(() {
+      _questionId = '';
+      _choices = const [];
+      state = 'thinking';
+      text = shown ?? answer;
+    });
+    _catching = false;
+    await widget.setClickThrough?.call(true);
+    await widget.onAnswer?.call(id, answer);
+  }
+
   Offset _anchor(Rect r) => Offset(r.right - math.min(10, r.width / 3), r.bottom - math.min(8, r.height / 3));
 
   void _onPoint() {
@@ -267,6 +292,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         setState(() {
           state = s;
           _approvalId = s == 'needs_you' ? '${e['approval_id'] ?? ''}' : '';
+          _questionId = s == 'needs_you' ? '${e['question_id'] ?? ''}' : '';
+          _choices = s == 'needs_you'
+              ? [for (final c in (e['choices'] as List? ?? const [])) '$c']
+              : const [];
           _askAt = s == 'needs_you' ? _pos : null;
           switch (s) {
             case 'listening':
@@ -321,6 +350,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         });
       case 'voice_buddy_visible':
         setState(() => _hidden = e['visible'] == false);
+      case 'voice_sight':
+        setState(() => _seeing = e['looking'] == true);
       case 'voice_partial' when state == 'listening' || state == 'dictating':
         setState(() => text = '${e['text']}');
       case 'voice_level' when state == 'listening' || state == 'dictating':
@@ -363,15 +394,21 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   @override
   Widget build(BuildContext context) {
     final still = MediaQuery.maybeDisableAnimationsOf(context) ?? false;
-    if (!still && talking && !_pulse.isAnimating) _pulse.repeat();
-    if ((still || !talking) && _pulse.isAnimating) _pulse.stop();
+    if (!still && (talking || _seeing) && !_pulse.isAnimating) _pulse.repeat();
+    if ((still || !(talking || _seeing)) && _pulse.isAnimating) _pulse.stop();
     // Hidden (Ctrl+Alt+H): only appears while you're actually talking to it.
     final engaged = const {'listening', 'dictating', 'thinking', 'needs_you', 'watching'}.contains(state) || _target != null;
-    if (_cursor == null || (_hidden && !engaged) || (!widget.alwaysVisible && !talking && _target == null)) {
-      return const SizedBox.expand();
-    }
+    // Even with the buddy hidden, a look at the screen still shows: hiding Compii is not hiding
+    // the fact that it is reading.
+    final bare = _cursor == null || (_hidden && !engaged) || (!widget.alwaysVisible && !talking && _target == null);
+    if (bare && !_seeing) return const SizedBox.expand();
 
     final screen = MediaQuery.sizeOf(context);
+    if (bare) {
+      return IgnorePointer(
+        child: Stack(children: [if (_seeing) Positioned(right: 14, top: 14, child: _sightChip())]),
+      );
+    }
     final listening = state == 'listening' || state == 'dictating';
     final watching = state == 'watching';
     final thinking = state == 'thinking';
@@ -432,6 +469,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                     ),
                   ),
                 ),
+              if (_seeing)
+                Positioned(right: 14, top: 14, child: _sightChip()),
               Positioned(
                 left: _pos.dx - 17,
                 top: _pos.dy - 17,
@@ -494,26 +533,90 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     );
   }
 
+  /// The corner light: on while Core says it is reading the screen, off the moment it stops.
+  Widget _sightChip() => IgnorePointer(
+    child: AnimatedBuilder(
+      animation: _pulse,
+      builder: (context, _) => _GlassLabel(
+        tint: const Color(0xFF5CE1E6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: const Color(0xFF5CE1E6),
+                boxShadow: [
+                  BoxShadow(
+                    color: const Color(0xFF5CE1E6).withValues(alpha: .25 + .45 * _pulse.value),
+                    blurRadius: 5 + 7 * _pulse.value,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 9),
+            const Text(
+              'Compii is seeing your screen',
+              style: TextStyle(
+                color: Color(0xF2FFFFFF),
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                letterSpacing: .2,
+                decoration: TextDecoration.none,
+                fontFamily: 'Segoe UI Variable Text',
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  static const _youDecide = 'I’d rather you decide — use your best judgement and tell me what you chose.';
+
   Widget _askCard(String line) => Column(
     mainAxisSize: MainAxisSize.min,
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
       Text(
-        line.isEmpty ? 'May I go ahead?' : line,
+        line.isEmpty ? (_questionId.isNotEmpty ? 'Compii needs to know something.' : 'May I go ahead?') : line,
         maxLines: 4,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(color: Color(0xF2FFFFFF), fontSize: 13, height: 1.42, fontWeight: FontWeight.w500,
             decoration: TextDecoration.none, fontFamily: 'Segoe UI Variable Text'),
       ),
       const SizedBox(height: 8),
-      Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _Pill(label: 'Yes', primary: true, tint: _tint, onTap: () => _decide(true)),
-          const SizedBox(width: 6),
-          _Pill(label: 'No', tint: _tint, onTap: () => _decide(false)),
-        ],
-      ),
+      if (_questionId.isEmpty)
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _Pill(label: 'Yes', primary: true, tint: _tint, onTap: () => _decide(true)),
+            const SizedBox(width: 6),
+            _Pill(label: 'No', tint: _tint, onTap: () => _decide(false)),
+          ],
+        )
+      else
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (final (i, choice) in _choices.indexed)
+              _Pill(label: choice, primary: i == 0, tint: _tint, onTap: () => _answer(choice)),
+            _Pill(label: 'You decide', tint: _tint, onTap: () => _answer(_youDecide, shown: 'You decide')),
+          ],
+        ),
+      if (_questionId.isNotEmpty && _choices.isEmpty)
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Text(
+            'Or type it in Compii.',
+            style: TextStyle(color: Color(0x99FFFFFF), fontSize: 11.5, height: 1.4,
+                decoration: TextDecoration.none, fontFamily: 'Segoe UI Variable Text'),
+          ),
+        ),
     ],
   );
 }
@@ -547,14 +650,19 @@ class _PillState extends State<_Pill> {
               ? widget.tint.withValues(alpha: _hover ? 1 : .88)
               : Color(_hover ? 0x33FFFFFF : 0x1FFFFFFF),
         ),
-        child: Text(
-          widget.label,
-          style: TextStyle(
-            color: widget.primary ? const Color(0xFF1A1630) : const Color(0xF2FFFFFF),
-            fontSize: 12.5,
-            fontWeight: FontWeight.w600,
-            decoration: TextDecoration.none,
-            fontFamily: 'Segoe UI Variable Text',
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 190),
+          child: Text(
+            widget.label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              color: widget.primary ? const Color(0xFF1A1630) : const Color(0xF2FFFFFF),
+              fontSize: 12.5,
+              fontWeight: FontWeight.w600,
+              decoration: TextDecoration.none,
+              fontFamily: 'Segoe UI Variable Text',
+            ),
           ),
         ),
       ),

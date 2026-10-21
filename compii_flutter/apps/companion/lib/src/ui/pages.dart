@@ -6,6 +6,7 @@ import 'thread.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'voice.dart';
+import 'phones.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 import '../app_control.dart';
@@ -226,6 +227,8 @@ class _SettingsPageState extends State<SettingsPage> {
           VoiceSettings(voice: widget.state.voice!, run: widget.run),
           const SizedBox(height: 28),
         ],
+        PhonesSettings(core: widget.core, run: widget.run),
+        const SizedBox(height: 28),
         Text('Appearance', style: context.type.titleLarge),
         const SizedBox(height: 12),
         _Card(
@@ -443,11 +446,22 @@ class VoiceSettings extends StatelessWidget {
                       Divider(height: 1, color: c.border),
                       row(
                         G.speakingHead,
-                        'Speak replies out loud',
-                        'Compii says its answers and questions. Click it, press the mic, or Stop to interrupt.',
-                        Switch(
-                          value: voice.speakReplies,
-                          onChanged: (v) => run(() => voice.set({'speak_replies': v})),
+                        'How Compii answers you',
+                        'Out loud, a chime with the words on screen, the words on their own, or nothing at all. '
+                            'Full answers are always in the conversation.',
+                        DropdownButton<String>(
+                          value: voice.outputMode,
+                          underline: const SizedBox.shrink(),
+                          items: [
+                            for (final (mode, label) in const [
+                              ('voice', 'Speak'),
+                              ('sound', 'Chime + words on screen'),
+                              ('caption', 'Words on screen'),
+                              ('off', 'Nothing'),
+                            ])
+                              DropdownMenuItem(value: mode, child: Text(label)),
+                          ],
+                          onChanged: (v) => run(() => voice.set({'output_mode': v})),
                         ),
                       ),
                       Divider(height: 1, color: c.border),
@@ -478,6 +492,18 @@ class VoiceSettings extends StatelessWidget {
                         Switch(
                           value: settings['cloud_listening'] != false,
                           onChanged: (v) => run(() => voice.set({'cloud_listening': v})),
+                        ),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        G.monitor,
+                        'Let Compii see your screen',
+                        'Which windows are open and what\'s in them, so Compii can help with the app you\'re '
+                            'actually using. Off is a real off: nothing is read, and Compii says so instead of '
+                            'guessing. A light shows whenever it looks.',
+                        Switch(
+                          value: settings['screen_aware'] != false,
+                          onChanged: (v) => run(() => voice.set({'screen_aware': v})),
                         ),
                       ),
                       Divider(height: 1, color: c.border),

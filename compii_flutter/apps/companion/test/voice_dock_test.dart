@@ -18,7 +18,7 @@ Widget _app(VoiceDock dock) => MaterialApp(
 (CoreClient, AppState) _setup({bool canListen = true}) {
   final core = CoreClient();
   final state = AppState();
-  state.voice = VoiceController(core)..status = {'listen_ready': canListen, 'settings': {'speak_replies': true}};
+  state.voice = VoiceController(core)..status = {'listen_ready': canListen, 'settings': {'output_mode': 'voice'}};
   return (core, state);
 }
 
@@ -52,7 +52,8 @@ void main() {
 
     state.voice!
       ..speaking = true
-      ..caption = 'I need your okay. Email it.';
+      ..caption = 'I need your okay. Email it.'
+      ..captionAt = DateTime.now();
     state.voice!.notifyListeners();
     await tester.pump();
     expect(find.text('I need your okay. Email it.'), findsOneWidget);
