@@ -70,10 +70,16 @@ def kokoro_lang(voice: str) -> str:
 
 Emit = Callable[[dict[str, Any]], None]
 
+_CHIME = object()  # a queued sound effect instead of words
+_CHIME_AUDIO: tuple[np.ndarray, int] | None = None
+
 
 @dataclass
 class VoiceSettings:
-    speak_replies: bool = True
+    # How Compii answers when it isn't in the conversation window:
+    # "voice" speaks, "sound" plays a chime and puts the words on screen,
+    # "caption" only puts the words on screen, "off" stays out of the way.
+    output_mode: str = "voice"
     voice: str = "compii_warm"
     speed: float = 1.05
     # "natural" uses Kokoro when downloaded; "windows" is the instant built-in voice.
@@ -83,6 +89,9 @@ class VoiceSettings:
     # Recognise speech on Groq (fast, accurate, spares your CPU) when a Groq key is stored;
     # the on-device recogniser is the backup. Off: everything stays on this PC.
     cloud_listening: bool = True
+    # Compii's eyes: reading which windows are open and what's in them. Off is a real off - nothing
+    # is read and every tool that needs the screen says so, instead of quietly guessing.
+    screen_aware: bool = True
     # When an app doesn't describe itself (Blender, games…) and you ask about the screen,
     # send a picture of that window to a free vision model. Off: Compii only reads labels.
     see_pictures: bool = True
@@ -140,6 +149,11 @@ class Voice:
 
     def uses_natural_voice(self) -> bool:
         return self.settings.engine == "natural" and self.has_natural_voice()
+
+    @property
+    def announces(self) -> bool:
+        """Does Compii answer at all when something finishes? Only the "off" mode says nothing."""
+        return self.settings.output_mode != "off"
 
     def warm_up(self) -> None:
         """Load the voice model in the background so the first reply isn't slow."""
@@ -274,7 +288,7 @@ class Voice:
     def _woke(self) -> None:
         self.emit({"type": "voice_wake"})
         self.emit({"type": "voice_listening", "on": True})
-        if self.settings.speak_replies:  # muted: the app shows it's listening instead
+        if self.announces:  # answers off: the app shows it's listening instead
             self.say("Yes?")
 
     def _heard_command(self, text: str) -> None:
@@ -570,8 +584,22 @@ class Voice:
 
     # ---- speaking ---------------------------------------------------------------
 
-    def say(self, text: str) -> None:
-        """Speak `text`, cutting off anything already being said."""
+    def say(self, text: str, spoken: str | None = None) -> None:
+        """Answer the way the user set it: out loud, a chime with the words on
+        screen, or the words on their own. Cuts off anything already being said.
+
+        `spoken` is the shorter thing worth saying; someone reading gets all of `text`."""
+        text = text.strip()
+        if not text or self.settings.output_mode == "off":
+            return
+        self.emit({"type": "voice_caption", "text": text})  # every mode is readable
+        if self.settings.output_mode == "voice":
+            self.say_now(spoken or text)
+        elif self.settings.output_mode == "sound":
+            self._speaker.chime()
+
+    def say_now(self, text: str) -> None:
+        """Speak whatever the answer mode is - what the "hear this voice" preview needs."""
         text = text.strip()
         if text:
             self._speaker.say(text)
@@ -620,7 +648,7 @@ class _Speaker:
 
     def __init__(self, voice: Voice) -> None:
         self.voice = voice
-        self._jobs: queue.Queue[str | None] = queue.Queue()
+        self._jobs: queue.Queue[Any] = queue.Queue()
         self._generation = 0
         self.speaking = False
         self._sapi = None
@@ -629,6 +657,12 @@ class _Speaker:
     def say(self, text: str) -> None:
         self.stop()
         self._jobs.put(text)
+
+    def chime(self) -> None:
+        """Two rising notes instead of words. Queued like speech: only this
+        thread may touch the audio device."""
+        self.stop()
+        self._jobs.put(_CHIME)
 
     def stop(self) -> None:
         self._generation += 1
@@ -653,22 +687,34 @@ class _Speaker:
 
             comtypes.CoInitialize()  # the Windows voice lives on this thread
         while True:
-            text = self._jobs.get()
-            if text is None:
+            job = self._jobs.get()
+            if job is None:
                 return
+            if job is _CHIME:
+                try:
+                    self._chime()
+                except Exception as e:  # noqa: BLE001
+                    self.voice.emit({"type": "voice_error", "what": "chime", "error": str(e)})
+                continue
             generation = self._generation
             try:
-                self.voice.emit({"type": "voice_caption", "text": text})  # live captions in the app
                 self._set(True)
                 if self.voice.uses_natural_voice():
-                    self._speak_kokoro(text, generation)
+                    self._speak_kokoro(job, generation)
                 elif sys.platform == "win32":
-                    self._speak_windows(text, generation)
+                    self._speak_windows(job, generation)
             except Exception as e:  # noqa: BLE001
                 self.voice.emit({"type": "voice_error", "what": "speak", "error": str(e)})
             finally:
                 if self._jobs.empty():
                     self._set(False)
+
+    def _chime(self) -> None:
+        global _CHIME_AUDIO
+        if _CHIME_AUDIO is None:
+            _CHIME_AUDIO = _make_chime()
+        samples, rate = _CHIME_AUDIO
+        self._play(samples.copy(), rate, self._generation)
 
     def _speak_kokoro(self, text: str, generation: int) -> None:
         """Pipelined: the next phrase is generated while the current one plays,
@@ -737,6 +783,20 @@ class _Speaker:
 
 def _words(t: str) -> list[str]:
     return [w.strip(" .,!?;:\"'").lower() for w in t.split()]
+
+
+def _make_chime() -> tuple[np.ndarray, int]:
+    """Two soft rising notes: "I have something for you", without using words."""
+    rate = 22_050
+    notes = []
+    for freq, secs in ((660.0, .09), (880.0, .16)):
+        t = np.arange(int(rate * secs)) / rate
+        tone = np.sin(2 * np.pi * freq * t) * np.exp(-3.2 * t)
+        fade = int(rate * .01)
+        tone[:fade] *= np.linspace(0.0, 1.0, fade)
+        notes.append((tone * .3).astype(np.float32))
+    gap = np.zeros(int(rate * .04), dtype=np.float32)
+    return np.concatenate([notes[0], gap, notes[1]]), rate
 
 
 def _trim(samples: np.ndarray, floor: float = 0.004) -> np.ndarray:

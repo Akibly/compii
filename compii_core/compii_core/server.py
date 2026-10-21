@@ -23,16 +23,17 @@ from .audit import AuditLog
 from .keys import KeyStore, KeyStoreError
 from .policy import Rule
 from . import providers as prov
-from .skills import Skills, from_task, skill_tools, suggest_name
+from .skills import Skills, draft as draft_skill, from_task, skill_tools, suggest_name
 from .walkthrough import Walkthroughs
 from . import intents
 from .buddy import Buddy
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
-from .screen import make_dpi_aware
+from .screen import desktop_now, make_dpi_aware
+from . import sight
 from .tools import Toolbox, ToolError, default_roots
 from .voice import Voice, spoken_reply
-from .remote import Pairing, RemoteHost, lan_ip, pairing_link
+from .remote import Pairing, RemoteHost, _is_overlay, pairing_link, reach_addresses
 from . import proactive as pro
 from .tools import Tool
 from .policy import ActionKind as AK
@@ -87,6 +88,11 @@ class KeyBody(BaseModel):
 
 class SkillBody(BaseModel):
     name: str = ""
+    about: str = ""
+
+
+class Answer(BaseModel):
+    text: str
 
 
 class SkillRoutineBody(BaseModel):
@@ -123,12 +129,14 @@ class ReadBody(BaseModel):
 
 
 class VoiceSettingsBody(BaseModel):
-    speak_replies: bool | None = None
+    # "voice" | "sound" | "caption" | "off"
+    output_mode: str | None = None
     wake_word: bool | None = None
     engine: str | None = None
     voice: str | None = None
     speed: float | None = None
     cloud_listening: bool | None = None
+    screen_aware: bool | None = None
     see_pictures: bool | None = None
 
 
@@ -152,11 +160,28 @@ class PointRequest(BaseModel):
 
 
 class Hub:
-    """Fans task events out to every connected client."""
+    """Fans task events out to every connected client.
+
+    Each client gets its own queue drained by a dedicated sender task: `emit`
+    only enqueues, so one slow or stalled client can never block the agent's
+    turn loop or the other clients. A client that falls too far behind is
+    dropped (it reconnects and re-syncs via GET /tasks) rather than growing an
+    unbounded buffer.
+    """
+
+    QUEUE_MAX = 256
 
     def __init__(self) -> None:
-        self.clients: set[WebSocket] = set()
+        self.clients: dict[WebSocket, asyncio.Queue[dict[str, Any]]] = {}
         self.loop: asyncio.AbstractEventLoop | None = None
+
+    def subscribe(self, ws: WebSocket) -> asyncio.Queue[dict[str, Any]]:
+        q: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=self.QUEUE_MAX)
+        self.clients[ws] = q
+        return q
+
+    def unsubscribe(self, ws: WebSocket) -> None:
+        self.clients.pop(ws, None)
 
     def emit_threadsafe(self, event: dict[str, Any]) -> None:
         """For events from audio threads."""
@@ -164,11 +189,11 @@ class Hub:
             asyncio.run_coroutine_threadsafe(self.emit({"task_id": "", "at": time.time(), **event}), self.loop)
 
     async def emit(self, event: dict[str, Any]) -> None:
-        for ws in list(self.clients):
+        for ws, q in list(self.clients.items()):
             try:
-                await ws.send_json(event)
-            except Exception:  # noqa: BLE001 - a dead client must not break the task
-                self.clients.discard(ws)
+                q.put_nowait(event)
+            except asyncio.QueueFull:  # a client that can't keep up is dropped, not allowed to stall others
+                self.unsubscribe(ws)
 
 
 def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: list[Path] | None = None,
@@ -192,6 +217,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         brain = RehearsalBrain(Path.home() / "Downloads", workspace)
     brain_state: dict[str, Any] = {"probe": None, "fallback_note": None, "problem": None}
     hub = Hub()
+    ticker_state: dict[str, Any] = {"error": None, "at": 0.0}  # surfaced in /health so the app can be honest
     voice = voice or Voice(workspace / "models", hub.emit_threadsafe)
     toolbox.on_point = lambda p: hub.emit_threadsafe({"type": "point", **p})
     toolbox.on_draw = lambda d: hub.emit_threadsafe({"type": "voice_draw", **d})  # the overlay draws it
@@ -217,7 +243,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             voice.stop_speaking()
         await hub.emit({"type": "voice_intent", "task_id": "", "at": time.time(), "kind": intent.kind,
                         "text": text, "reply": intent.reply, "label": info[3] if info else ""})
-        if intent.reply and voice.settings.speak_replies and intent.kind != "stop":
+        if intent.reply and voice.announces and intent.kind != "stop":
             voice.say(intent.reply)
         return True
 
@@ -239,8 +265,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     async def post(update: pro.Update, speak: bool = True) -> None:
         plans.post(update)
         await hub.emit({"type": "update", "task_id": "", "at": time.time(), **pro.asdict(update)})
-        if speak and voice.settings.speak_replies:
-            voice.say(spoken_reply(update.body if update.kind == "brief" else f"{update.title}. {update.body}"))
+        if speak and voice.announces:
+            body = update.body if update.kind == "brief" else f"{update.title}. {update.body}"
+            voice.say(body, spoken=spoken_reply(body))
 
     async def agent_emit(event: dict[str, Any]) -> None:
         await hub.emit(event)
@@ -262,11 +289,16 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                                       str(event.get("label", "")), task_id=task.id))
                 return
         # Jarvis-style: Compii says its answers and its questions out loud.
-        if voice.settings.speak_replies:
+        if voice.announces:
             if event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
-                voice.say(spoken_reply(event.get("text", "")))
+                answer = event.get("text", "")
+                voice.say(answer, spoken=spoken_reply(answer))
             elif event["type"] == "approval_needed":
-                voice.say(spoken_reply(f"Can I go ahead? {event.get('label', '')}", sentences=2, longest=160))
+                ask = f"Can I go ahead? {event.get('label', '')}"
+                voice.say(ask, spoken=spoken_reply(ask, sentences=2, longest=160))
+            elif event["type"] == "question":
+                ask = str(event.get("question", ""))
+                voice.say(ask, spoken=spoken_reply(ask, sentences=2, longest=160))
 
     async def _finish_ai_watch(watch_id: str, text: str) -> None:
         w = plans.watches.get(watch_id)
@@ -319,8 +351,14 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         while True:
             try:
                 await tick()
-            except Exception:  # noqa: BLE001
-                pass
+                ticker_state["error"] = None
+            except Exception as e:  # noqa: BLE001 - the loop must survive, but never silently
+                # A swallowed failure here means routines, watches and the daily brief just
+                # stop happening while Compii still says they are on. Record it, log it, show it.
+                ticker_state["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+                ticker_state["at"] = time.time()
+                print(f"[compii] the proactive loop hit an error and will retry: {ticker_state['error']}",
+                      file=sys.stderr, flush=True)
             await asyncio.sleep(20)
 
     def make_current_brain() -> Brain:
@@ -356,7 +394,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     rules_file = workspace / "rules.json"
     try:
-        agent.gate.rules = [Rule(**r) for r in json.loads(rules_file.read_text(encoding="utf-8-sig"))]
+        loaded = [Rule(**r) for r in json.loads(rules_file.read_text(encoding="utf-8-sig"))]
+        # Old builds could save a scopeless rule that matched everything; drop those.
+        agent.gate.rules = [r for r in loaded if r.scope or r.kind == ActionKind.READ]
     except (OSError, ValueError, TypeError):
         pass
 
@@ -373,16 +413,28 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     from .lessons import Lessons, lesson_tools
 
     lessons = Lessons(workspace / "lesson.json")  # "teach me Blender" → "what next?" carries on
-    agent.extra_context = lambda: "\n".join(c for c in (skills.context(), lessons.context()) if c)
-    for t in [*skill_tools(skills), *lesson_tools(lessons)]:
+    from .profile import Profile
+    from .forms import profile_form_tools
+    from .projects import Projects, project_tools
+    from .leads import lead_tools
+
+    profile = Profile(workspace / "profile.json")
+    projects = Projects(workspace / "projects.json")
+
+    def known_facts() -> str:
+        facts = [m["fact"] for m in toolbox.memories()][-25:]
+        return ("What you've learned about the user (from remember; use recall for older ones):\n"
+                + "\n".join(f"- {f}" for f in facts)) if facts else ""
+
+    agent.extra_context = lambda: "\n".join(
+        c for c in (known_facts(), profile.context(), projects.context(), skills.context(), lessons.context()) if c)
+    agent.ambient = desktop_now
+    for t in [*skill_tools(skills), *lesson_tools(lessons), *profile_form_tools(profile, lambda: toolbox.browser),
+              *project_tools(projects), *lead_tools(workspace, toolbox.path)]:
         toolbox.tools[t.name] = t
 
-    def say_step(text: str) -> None:
-        if voice.settings.speak_replies:
-            voice.say(text)
-
     walks = Walkthroughs(toolbox, workspace / "walkthrough.json",
-                         notify=lambda e: hub.emit_threadsafe({"task_id": "", "at": time.time(), **e}), say=say_step)
+                         notify=lambda e: hub.emit_threadsafe({"task_id": "", "at": time.time(), **e}), say=voice.say)
     toolbox.tools["start_walkthrough"] = walks.tool()
 
     pairing = Pairing(workspace / "devices")
@@ -397,9 +449,13 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             except Exception:  # noqa: BLE001 - shown in /health; the PC side still works
                 pass
         _restore_voice(voice, voice_file)
+        # The one switch for Compii's eyes, told to the app as it happens, restored from the user's choice.
+        stop_sight = sight.on_change(hub.emit_threadsafe)
+        sight.set_enabled(voice.settings.screen_aware)
         voice.warm_up()
         ticker = asyncio.create_task(loop())
         yield
+        stop_sight()
         ticker.cancel()
         if remote is not None:
             await remote.stop()
@@ -413,12 +469,15 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
     app.state.lessons = lessons
     app.state.agent = agent
+    app.state.profile = profile
+    app.state.projects = projects
     remote = RemoteHost(app, pairing, REMOTE_PORT)
     app.state.pairing = pairing
     app.state.remote = remote
     app.state.voice = voice
     app.state.plans = plans
     app.state.tick = tick
+    app.state.ticker = ticker_state
     app.state.act_on = act_on
     buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop,
                   save_skill=lambda name, instruction, steps: skills.add(name, instruction, steps))
@@ -451,7 +510,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return {"ok": True, "version": __version__, "brain": "rehearsal" if mode == "rehearsal" else mode,
                 "credentials": "found" if fixed_brain or (not brain_state["problem"] and (has_key or mode != "claude"))
                 else "not_found",
-                "lockdown": agent.gate.lockdown}
+                "lockdown": agent.gate.lockdown, "proactive_error": ticker_state["error"], "sight": sight.status()}
 
     # ---- diagnostics: a report you can save and send ----
 
@@ -600,9 +659,17 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if task.status != "done":
             raise HTTPException(409, "Save a conversation as a skill once it has finished successfully.")
         instruction, steps = from_task(task)
-        skill = skills.add(body.name.strip() or suggest_name(task.request), instruction, steps, task.id)
+        skill = skills.add(body.name.strip() or suggest_name(task.request), instruction, steps, task.id, about=body.about)
         audit.record("skill_saved", name=skill.name, task=task.id)
         return prov.asdict(skill)
+
+    @app.post("/tasks/{task_id}/skill/draft", dependencies=[Depends(auth)])
+    async def skill_draft(task_id: str) -> dict[str, Any]:
+        """A name and summary that fit the conversation, for the save dialog to offer."""
+        task = agent.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(404, "No such conversation")
+        return await draft_skill(agent.brain, task, skills)
 
     @app.delete("/skills/{skill_id}", dependencies=[Depends(auth)])
     def delete_skill(skill_id: str) -> list[dict[str, Any]]:
@@ -675,6 +742,51 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         toolbox._open(str(p))
         return {"ok": True}
 
+    @app.post("/open_url", dependencies=[Depends(auth)])
+    def open_url(body: FileRequest) -> dict[str, bool]:
+        """Open a web link Compii read, in the user's own browser. http(s) only."""
+        url = body.path.strip()
+        if not url.startswith(("http://", "https://")):
+            raise HTTPException(400, "Only http(s) links can be opened this way")
+        toolbox._open(url)
+        return {"ok": True}
+
+    @app.get("/screen/peek", dependencies=[Depends(auth)])
+    def screen_peek(x_compii_device: str = Header(""), full: bool = True):
+        """A small live picture of the PC's screen, for a glance from the phone. Never while a
+        password manager is in front, and every peek is in the audit log."""
+        from fastapi.responses import Response
+
+        from . import vision as vis
+
+        if not sight.enabled():
+            raise HTTPException(423, sight.refusal())
+        if vis.private_foreground():
+            raise HTTPException(423, "A private window (like a password manager) is in front, so Compii won't show the screen.")
+        shot = vis.grab_screen() if full else vis.grab_foreground()
+        if shot is None:
+            raise HTTPException(503, "Compii couldn't capture the screen right now.")
+        pixels, _ = shot
+        step = max(1, -(-pixels.shape[1] // 1280))
+        device = pairing.device_for(x_compii_device) if x_compii_device else None
+        audit.record("screen_peek", device=device.name if device else "this PC")
+        return Response(vis.encode_png(vis.np.ascontiguousarray(pixels[::step, ::step])), media_type="image/png",
+                        headers={"Cache-Control": "no-store"})
+
+    class ClipBody(BaseModel):
+        text: str
+
+    @app.post("/clipboard", dependencies=[Depends(auth)])
+    def push_clipboard(body: ClipBody) -> dict[str, bool]:
+        """Put text from the phone on the PC's clipboard, ready to paste."""
+        from .tools import _powershell
+
+        if sys.platform != "win32":
+            raise HTTPException(501, "The clipboard works on Windows only.")
+        _powershell("Set-Clipboard -Value $env:COMPII_CLIPBOARD_TEXT", {"COMPII_CLIPBOARD_TEXT": body.text[:100_000]})
+        audit.record("clipboard_from_phone", chars=len(body.text))
+        return {"ok": True}
+
     @app.post("/files/reveal", dependencies=[Depends(auth)])
     def reveal_file(body: FileRequest) -> dict[str, bool]:
         """Show the file selected in File Explorer."""
@@ -692,7 +804,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.get("/proactive", dependencies=[Depends(auth)])
     def proactive_view() -> dict[str, Any]:
-        return plans.view()
+        # Tell the app when the loop that fires these is broken, so the screen
+        # can say "not running" instead of implying a schedule Compii can't keep.
+        return {**plans.view(), "error": ticker_state["error"]}
 
     @app.post("/routines", dependencies=[Depends(auth)])
     def add_routine(body: RoutineBody) -> dict[str, Any]:
@@ -772,10 +886,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.put("/voice/settings", dependencies=[Depends(auth)])
     def voice_settings(body: VoiceSettingsBody) -> dict[str, Any]:
-        if body.speak_replies is not None:
-            voice.settings.speak_replies = body.speak_replies
-            if not body.speak_replies:
+        if body.output_mode in ("voice", "sound", "caption", "off"):
+            if body.output_mode != "voice":
                 voice.stop_speaking()
+            voice.settings.output_mode = body.output_mode
         if body.voice is not None:
             voice.settings.voice = body.voice
         if body.engine in ("natural", "windows"):
@@ -792,6 +906,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             voice.settings.speed = max(.7, min(1.4, body.speed))
         if body.cloud_listening is not None:
             voice.settings.cloud_listening = body.cloud_listening
+        if body.screen_aware is not None:
+            voice.settings.screen_aware = body.screen_aware
+            sight.set_enabled(body.screen_aware)
         if body.see_pictures is not None:
             voice.settings.see_pictures = body.see_pictures
         voice_file.write_text(json.dumps(vars(voice.settings)), encoding="utf-8")
@@ -829,7 +946,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.post("/voice/say", dependencies=[Depends(auth)])
     def say(body: Reply) -> dict[str, bool]:
-        voice.say(body.text)
+        voice.say_now(body.text)
         return {"ok": True}
 
     @app.post("/voice/quiet", dependencies=[Depends(auth)])
@@ -850,6 +967,26 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     @app.post("/tasks/{task_id}/undo", dependencies=[Depends(auth)])
     def undo(task_id: str) -> dict[str, str]:
         return {"result": agent.journal.undo_last(task_id)}
+
+    @app.post("/questions/{question_id}/answer", dependencies=[Depends(auth)])
+    def answer_question(question_id: str, body: Answer) -> dict[str, bool]:
+        if not agent.answer(question_id, body.text):
+            raise HTTPException(404, "That question has already been answered")
+        return {"ok": True}
+
+    @app.get("/profile", dependencies=[Depends(auth)])
+    def profile_view() -> dict[str, Any]:
+        return {"fields": profile.view(), "updated": profile.updated}
+
+    @app.delete("/profile/{name}", dependencies=[Depends(auth)])
+    def profile_forget(name: str) -> dict[str, Any]:
+        if not profile.forget(name):
+            raise HTTPException(404, "Nothing stored with that name")
+        return {"fields": profile.view()}
+
+    @app.get("/projects", dependencies=[Depends(auth)])
+    def projects_view() -> list[dict[str, Any]]:
+        return [prov.asdict(p) for p in sorted(projects.items.values(), key=lambda p: -p.updated)]
 
     @app.post("/approvals/{approval_id}", dependencies=[Depends(auth)])
     def decide(approval_id: str, body: Decision, x_compii_token: str = Header("")) -> dict[str, bool]:
@@ -903,9 +1040,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         except RuntimeError as e:
             raise HTTPException(500, str(e)) from e
         code, expires = pairing.new_code()
-        host, fp, pc = lan_ip(), pairing.ensure_certificate(), socket.gethostname()
-        return {"link": pairing_link(host, REMOTE_PORT, code, fp, pc), "host": host, "port": REMOTE_PORT,
-                "code": code, "fingerprint": fp, "pc": pc, "expires": expires}
+        hosts, fp, pc = reach_addresses(), pairing.ensure_certificate(), socket.gethostname()
+        return {"link": pairing_link(hosts[0], REMOTE_PORT, code, fp, pc, hosts[1:]), "host": hosts[0], "hosts": hosts,
+                "port": REMOTE_PORT, "code": code, "fingerprint": fp, "pc": pc, "expires": expires,
+                "anywhere": any(_is_overlay(h) for h in hosts)}
 
     @app.post("/pair/claim")
     async def pair_claim(body: ClaimBody) -> dict[str, Any]:
@@ -914,12 +1052,18 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         except PermissionError as e:
             raise HTTPException(403, str(e)) from e
         await hub.emit({"type": "device_paired", "task_id": "", "at": time.time(), "name": device.name, "id": device.id})
-        return {"token": device_token, "device_id": device.id, "pc": socket.gethostname()}
+        return {"token": device_token, "device_id": device.id, "pc": socket.gethostname(), "hosts": reach_addresses()}
+
+    @app.get("/reach", dependencies=[Depends(auth)])
+    def reach() -> dict[str, Any]:
+        """Where phones can find this PC now (it changes when Tailscale is installed or Wi-Fi changes)."""
+        return {"hosts": reach_addresses(), "port": REMOTE_PORT}
 
     @app.get("/devices", dependencies=[Depends(auth_local)])
     def devices() -> dict[str, Any]:
+        hosts = reach_addresses()
         return {"devices": pairing.view(), "listening": remote.running, "error": remote.error,
-                "host": lan_ip(), "port": REMOTE_PORT}
+                "host": hosts[0], "hosts": hosts, "anywhere": any(_is_overlay(h) for h in hosts), "port": REMOTE_PORT}
 
     @app.delete("/devices/{device_id}", dependencies=[Depends(auth_local)])
     def unpair(device_id: str) -> dict[str, Any]:
@@ -933,14 +1077,38 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             await ws.close(code=4401)
             return
         await ws.accept()
-        hub.clients.add(ws)
-        try:
+        queue = hub.subscribe(ws)
+
+        async def pump() -> None:
             while True:
-                await ws.receive_text()  # keepalive pings from the client
-        except WebSocketDisconnect:
+                event = await queue.get()
+                await ws.send_json(event)
+                if hub.clients.get(ws) is not queue:
+                    return  # dropped as too slow: the app reconnects and re-syncs via GET /tasks
+
+        sender = asyncio.create_task(pump())
+        try:
+            reader = asyncio.create_task(_drain_incoming(ws))
+            done, pending = await asyncio.wait({sender, reader}, return_when=asyncio.FIRST_COMPLETED)
+            for t_ in pending:
+                t_.cancel()
+            for t_ in done:  # surface a real send failure, swallow disconnect
+                exc = t_.exception()
+                if exc is not None and not isinstance(exc, (WebSocketDisconnect, RuntimeError)):
+                    raise exc
+        except (WebSocketDisconnect, RuntimeError):
             pass
         finally:
-            hub.clients.discard(ws)
+            hub.unsubscribe(ws)
+            sender.cancel()
+            try:
+                await ws.close()
+            except (WebSocketDisconnect, RuntimeError):
+                pass  # the client went away mid-close: nothing left to tell
+
+    async def _drain_incoming(ws: WebSocket) -> None:
+        while True:
+            await ws.receive_text()  # keepalive pings from the client
 
     return app
 
@@ -951,6 +1119,12 @@ def main() -> None:
     make_dpi_aware()
     _log_to_file()
 
+    # Another Core is already answering: don't start a second one, and above all don't rewrite
+    # core-token, which would lock the app and any paired phone out of the Core that is working.
+    if _port_busy(HOST, PORT):
+        print(f"Compii Core is already running on {HOST}:{PORT}; using that one.")
+        return
+
     app = build_app()
     if os.environ.get("COMPII_HOTKEY", "1") != "0":
         app.state.buddy.start_shortcuts()  # hold Ctrl+Alt to talk, Ctrl+Win to dictate
@@ -958,6 +1132,14 @@ def main() -> None:
 
         warm_up()  # the first screen read of a browser-based app is slow: do it now, not on first use
     uvicorn.run(app, host=HOST, port=PORT, log_level="info", access_log=False)  # the app polls every second
+
+
+def _port_busy(host: str, port: int) -> bool:
+    import socket
+
+    with socket.socket() as probe:
+        probe.settimeout(0.4)
+        return probe.connect_ex((host, port)) == 0
 
 
 def _log_to_file() -> None:
@@ -1060,7 +1242,9 @@ def _restore_voice(voice: Voice, path: Path) -> None:
         saved = json.loads(path.read_text(encoding="utf-8-sig"))
     except ValueError:
         return
-    for key in ("speak_replies", "voice", "speed", "engine", "cloud_listening", "see_pictures"):
+    if "speak_replies" in saved and "output_mode" not in saved:  # the switch it replaced
+        saved["output_mode"] = "voice" if saved["speak_replies"] else "off"
+    for key in ("output_mode", "voice", "speed", "engine", "cloud_listening", "screen_aware", "see_pictures"):
         if key in saved:
             setattr(voice.settings, key, saved[key])
     if saved.get("wake_word") and voice.can_listen():
@@ -1079,7 +1263,8 @@ def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
     from .coach import Coach
 
     def allowed() -> bool:
-        return bool(vision_key()) and getattr(voice.settings, "see_pictures", True) and not vis.blocked_foreground()
+        return (sight.enabled() and bool(vision_key()) and getattr(voice.settings, "see_pictures", True)
+                and not vis.blocked_foreground())
 
     def look_at(snap: dict[str, Any], question: str) -> dict[str, Any]:
         if not allowed():
@@ -1093,11 +1278,35 @@ def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
     def see_item(target: str) -> dict[str, Any] | None:
         if not allowed():
             return None
-        shot = vis.capture_foreground()
+        shot = vis.grab_foreground()
         if shot is None:
             return None
-        png, window = shot
-        return vis.locate(png, window, target, vision_key())
+        pixels, window = shot
+        return vis.locate_precise(pixels, window, target, vision_key())
+
+    def read_screen(question: str, full: bool) -> dict[str, Any] | None:
+        if not allowed():
+            return None
+        from .screen import describe_snapshot, snapshot_foreground
+
+        shot = vis.grab_screen() if full else vis.grab_foreground()
+        if shot is None:
+            return None
+        pixels, window = shot
+        step = max(1, -(-pixels.shape[1] // vis.MAX_WIDTH))
+        seen = vis.read(vis.encode_png(vis.np.ascontiguousarray(pixels[::step, ::step])), question, vision_key())
+        try:
+            base = snapshot_foreground() or {}
+        except Exception:  # noqa: BLE001
+            base = {}
+        snap = vis.merge({**base, "elements": [] if full else base.get("elements", [])}, seen, window)
+        items = "\n".join(f"{e['id']}: {e['name']}" for e in snap["elements"] if e.get("role") == "Seen")
+        text = f"{seen['summary']}\n\nVisible text:\n{seen['text'] or '(none read)'}"
+        if items:
+            text += f"\n\nItems you can point at by id:\n{items}"
+        if not full and base and not base.get("blocked"):
+            text += "\n\nThe window's own labels:\n" + describe_snapshot(base)[:3000]
+        return {"text": text, "snap": snap}
 
     def step_done(task_id: str, done_when: str, why: str) -> None:
         async def go() -> None:
@@ -1121,6 +1330,7 @@ def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
 
     agent.look_at = look_at
     toolbox.see_item = see_item
+    toolbox.read_screen = read_screen
     agent.coach = Coach(lambda png, done_when: vis.check(png, done_when, vision_key()), step_done, allowed,
                         emit=hub.emit_threadsafe)
 

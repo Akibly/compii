@@ -36,7 +36,7 @@ def test_a_quick_spoken_question_sends_only_the_slim_tool_set(home):
     app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
     _run(app, "what time zone is Ghana in", {"buddy": True})
     sent = brain.tool_names[0]
-    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 2  # + more_tools, watch_for_step
+    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 3  # + more_tools, watch_for_step, ask_user
     assert "create_spreadsheet" not in sent
 
 
@@ -130,10 +130,10 @@ def test_buddy_continues_the_last_conversation_until_new_topic():
     from compii_core import buddy as b
 
     class V:
-        settings = type("S", (), {"speak_replies": False})()
+        settings = type("S", (), {"output_mode": "off", "see_pictures": False})()
         on_auto_end = None
         def annotate(self, t): return t
-        def say(self, t): pass
+        def say(self, t, spoken=None): return t
 
     class A:
         def __init__(self): self.calls = []

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -83,6 +84,99 @@ def test_move_can_be_undone_through_the_journal(toolbox, home, tmp_path):
     assert journal.undo_last("t1") == "Nothing to undo for this task."
 
 
+def test_search_inside_files_finds_which_file_mentions_it(toolbox, home):
+    (home["downloads"] / "notes.md").write_text("Meeting Tuesday\nThe Acme invoice is overdue\n", encoding="utf-8")
+    (home["downloads"] / "other.txt").write_text("Nothing relevant here\n", encoding="utf-8")
+    out = json.loads(toolbox.execute("search_in_files", {"folder": str(home["downloads"]), "text": "overdue"}).text)
+    assert out["count"] == 1
+    assert out["hits"][0]["path"].endswith("notes.md") and out["hits"][0]["line"] == 2
+    assert "overdue" in out["hits"][0]["match"]
+
+
+def test_search_inside_files_stays_in_the_allowed_folders(toolbox, home):
+    home["outside"].mkdir()
+    (home["outside"] / "secret.txt").write_text("overdue", encoding="utf-8")
+    with pytest.raises(ToolError, match="outside the folders"):
+        toolbox.execute("search_in_files", {"folder": str(home["outside"]), "text": "overdue"})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the Recycle Bin is Windows")
+def test_clearing_a_file_away_keeps_it_recoverable(toolbox, home):
+    gone = home["downloads"] / "old.txt"
+    gone.write_text("x", encoding="utf-8")
+    res = toolbox.execute("move_to_trash", {"path": str(gone)})
+    assert not gone.exists() and "Recycle Bin" in res.text
+    # No undo record: the Recycle Bin itself is how this one is reversed.
+    assert res.undo is None
+    assert toolbox.tools["move_to_trash"].kind_for({}) is ActionKind.DELETE
+    with pytest.raises(ToolError, match="does not exist"):
+        toolbox.execute("move_to_trash", {"path": str(home["downloads"] / "never-there.txt")})
+
+
+def test_zip_and_unzip_round_trip(toolbox, home):
+    zip_path = str(home["workspace"] / "pack.zip")
+    toolbox.execute("zip_files", {"items": [str(home["downloads"] / "holiday.jpg"), str(home["downloads"])],
+                                   "destination": zip_path})
+    assert Path(zip_path).is_file()
+    res = toolbox.execute("unzip", {"zip": zip_path, "into": str(home["workspace"] / "out")})
+    assert "Unpacked" in res.text
+    assert (home["workspace"] / "out" / "holiday.jpg").is_file()
+    assert (home["workspace"] / "out" / "Downloads" / "Invoice-sept-02.pdf").is_file()
+    # Unzipping over a folder that already has things in it is refused, not merged.
+    with pytest.raises(ToolError, match="already has files"):
+        toolbox.execute("unzip", {"zip": zip_path, "into": str(home["workspace"] / "out")})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="capturing the screen is Windows'")
+def test_a_screenshot_is_a_real_picture(toolbox, home):
+    target = home["downloads"] / "shot.png"
+    res = toolbox.execute("screenshot", {"path": str(target)})
+    raw = target.read_bytes()
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", res.text
+    import struct
+
+    w, h = struct.unpack(">II", raw[16:24])
+    assert w > 40 and h > 40
+    assert res.files == [(str(target), "created")] and res.undo["op"] == "created"
+    with pytest.raises(ToolError, match="already exists"):
+        toolbox.execute("screenshot", {"path": str(target)})
+
+
+def test_the_clipboard_reads_and_copies_without_touching_the_command_line(toolbox, monkeypatch):
+    calls = []
+
+    def fake(command, env_add=None):
+        calls.append((command, env_add or {}))
+        return "hello from the clipboard\n"
+
+    monkeypatch.setattr("compii_core.tools._powershell", fake)
+    assert "hello from the clipboard" in toolbox.execute("clipboard", {}).text
+    assert "Copied to the clipboard" in toolbox.execute("clipboard", {"text": "paste this"}).text
+    assert calls[1][0].startswith("Set-Clipboard")
+    assert calls[1][1]["COMPII_CLIPBOARD_TEXT"] == "paste this"  # the text never goes in the command
+    assert toolbox.tools["clipboard"].kind_for({}) is ActionKind.READ
+    assert toolbox.tools["clipboard"].kind_for({"text": "x"}) is ActionKind.CHANGE
+
+
+def test_looking_at_the_screen_uses_the_picture_and_its_items(toolbox):
+    snap = {"title": "Excel", "elements": [{"id": "v1", "role": "Seen", "name": "C4", "x": 10, "y": 10, "w": 20, "h": 10}]}
+    toolbox.read_screen = lambda question, full: {"text": f"#REF! in C4 ({question}, full={full})", "snap": snap}
+    res = toolbox.execute("look_at_screen", {"question": "what's wrong"})
+    assert "#REF!" in res.text and "full=False" in res.text
+    assert toolbox.snapshot is snap  # so point_at can use v1 next
+
+
+def test_a_zip_cannot_write_outside_its_folder(toolbox, home):
+    import zipfile
+
+    src = home["workspace"] / "evil.zip"
+    with zipfile.ZipFile(src, "w") as z:
+        z.writestr("../escaped.txt", "nope")
+    with pytest.raises(ToolError, match="points outside"):
+        toolbox.execute("unzip", {"zip": str(src), "into": str(home["workspace"] / "out")})
+    assert not (home["workspace"] / "escaped.txt").exists()
+
+
 def test_write_refuses_to_overwrite_without_flag(toolbox, home):
     target = home["workspace"] / "note.txt"
     toolbox.execute("write_text_file", {"path": str(target), "content": "a"})
@@ -132,6 +226,54 @@ class ScriptBrain:
             return BrainReply([{"type": "tool_use", "id": f"c{i}", "name": name, "input": args}], "",
                               [ToolCall(f"c{i}", name, args)], "tool_use")
         return BrainReply([{"type": "text", "text": self.final}], self.final, [], "end_turn")
+
+
+async def test_old_finished_conversations_are_dropped_but_recent_ones_stay(toolbox, home, tmp_path, monkeypatch):
+    """A routine firing all day must not grow the agent's task memory forever."""
+    import time as _time
+
+    from compii_core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "MAX_TASKS", 3)
+    agent = Agent(ScriptBrain([], final="ok"), toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    old = [agent.start(f"old {i}") for i in range(3)]
+    for t in old:
+        await asyncio.wait_for(t.runner, 5)
+        t.created = _time.time() - 2 * 24 * 3600  # pretend two days ago
+    fresh = agent.start("still here")
+    await asyncio.wait_for(fresh.runner, 5)
+    agent._trim()
+    assert fresh.id in agent.tasks and all(t.id not in agent.tasks for t in old)
+
+
+async def test_a_long_task_cannot_grow_its_event_feed_forever(toolbox, home, tmp_path, monkeypatch):
+    from compii_core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "MAX_EVENTS_PER_TASK", 5)
+    agent = Agent(ScriptBrain([("list_folder", {"path": str(home["downloads"])})] * 20, final="ok"),
+                    toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    task = agent.start("over and over")
+    await asyncio.wait_for(task.runner, 20)
+    assert len(task.events) <= 5
+
+
+def test_health_reports_a_broken_proactive_loop(home):
+    """A routine or watch that fails must not look alive: the error reaches /health."""
+    from compii_core.voice import Voice
+
+    from test_core import FakeMic, FakeSpeaker
+
+    voice = Voice(home["workspace"] / "models", lambda e: None, FakeMic, FakeSpeaker())
+    app = build_app(brain=ScriptBrain([], final="ok"), workspace=home["workspace"], roots=[home["downloads"]],
+                    token="tok", voice=voice, keys=None)
+    with TestClient(app) as c:
+        h = {"X-Compii-Token": "tok"}
+        assert c.get("/health").json()["proactive_error"] is None
+        assert c.get("/proactive", headers=h).json()["error"] is None
+        app.state.ticker["error"] = "RuntimeError: watch folder vanished"
+        assert "watch folder vanished" in c.get("/health").json()["proactive_error"]
+        # The Routines screen reads /proactive, so the honest state travels there too.
+        assert "watch folder vanished" in c.get("/proactive", headers=h).json()["error"]
 
 
 async def run_agent(toolbox, tmp_path, brain, on_event=None):
@@ -313,12 +455,16 @@ from compii_core.voice import RATE, Voice  # noqa: E402
 class FakeSpeaker:
     def __init__(self) -> None:
         self.said: list[str] = []
+        self.chimes = 0
         self.stops = 0
         self.speaking = False
 
     def say(self, text: str) -> None:
         self.said.append(text)
         self.speaking = True
+
+    def chime(self) -> None:
+        self.chimes += 1
 
     def stop(self) -> None:
         self.stops += 1
@@ -382,8 +528,39 @@ def test_replies_and_questions_are_spoken_and_stop_silences(home, monkeypatch):
         assert "spreadsheet is ready" in voice._speaker.said[-1]
         client.post("/stop", headers=h)
         assert voice._speaker.stops >= 1
-        client.put("/voice/settings", json={"speak_replies": False}, headers=h)
-        assert client.get("/voice", headers=h).json()["settings"]["speak_replies"] is False
+        client.put("/voice/settings", json={"output_mode": "caption"}, headers=h)
+        assert client.get("/voice", headers=h).json()["settings"]["output_mode"] == "caption"
+
+
+def test_one_switch_decides_how_compii_answers(tmp_path):
+    events: list[dict] = []
+    v = quiet_voice(tmp_path, events)
+    v.say("Hello.")
+    assert v._speaker.said == ["Hello."]
+    assert events[-1] == {"type": "voice_caption", "text": "Hello."}
+
+    # Reading gets all of it; hearing gets the short version.
+    v.say("Here is the whole answer, in detail.", spoken="Here's the answer.")
+    assert v._speaker.said[-1] == "Here's the answer."
+    assert events[-1]["text"] == "Here is the whole answer, in detail."
+
+    v.settings.output_mode = "sound"
+    v.say("The report is ready.")
+    assert v._speaker.said[-1] == "Here's the answer.", "no words, just the chime"
+    assert v._speaker.chimes == 1
+    assert events[-1] == {"type": "voice_caption", "text": "The report is ready."}
+
+    v.settings.output_mode = "caption"
+    v.say("Read this one.")
+    assert v._speaker.chimes == 1
+    assert events[-1]["text"] == "Read this one."
+
+    v.settings.output_mode = "off"
+    before = len(events)
+    v.say("Silence.")
+    v.say_now("But a preview still speaks.")
+    assert len(events) == before
+    assert v._speaker.said[-1] == "But a preview still speaks."
 
 
 # ---- hands: apps and the browser ---------------------------------------------------
@@ -394,6 +571,8 @@ from compii_core.screen import Found, ScreenError, keys_to_sendkeys  # noqa: E40
 class FakeScreen:
     def __init__(self) -> None:
         self.log: list[str] = []
+        self.front = "Report - Word"
+        self.now: Found | None = None  # what the app's control shows after the action
 
     def click(self, target, window=None, before=None):
         f = Found(target, "ButtonControl", window or "Report - Word", 10, 20, 60, 40)
@@ -408,6 +587,19 @@ class FakeScreen:
             before(f)
         self.log.append(f"type {text}")
         return f
+
+    def press_keys(self, combo, window=None):
+        self.log.append(f"keys {combo}")
+        return self.front
+
+    def user_foreground(self):
+        return 1, self.front
+
+    def focus_found(self):
+        return self.now
+
+    def read_back(self, target, window=None):
+        return self.now
 
     def read_window(self, window=None):
         raise ScreenError("No open window has “Paint” in its title.")
@@ -431,6 +623,85 @@ def test_click_points_first_then_acts(toolbox):
     out = toolbox.execute("click_on", {"target": "Save"})
     assert order == ["point Save", "click Save"]
     assert "Save" in out.text
+
+
+# ---- Compii checks what the app says happened before it claims anything ----------------
+
+
+def test_click_is_confirmed_by_the_app_itself(toolbox):
+    screen = FakeScreen()
+    screen.now = Found("Sync", "ButtonControl", "Report - Word", 0, 0, 10, 10, value="on")
+    toolbox.screen = screen
+    out = toolbox.execute("click_on", {"target": "Sync"})
+    assert "Checked afterwards: it now shows “on”" in out.text
+
+
+def test_click_reports_that_the_item_disappeared(toolbox):
+    screen = FakeScreen()
+    screen.now = None  # the app no longer shows the thing that was clicked
+    toolbox.screen = screen
+    out = toolbox.execute("click_on", {"target": "Insert"})
+    assert "no longer in the window, so the screen changed" in out.text
+
+
+def test_click_admits_when_nothing_shows_a_change(toolbox):
+    screen = FakeScreen()
+    screen.now = Found("Save", "ButtonControl", "Report - Word", 10, 20, 60, 40)
+    toolbox.screen = screen
+    out = toolbox.execute("click_on", {"target": "Save"})
+    assert "can't confirm it did anything" in out.text
+
+
+def test_click_names_the_new_window_when_one_opens(toolbox):
+    screen = FakeScreen()
+    screen.now = Found("Save", "ButtonControl", "Report - Word", 10, 20, 60, 40)
+    titles = iter(["Report - Word", "Print Gallery Apps - Word"])
+
+    def front():
+        return 1, next(titles)
+
+    screen.user_foreground = front
+    toolbox.screen = screen
+    out = toolbox.execute("click_on", {"target": "Save"})
+    assert "the window in front is now “Print Gallery Apps - Word”" in out.text
+
+
+def test_typed_text_is_read_back_from_the_field(toolbox):
+    screen = FakeScreen()
+    screen.now = Found("Subject", "EditControl", "Notepad", 0, 0, 100, 20, value="Dear Sir or Madam")
+    toolbox.screen = screen
+    out = toolbox.execute("type_into", {"target": "Subject", "text": "Dear Sir or Madam"})
+    assert "Checked afterwards: it now holds “Dear Sir or Madam”" in out.text
+
+
+def test_typing_the_app_doesnt_show_is_not_claimed(toolbox):
+    screen = FakeScreen()
+    screen.now = Found("Subject", "EditControl", "Notepad", 0, 0, 100, 20, value="")
+    toolbox.screen = screen
+    out = toolbox.execute("type_into", {"target": "Subject", "text": "Dear Sir"})
+    assert "can't confirm it landed" in out.text
+
+
+def test_a_failed_check_never_hides_the_action(toolbox):
+    screen = FakeScreen()
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("the app stopped answering")
+
+    screen.read_back = boom
+    toolbox.screen = screen
+    out = toolbox.execute("click_on", {"target": "Save"})
+    assert "Clicked" in out.text and "Checked afterwards" not in out.text
+
+
+def test_keys_are_checked_where_the_caret_is(toolbox):
+    screen = FakeScreen()
+    before = Found("Subject", "EditControl", "Report - Word", 0, 0, 10, 10, value="draft")
+    after = Found("Subject", "EditControl", "Report - Word", 0, 0, 10, 10, value="draft saved")
+    screen.focus_found = iter([before, after]).__next__
+    toolbox.screen = screen
+    out = toolbox.execute("press_keys", {"keys": "ctrl+s"})
+    assert "Checked afterwards: it now shows “draft saved”" in out.text
 
 
 def test_secrets_are_never_typed(toolbox):
@@ -589,12 +860,18 @@ def test_voice_choices_survive_a_restart(home):
     app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
                     voice=quiet_voice(home["workspace"]))
     with TestClient(app) as client:
-        client.put("/voice/settings", json={"speak_replies": False, "engine": "windows"}, headers=h)
+        client.put("/voice/settings", json={"output_mode": "off", "engine": "windows"}, headers=h)
     again = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
                       voice=quiet_voice(home["workspace"]))
     with TestClient(again) as client:
         settings = client.get("/voice", headers=h).json()["settings"]
-    assert settings["speak_replies"] is False and settings["engine"] == "windows"
+    assert settings["output_mode"] == "off" and settings["engine"] == "windows"
+    # A voice.json saved by the older one-switch version still means "don't answer out loud".
+    (home["workspace"] / "voice.json").write_text('{"speak_replies": false}', encoding="utf-8")
+    older = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                      voice=quiet_voice(home["workspace"]))
+    with TestClient(older) as client:
+        assert client.get("/voice", headers=h).json()["settings"]["output_mode"] == "off"
 
 
 def test_hands_free_request_reaches_the_app(home):
@@ -693,3 +970,45 @@ def test_device_keys_are_stored_hashed(paired_app, home):
         token = client.post("/pair/claim", json={"code": code}).json()["token"]
     stored = (home["workspace"] / "devices" / "devices.json").read_text()
     assert token not in stored
+
+
+def test_phones_learn_every_address_including_ones_that_work_away_from_home(paired_app, monkeypatch):
+    import urllib.parse
+
+    from compii_core import remote
+
+    monkeypatch.setattr(remote, "_reach_cache", (0.0, []))
+    monkeypatch.setattr(remote, "lan_ip", lambda: "192.168.1.20")
+    monkeypatch.setattr(remote.socket, "getaddrinfo", lambda *a, **k: [(0, 0, 0, "", ("100.101.7.8", 0)),
+                                                                        (0, 0, 0, "", ("192.168.1.20", 0))])
+    monkeypatch.setenv("COMPII_REMOTE_HOSTS", "home.example.net")
+    pc = {"X-Compii-Token": "tok"}
+    with TestClient(paired_app) as client:
+        start = client.post("/pair/start", headers=pc).json()
+        assert start["hosts"] == ["192.168.1.20", "100.101.7.8", "home.example.net"] and start["anywhere"]
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(start["link"]).query)
+        assert q["h"] == ["192.168.1.20"] and q["a"] == ["100.101.7.8,home.example.net"]
+        claim = client.post("/pair/claim", json={"code": start["code"], "name": "Pixel"}).json()
+        assert claim["hosts"] == start["hosts"]
+        phone = {"X-Compii-Device": claim["token"]}
+        assert client.get("/reach", headers=phone).json()["hosts"] == start["hosts"]
+        assert client.get("/reach").status_code == 401
+
+
+def test_a_phone_glance_at_the_screen_is_a_real_picture_and_audited(paired_app, home, monkeypatch):
+    import numpy as np
+
+    from compii_core import vision
+
+    monkeypatch.setattr(vision, "private_foreground", lambda: False)
+    monkeypatch.setattr(vision, "grab_screen", lambda: (np.zeros((900, 2560, 3), dtype=np.uint8), (0, 0, 2560, 900)))
+    with TestClient(paired_app) as client:
+        r = client.get("/screen/peek", headers={"X-Compii-Token": "tok"})
+        assert r.status_code == 200 and r.content[:8] == b"\x89PNG\r\n\x1a\n"
+        import struct
+
+        assert struct.unpack(">II", r.content[16:24]) == (1280, 450)  # shrunk for a phone
+        assert client.get("/screen/peek").status_code == 401
+        monkeypatch.setattr(vision, "private_foreground", lambda: True)
+        assert client.get("/screen/peek", headers={"X-Compii-Token": "tok"}).status_code == 423
+    assert "screen_peek" in (home["workspace"] / "audit" / "audit.jsonl").read_text(encoding="utf-8")

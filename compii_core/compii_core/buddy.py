@@ -29,6 +29,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from .hotkey import TAP_MAX, VK_CONTROL, VK_WIN, HoldToTalk
+from . import sight
 from .voice import spoken_reply
 from .watch import Watcher
 
@@ -95,9 +96,8 @@ class Buddy:
             x, y = 0, 0
         self._emit({"type": "voice_buddy", "state": state, "cursor": [x, y], **data})
 
-    def say(self, text: str) -> None:
-        if self.voice.settings.speak_replies:
-            self.voice.say(text)
+    def say(self, text: str, spoken: str | None = None) -> None:
+        self.voice.say(text, spoken)
 
     # ---- talking: hold Ctrl + Alt ----
 
@@ -167,6 +167,10 @@ class Buddy:
                 return
             gestured = moved(self._trail)
             if wants_screen(text, gestured):
+                if not sight.enabled():  # don't answer a question about the screen from nothing
+                    self.emit("idle", text=sight.refusal())
+                    self.say("Screen reading is turned off in Settings, so I can't see what's in front of you.")
+                    return
                 if self._snap_thread is not None:
                     self._snap_thread.join(timeout=2.5)
                 snap = self._with_picture(dict(self._snap or {}), text)
@@ -189,7 +193,8 @@ class Buddy:
         from . import vision
 
         key = self.vision_key() if self.vision_key else None
-        if not key or not getattr(self.voice.settings, "see_pictures", True) or not vision.needs_picture(snap):
+        if not key or not sight.enabled() or not getattr(self.voice.settings, "see_pictures", True) \
+                or not vision.needs_picture(snap):
             return snap
         try:
             self.emit("thinking", heard=question, step="Looking at your screen")
@@ -244,7 +249,7 @@ class Buddy:
         elif letter == "R":
             if self.last_answer:
                 self.emit("answer", text=self.last_answer)
-                self.say(spoken_reply(self.last_answer))
+                self.say(self.last_answer, spoken_reply(self.last_answer))
             else:
                 self.emit("idle", text="Nothing to repeat yet.")
         elif letter == "H":
@@ -254,6 +259,10 @@ class Buddy:
     # ---- watch me: you demonstrate ----
 
     def start_watching(self, goal: str) -> None:
+        if not sight.enabled():  # the recording is made of what it reads on screen
+            self.emit("idle", text=sight.refusal())
+            self.say("I can't watch you, because screen reading is turned off in Settings.")
+            return
         self.watch_goal = goal
         self.watcher.start()
         self.emit("watching")
@@ -277,6 +286,9 @@ class Buddy:
     # ---- dictation: hold Ctrl + Win ----
 
     def dictate_start(self) -> None:
+        if not sight.enabled():  # typing safely means reading the field first
+            self.emit("idle", text=sight.refusal())
+            return
         if not self.voice.can_listen():
             self.emit("setup", text="Turn on listening in Compii → Settings → Voice first.")
             return
@@ -323,7 +335,7 @@ class Buddy:
         if tid not in self.tasks:
             return
         kind = event.get("type")
-        if kind in ("task_finished", "approval_needed") and self._ack is not None:
+        if kind in ("task_finished", "approval_needed", "question") and self._ack is not None:
             self._ack.cancel()
         if kind == "task_finished":
             self._last_done = time.monotonic()
@@ -332,6 +344,12 @@ class Buddy:
         elif kind == "approval_needed":
             self.emit("needs_you", task_id=tid, approval_id=event.get("approval_id", ""),
                       text=f"{event.get('label', '')}?")  # Yes / No buttons beside the cursor, or say it
+        elif kind == "question":
+            # Choice buttons beside the cursor; type the answer in the app if none of them fit.
+            self.emit("needs_you", task_id=tid, question_id=event.get("question_id", ""),
+                      choices=event.get("choices", []), text=event.get("question", ""))
+        elif kind == "question_answered":
+            self.emit("thinking", task_id=tid, step="Thanks — carrying on")
         elif kind == "action_started":
             self.emit("thinking", task_id=tid, step=event.get("label", ""))
 

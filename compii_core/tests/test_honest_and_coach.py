@@ -67,6 +67,57 @@ def test_a_claim_that_still_isnt_backed_is_removed_not_spoken(home):
     assert _final(task) == "Click Import. Then choose a file."
 
 
+def test_a_saved_file_that_was_never_written_is_not_left_in_the_reply(home):
+    brain = Scripted(["I've saved the notes in Documents.", "I've saved the notes in Documents."])
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    task = _run(app, "make a note of this")
+    assert _final(task) == "I couldn't save that file this time."
+    assert not list(home["downloads"].glob("*.txt"))
+
+
+def test_a_real_write_backs_up_the_saved_claim(home):
+    target = home["downloads"] / "notes.txt"
+    brain = Scripted([("", [("write_text_file", {"path": str(target), "content": "Notes."})]),
+                      "It's saved in your Downloads folder."])
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    task = _run(app, "make a note of this")
+    assert _final(task) == "It's saved in your Downloads folder."
+    assert target.exists()
+
+
+def test_a_promised_reminder_needs_a_watch_behind_it(home):
+    brain = Scripted(["I'll remind you at six.", "I'll remind you at six."])
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    task = _run(app, "remind me at six")
+    nudge = brain.seen[1][-1]["content"][0]["text"]
+    assert "didn't happen" in nudge and "follow up" in nudge
+    assert _final(task) == "I couldn't set that up this time."
+
+
+def test_ordinary_replies_are_not_treated_as_claims():
+    from compii_core.agent import unbacked_claims
+
+    for line in [
+        "Downloads is tidy now — nothing needed saving.",
+        "I hope that helps. Want me to make a spreadsheet of it?",
+        "Your browser is open on the results page.",
+        "The invoice is in Downloads, I didn't move anything.",
+    ]:
+        assert unbacked_claims(line, set()) == [], line
+
+
+def test_a_click_the_app_never_confirmed_does_not_back_a_claim():
+    from compii_core.agent import UNCONFIRMED, unbacked_claims
+
+    said = "I clicked Save and it's done."
+    unconfirmed = ("Clicked button “Save” in “Word”. Checked afterwards: the app's controls show no change, "
+                   "so Compii can't confirm it did anything.")
+    confirmed = ("Clicked button “Sync” in “Word”. Checked afterwards: it now shows “on”.")
+    assert UNCONFIRMED.search(unconfirmed) and not UNCONFIRMED.search(confirmed)
+    # A result that admits it couldn't check isn't evidence that the thing happened.
+    assert unbacked_claims(said, set()) == ["clicked"]
+
+
 def test_pointing_in_an_app_with_internal_names_uses_the_picture(home):
     from compii_core.tools import Toolbox
 
