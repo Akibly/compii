@@ -2,7 +2,10 @@ import 'package:flutter/material.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
+import 'bots.dart';
+import 'reader.dart';
 import 'reply_text.dart';
+import 'supervisor.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'chrome.dart';
@@ -14,6 +17,7 @@ class Turn {
   Turn(this.ask, this.at);
   final String ask;
   final double at;
+  final List<Map<String, dynamic>> attachments = []; // files the user sent with this message
   final List<Map<String, dynamic>> steps = []; // action_done / action_started
   final List<String> notes = [];
   final List<Map<String, dynamic>> files = [];
@@ -22,9 +26,20 @@ class Turn {
   final Set<String> resolved = {};
   final List<Map<String, dynamic>> questions = [];
   final Set<String> answered = {};
+  final List<Map<String, dynamic>> takeovers = []; // secret steps waiting for the user's own hands
+  final Set<String> handedBack = {};
+  final List<Map<String, dynamic>> handoffs = []; // turns passed between teammates
+  final List<Map<String, dynamic>> delegations = []; // jobs Compii handed to a teammate
+  final Map<String, Map<String, dynamic>> delegationDone = {}; // job id -> how it came back
+  final Map<String, Map<String, dynamic>> reviews = {}; // job id -> Compii's verdict
+  final Map<String, Map<String, dynamic>> resumes = {}; // job id -> the send-back that restarted it
+  final List<Map<String, dynamic>> hirings = []; // new teammates Compii suggested
+  final Map<String, Map<String, dynamic>> hiringResolved = {}; // proposal id -> hired/declined
+  final List<Map<String, dynamic>> screens = []; // what Compii actually looked at
   final List<Map<String, dynamic>> safety = []; // blocked, injection, redacted, rule used
   List<Map<String, dynamic>>? plan;
   String? reply;
+  String? draft; // words still being written, before the answer is finished
   String status = 'running';
   double? endedAt;
 
@@ -34,6 +49,9 @@ class Turn {
       : null;
   Map<String, dynamic>? get pendingQuestion => active
       ? questions.where((q) => !answered.contains(q['question_id'])).lastOrNull
+      : null;
+  Map<String, dynamic>? get pendingTakeover => active
+      ? takeovers.where((t) => !handedBack.contains(t['takeover_id'])).lastOrNull
       : null;
   Map<String, dynamic>? get current {
     final last = steps.lastOrNull;
@@ -51,17 +69,24 @@ List<Turn> turnsOf(TaskView task) {
     switch (e['type']) {
       case 'task_started':
         turns.add(Turn(task.request, at));
+        _filesOf(e, turns.last);
       case 'user_message':
         turns.add(Turn(e['text'] as String, at));
+        _filesOf(e, turns.last);
       default:
         if (turns.isEmpty) turns.add(Turn(task.request, at));
         final t = turns.last;
         switch (e['type']) {
+          case 'answer_delta':
+            final words = (e['text'] as String? ?? '').trim();
+            t.draft = words.isEmpty ? null : words;
           case 'note':
             t.notes.add(e['text'] as String);
+            t.draft = null;
           case 'plan':
             t.plan = [for (final s in e['steps'] as List) Map<String, dynamic>.from(s as Map)];
           case 'action_started':
+            t.draft = null;
             if (e['tool'] != 'update_plan') t.steps.add(e);
           case 'action_done':
             if (e['tool'] == 'update_plan') break;
@@ -76,14 +101,41 @@ List<Turn> turnsOf(TaskView task) {
           case 'action_blocked' || 'injection_warning' || 'redacted' || 'rule_used':
             t.safety.add(e);
           case 'approval_needed':
+            t.draft = null;
             t.approvals.add(e);
           case 'approval_resolved':
             t.resolved.add(e['approval_id'] as String);
           case 'question':
+            t.draft = null;
             t.questions.add(e);
           case 'question_answered':
             t.answered.add(e['question_id'] as String);
+          case 'takeover':
+            t.draft = null;
+            t.takeovers.add(e);
+          case 'takeover_done':
+            t.handedBack.add(e['takeover_id'] as String);
+          case 'handoff':
+            t.handoffs.add(e);
+          case 'delegation':
+            t.delegations.add(e);
+          case 'delegation_done':
+            t.delegationDone['${e['job_id'] ?? e['child_task']}'] = e;
+          case 'job_reviewed':
+            t.reviews['${e['job_id']}'] = e;
+          case 'delegation_resumed':
+            final id = '${e['job_id']}';
+            t.resumes[id] = e;
+            t.delegationDone.remove(id);
+            t.reviews.remove(id);
+          case 'hiring':
+            t.hirings.add(e);
+          case 'hiring_resolved':
+            t.hiringResolved['${e['proposal_id']}'] = e;
+          case 'screen_seen':
+            t.screens.add(e);
           case 'task_finished':
+            t.draft = null;
             t.reply = e['text'] as String?;
             t.status = e['status'] as String;
             t.endedAt = at;
@@ -98,15 +150,25 @@ List<Turn> turnsOf(TaskView task) {
   return turns;
 }
 
+void _filesOf(Map<String, dynamic> event, Turn turn) {
+  for (final a in (event['attachments'] as List? ?? const [])) {
+    if (a is Map) turn.attachments.add(Map<String, dynamic>.from(a));
+  }
+}
+
 typedef Run = Future<void> Function(Future<void> Function() action);
 
 /// The scrolling conversation.
 class ThreadView extends StatelessWidget {
-  const ThreadView({super.key, required this.task, required this.core, required this.run, this.compact = false});
+  const ThreadView({super.key, required this.task, required this.core, required this.run, this.compact = false,
+    this.onOpenTask});
   final TaskView task;
   final CoreClient core;
   final Run run;
   final bool compact;
+
+  /// Jump to another thread (a teammate's job from a delegation card).
+  final void Function(String taskId)? onOpenTask;
 
   @override
   Widget build(BuildContext context) {
@@ -125,9 +187,10 @@ class ThreadView extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _UserBubble(text: turn.ask),
+                  _UserBubble(text: turn.ask, files: turn.attachments),
                   const SizedBox(height: 14),
-                  _AssistantTurn(turn: turn, task: task, core: core, run: run, compact: compact),
+                  _AssistantTurn(turn: turn, task: task, core: core, run: run, compact: compact,
+                      onOpenTask: onOpenTask),
                 ],
               ),
             ),
@@ -139,32 +202,87 @@ class ThreadView extends StatelessWidget {
 }
 
 class _UserBubble extends StatelessWidget {
-  const _UserBubble({required this.text});
+  const _UserBubble({required this.text, this.files = const []});
   final String text;
+  final List<Map<String, dynamic>> files;
+
+  static String _size(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).round()} KB';
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+
   @override
-  Widget build(BuildContext context) => Align(
-    alignment: Alignment.centerRight,
-    child: ConstrainedBox(
-      constraints: const BoxConstraints(maxWidth: 560),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-        decoration: BoxDecoration(
-          color: context.c.userBubble,
-          borderRadius: BorderRadius.circular(18).copyWith(bottomRight: const Radius.circular(6)),
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Align(
+      alignment: Alignment.centerRight,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+          decoration: BoxDecoration(
+            color: c.userBubble,
+            borderRadius: Shapes.r18.copyWith(bottomRight: const Radius.circular(6)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              SelectableText(text, style: context.type.bodyLarge?.copyWith(color: c.onBubble)),
+              if (files.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Wrap(
+                  alignment: WrapAlignment.end,
+                  spacing: 6,
+                  runSpacing: 5,
+                  children: [
+                    for (final f in files)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                        decoration: BoxDecoration(
+                          color: c.onBubble.withValues(alpha: .08),
+                          borderRadius: Shapes.r8,
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Glyph(G.file, size: 12, color: c.onBubble.withValues(alpha: .75)),
+                            const SizedBox(width: 5),
+                            ConstrainedBox(
+                              constraints: const BoxConstraints(maxWidth: 220),
+                              child: Text('${f['name'] ?? 'file'}', maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: context.type.labelSmall?.copyWith(color: c.onBubble)),
+                            ),
+                            if (f['size'] is num) ...[
+                              const SizedBox(width: 4),
+                              Text(_size((f['size'] as num).toInt()),
+                                  style: context.type.labelSmall?.copyWith(color: c.onBubble.withValues(alpha: .6))),
+                            ],
+                          ],
+                        ),
+                      ),
+                  ],
+                ),
+              ],
+            ],
+          ),
         ),
-        child: SelectableText(text, style: context.type.bodyLarge?.copyWith(color: context.c.onBubble)),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _AssistantTurn extends StatelessWidget {
-  const _AssistantTurn({required this.turn, required this.task, required this.core, required this.run, required this.compact});
+  const _AssistantTurn({required this.turn, required this.task, required this.core, required this.run, required this.compact,
+    this.onOpenTask});
   final Turn turn;
   final TaskView task;
   final CoreClient core;
   final Run run;
   final bool compact;
+  final void Function(String taskId)? onOpenTask;
 
   Mood get _mood => switch (turn.status) {
     'waiting' => Mood.waiting,
@@ -183,7 +301,7 @@ class _AssistantTurn extends StatelessWidget {
       children: [
         SizedBox.square(
           dimension: 34,
-          child: Orbling(mood: _mood, jobs: turn.active ? 1 : 0, animate: turn.active),
+          child: Ember(mood: _mood, jobs: turn.active ? 1 : 0, animate: turn.active),
         ),
         const SizedBox(width: 12),
         Expanded(
@@ -191,11 +309,43 @@ class _AssistantTurn extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               if (turn.plan != null && compact) PlanList(steps: turn.plan!, dense: true),
+              for (final s in turn.screens) _ScreenSeen(event: s),
               if (turn.steps.isNotEmpty || turn.active) StepLedger(turn: turn),
+              for (final h in turn.handoffs)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: HandoffNote(event: h, core: core),
+                ),
+              for (final d in turn.delegations)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: DelegationCard(
+                    event: d,
+                    done: turn.delegationDone['${d['job_id'] ?? d['child_task']}'],
+                    review: turn.reviews['${d['job_id']}'],
+                    attempt: (turn.resumes['${d['job_id']}']?['attempt'] as num?)?.toInt() ?? 1,
+                    core: core,
+                    onOpen: onOpenTask,
+                  ),
+                ),
+              for (final h in turn.hirings)
+                Padding(
+                  padding: const EdgeInsets.only(top: 8),
+                  child: HiringCard(
+                    event: h,
+                    resolved: turn.hiringResolved['${(h['proposal'] as Map?)?['id']}'],
+                    core: core,
+                    live: turn.active,
+                  ),
+                ),
               if (turn.safety.isNotEmpty) SafetyNotes(events: turn.safety),
               if (pending != null) ...[
                 const SizedBox(height: 10),
                 ApprovalCard(approval: pending, core: core, run: run),
+              ],
+              if (turn.pendingTakeover != null) ...[
+                const SizedBox(height: 10),
+                TakeoverCard(event: turn.pendingTakeover!, core: core, run: run),
               ],
               if (turn.pendingQuestion != null) ...[
                 const SizedBox(height: 10),
@@ -209,6 +359,25 @@ class _AssistantTurn extends StatelessWidget {
                     color: turn.status == 'failed' ? c.danger : null,
                   ),
                 ),
+                if (turn.reply!.length > 900)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      onPressed: () => showAnswerReader(
+                        context,
+                        text: turn.reply!,
+                        title: 'Compii’s answer',
+                        subtitle: turn.ask.length > 90 ? '${turn.ask.substring(0, 90)}…' : turn.ask,
+                      ),
+                      icon: const Glyph(G.doc, size: 15),
+                      label: const Text('Read in reader'),
+                    ),
+                  ),
+              ] else if (turn.active && turn.draft != null) ...[
+                const SizedBox(height: 8),
+                ReplyText(turn.draft!, style: context.type.bodyLarge),
+                const SizedBox(height: 6),
+                SizedBox(width: 64, child: LinearProgressIndicator(minHeight: 2, color: c.accent)),
               ] else if (turn.active && turn.notes.isNotEmpty && pending == null) ...[
                 const SizedBox(height: 8),
                 Text(turn.notes.last, style: context.type.bodyMedium?.copyWith(color: c.muted)),
@@ -225,6 +394,39 @@ class _AssistantTurn extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// One quiet line: the window Compii actually looked at, and how much it could read.
+class _ScreenSeen extends StatelessWidget {
+  const _ScreenSeen({required this.event});
+  final Map<String, dynamic> event;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final title = '${event['title'] ?? ''}'.trim();
+    final ocr = (event['ocr'] as num?)?.toInt() ?? 0;
+    final items = (event['items'] as num?)?.toInt() ?? 0;
+    final read = ocr > 0 ? '$ocr ${ocr == 1 ? 'line' : 'lines'} read' : (items > 0 ? '$items items found' : '');
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Glyph(G.eye, size: 14, color: c.faint),
+          const SizedBox(width: 7),
+          Flexible(
+            child: Text(
+              'Looked at ${title.isEmpty ? 'your screen' : '“$title”'}${read.isEmpty ? '' : ' · $read'}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: context.type.labelMedium?.copyWith(color: c.muted),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -267,7 +469,7 @@ class _StepLedgerState extends State<StepLedger> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: Shapes.r10,
           onTap: n == 0 ? null : () => setState(() => _open = !_open),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
@@ -296,7 +498,8 @@ class _StepLedgerState extends State<StepLedger> {
           ),
         ),
         AnimatedSize(
-          duration: const Duration(milliseconds: 180),
+          duration: context.motion(Motion.base),
+          curve: Motion.out,
           alignment: Alignment.topLeft,
           child: !_open
               ? const SizedBox(width: double.infinity)
@@ -307,7 +510,7 @@ class _StepLedgerState extends State<StepLedger> {
                   decoration: BoxDecoration(
                     color: c.raised,
                     border: Border.all(color: c.border),
-                    borderRadius: BorderRadius.circular(12),
+                    borderRadius: Shapes.r14,
                   ),
                   child: Column(
                     children: [for (final s in t.finished) _StepRow(step: s)],
@@ -344,8 +547,13 @@ class _StepRow extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('${step['label']}', style: context.type.bodyMedium),
-                if (detail.isNotEmpty && (!ok || step['tool'] == 'send_email'))
-                  Text(detail, maxLines: 3, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                if (detail.isNotEmpty &&
+                    (!ok || const ['send_email', 'second_opinion'].contains(step['tool'])))
+                  Tooltip(
+                    message: detail,
+                    waitDuration: const Duration(milliseconds: 350),
+                    child: Text(detail, maxLines: 3, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                  ),
               ],
             ),
           ),
@@ -365,9 +573,9 @@ class _KindBadge extends StatelessWidget {
     if (kind.isEmpty || kind == 'read') return const SizedBox.shrink();
     final (fg, bg) = tierColors(context, kind);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
-      child: Text(kind, style: TextStyle(color: fg, fontSize: 11, fontWeight: FontWeight.w600)),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(color: bg, borderRadius: Shapes.pill),
+      child: Text(kind, style: TextStyle(color: fg, fontSize: 10.5, fontWeight: FontWeight.w700, letterSpacing: .2)),
     );
   }
 }
@@ -441,6 +649,15 @@ class ApprovalCard extends StatelessWidget {
         : null;
     final why = '${approval['why'] ?? ''}';
 
+    final actions = Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      alignment: destructive ? WrapAlignment.spaceBetween : WrapAlignment.start,
+      children: destructive
+          ? [decline, approve]
+          : [approve, decline, ?always],
+    );
+
     return Container(
       decoration: BoxDecoration(
         color: c.raised,
@@ -490,64 +707,197 @@ class ApprovalCard extends StatelessWidget {
                 Text('${approval['label']}', style: context.type.titleMedium),
                 if (compact) ...[
                   const SizedBox(height: 10),
-                  Row(
-                    children: destructive
-                        ? [decline, const Spacer(), approve]
-                        : [approve, const SizedBox(width: 8), decline, if (always != null) ...[const Spacer(), always]],
-                  ),
+                  actions,
                 ],
-                if (why.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Text(why, style: context.type.bodySmall?.copyWith(color: c.danger)),
-                ],
-                if (_tierWhy(kind).isNotEmpty) ...[
-                  const SizedBox(height: 4),
-                  Text(_tierWhy(kind), style: context.type.bodySmall),
-                ],
-                if (fields.isNotEmpty) ...[
-                  const SizedBox(height: 10),
-                  for (final f in fields)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          SizedBox(
-                            width: 96,
-                            child: Text(_fieldName(f.key), style: context.type.bodySmall),
-                          ),
-                          Expanded(child: _FieldValue(name: f.key, value: f.value)),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 300),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (why.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(why, style: context.type.bodySmall?.copyWith(color: c.danger)),
                         ],
-                      ),
-                    ),
-                ],
-                if (body != null) ...[
-                  const SizedBox(height: 8),
-                  Container(
-                    width: double.infinity,
-                    constraints: const BoxConstraints(maxHeight: 180),
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(color: c.sunken, borderRadius: BorderRadius.circular(8)),
-                    child: SingleChildScrollView(
-                      child: SelectableText(
-                        '$body',
-                        style: TextStyle(fontFamily: 'Cascadia Mono', fontFamilyFallback: const ['Consolas'], fontSize: 12.5, color: c.text),
-                      ),
+                        if (_tierWhy(kind).isNotEmpty) ...[
+                          const SizedBox(height: 4),
+                          Text(_tierWhy(kind), style: context.type.bodySmall),
+                        ],
+                        if (fields.isNotEmpty) ...[
+                          const SizedBox(height: 10),
+                          for (final f in fields)
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 4),
+                              child: Row(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  SizedBox(
+                                    width: 96,
+                                    child: Text(_fieldName(f.key), style: context.type.bodySmall),
+                                  ),
+                                  Expanded(child: _FieldValue(name: f.key, value: f.value)),
+                                ],
+                              ),
+                            ),
+                        ],
+                        if (body != null) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            width: double.infinity,
+                            constraints: const BoxConstraints(maxHeight: 180),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r8),
+                            child: SingleChildScrollView(
+                              child: SelectableText(
+                                '$body',
+                                style: TextStyle(fontFamily: 'Cascadia Mono', fontFamilyFallback: const ['Consolas'], fontSize: 12.5, color: c.text),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                   ),
-                ],
+                ),
                 if (!compact) ...[
                   const SizedBox(height: 14),
-                  Row(
-                    children: destructive
-                        ? [decline, const Spacer(), approve]
-                        : [approve, const SizedBox(width: 8), decline, if (always != null) ...[const Spacer(), always]],
-                  ),
+                  actions,
                 ],
               ],
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// A password, card or one-time-code step. Compii fills what it safely can,
+/// brings the window forward and waits — the secret is typed by the user, never
+/// by Compii, and nothing they type passes through the app.
+class TakeoverCard extends StatefulWidget {
+  const TakeoverCard({super.key, required this.event, required this.core, required this.run});
+  final Map<String, dynamic> event;
+  final CoreClient core;
+  final Run run;
+
+  @override
+  State<TakeoverCard> createState() => _TakeoverCardState();
+}
+
+class _TakeoverCardState extends State<TakeoverCard> {
+  String? _outcome;
+
+  void _finish(String outcome) {
+    if (_outcome != null) return;
+    setState(() => _outcome = outcome);
+    widget.run(() => widget.core.finishTakeover('${widget.event['takeover_id']}', outcome: outcome));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final fields = [for (final f in (widget.event['fields'] as List? ?? const [])) '${(f as Map)['label'] ?? f}'];
+    final url = '${widget.event['url'] ?? ''}'.trim();
+    final host = Uri.tryParse(url)?.host ?? '';
+    final what = '${widget.event['what'] ?? 'This step needs your hands.'}';
+
+    return Container(
+      decoration: BoxDecoration(
+        color: c.raised,
+        borderRadius: Shapes.r16,
+        border: Border.all(color: c.accent.withValues(alpha: .5), width: 1.2),
+        boxShadow: [
+          ...Shapes.float(c),
+          BoxShadow(color: c.accent.withValues(alpha: .08), blurRadius: 0, spreadRadius: 4),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                GlyphTile(glyph: G.lock, size: 30, color: c.accent),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.only(top: 4),
+                    child: Text(what,
+                        style: context.type.titleMedium?.copyWith(fontWeight: FontWeight.w600, height: 1.3)),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Pill('Your turn', color: c.accent, glyph: G.hand, soft: true),
+              ],
+            ),
+            if (fields.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 6,
+                children: [
+                  for (final label in fields)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                      decoration: BoxDecoration(
+                        color: c.sunken,
+                        borderRadius: Shapes.r10,
+                        border: Border.all(color: c.border),
+                      ),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Glyph(G.lock, size: 13, color: c.muted),
+                        const SizedBox(width: 6),
+                        Text(label, style: context.type.labelMedium),
+                      ]),
+                    ),
+                ],
+              ),
+            ],
+            const SizedBox(height: 9),
+            Text(
+              'Only you type this. Compii brings ${host.isEmpty ? 'the window' : host} forward and waits — '
+              'it never sees or keeps what you enter.',
+              style: context.type.bodySmall?.copyWith(color: c.muted),
+            ),
+            const SizedBox(height: 10),
+            if (_outcome != null)
+              Row(
+                children: [
+                  Glyph(G.checkCircle, size: 18, color: c.success),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      _outcome == 'skip'
+                          ? 'Skipped — Compii is carrying on without that step.'
+                          : 'Handed back — Compii is carrying on.',
+                      style: context.type.bodyMedium?.copyWith(color: c.muted),
+                    ),
+                  ),
+                ],
+              )
+            else
+              Wrap(
+                spacing: 4,
+                runSpacing: 4,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  FilledButton.icon(
+                    onPressed: () => _finish('done'),
+                    icon: const Glyph(G.checkCircle, size: 17),
+                    label: const Text('I’ve done it — continue'),
+                  ),
+                  TextButton(
+                    onPressed: () => _finish('skip'),
+                    child: const Text('Skip this step'),
+                  ),
+                ],
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -662,15 +1012,15 @@ class _QuestionCardState extends State<QuestionCard> {
                         hintText: choices.isEmpty ? 'Type your answer' : 'Or type your own answer',
                         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
                         border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: Shapes.r12,
                           borderSide: BorderSide(color: c.border),
                         ),
                         enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: Shapes.r12,
                           borderSide: BorderSide(color: c.border),
                         ),
                         focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(12),
+                          borderRadius: Shapes.r12,
                           borderSide: BorderSide(color: c.accent, width: 1.5),
                         ),
                       ),
@@ -715,22 +1065,32 @@ class _AnswerChipState extends State<_AnswerChip> {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            color: _hover ? c.accentSoft : c.sunken,
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: _hover ? c.accent.withValues(alpha: .55) : c.border),
+    return Keyable(
+      label: widget.label,
+      onTap: widget.onTap,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: ExcludeSemantics(
+              child: AnimatedContainer(
+                duration: context.motion(Motion.quick),
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                decoration: BoxDecoration(
+                  color: _hover ? c.accentSoft : c.sunken,
+                  borderRadius: Shapes.pill,
+                  border: Border.all(color: _hover ? c.accent.withValues(alpha: .55) : c.border),
+                ),
+                child: Text(widget.label,
+                    style: context.type.labelLarge?.copyWith(color: _hover ? c.accent : c.text, fontWeight: FontWeight.w500)),
+              ),
+            ),
           ),
-          child: Text(widget.label,
-              style: context.type.labelLarge?.copyWith(color: _hover ? c.accent : c.text, fontWeight: FontWeight.w500)),
         ),
       ),
     );
@@ -885,7 +1245,7 @@ class FileChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: c.raised,
         border: Border.all(color: c.border),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: Shapes.r12,
       ),
       padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
       child: Row(
@@ -997,7 +1357,7 @@ class _PlanMark extends StatelessWidget {
       child: switch (status) {
         'done' => Glyph(G.check, size: 12, color: c.success, weight: 2.4),
         'active' => Container(width: 8, height: 8, decoration: BoxDecoration(color: c.accent, shape: BoxShape.circle)),
-        _ => Text('$number', style: TextStyle(fontSize: 11, color: c.faint, fontWeight: FontWeight.w600)),
+        _ => Text('$number', style: context.type.labelSmall?.copyWith(color: c.faint, fontWeight: FontWeight.w600)),
       },
     );
   }

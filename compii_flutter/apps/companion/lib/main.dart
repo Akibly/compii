@@ -4,10 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
+import 'package:velopack_flutter/velopack_flutter.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'src/app_control.dart';
 import 'src/diagnostics.dart';
+import 'src/desktop_toasts.dart';
 import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
@@ -20,6 +22,7 @@ import 'src/ui/shell.dart';
 import 'src/ui/tokens.dart';
 import 'src/ui/trust.dart';
 import 'src/ui/voice.dart';
+import 'src/updates.dart';
 
 Future<void> main(List<String> args) async {
   if (args.contains('--overlay')) return runOverlay();
@@ -27,9 +30,26 @@ Future<void> main(List<String> args) async {
   if (Platform.isAndroid || Platform.isIOS || args.contains('--remote')) return runPhone();
   WidgetsFlutterBinding.ensureInitialized();
   CrashLog.install();
+  await _startVelopack(args);
   await ensureCore();
   keepCoreAlive();
   final core = CoreClient()..start();
+  if (updateFeed.isNotEmpty) {
+    updates = Updater(
+      source: const VelopackSource(),
+      // Everything in the install folder has to let go of its files before the updater runs.
+      clearTheWay: () async {
+        appControl.overlay?.kill();
+        try {
+          await core.stopCore();
+        } on Object {
+          // It may already be gone; what matters is that it is down before the updater starts.
+        }
+        await waitForCoreToClose();
+      },
+    );
+    updates!.check(); // quietly: Settings is where the answer shows up
+  }
   final state = AppState();
   await state.load();
   final voice = VoiceController(core);
@@ -83,6 +103,8 @@ Future<void> main(List<String> args) async {
     }
     await _startOverlay();
     _watchWindowShown();
+    // A Windows toast only when you're in another app; the buddy covers the rest.
+    DesktopToasts(core, inBackground: () => !windowShown.value && quick?.active != true);
   }
   voice.onHeard = (text) => _deliver(text, core, state, quick);
   runApp(CompiiApp(core: core, state: state, quick: quick));
@@ -214,9 +236,26 @@ void _syncWindowShown() async {
 void keepCoreAlive() {
   var restartedAt = DateTime.now();
   Timer.periodic(const Duration(seconds: 10), (_) async {
+    if (coreHeldDown) return; // an update is going in: Core must stay down until it's done
     if (DateTime.now().difference(restartedAt) < const Duration(seconds: 30)) return;
     if (await ensureCore()) restartedAt = DateTime.now();
   });
+}
+
+/// Turn on auto-updates for a packed build, and finish a Velopack launch.
+/// A build from source has no feed URL and never gets here: Velopack's calls throw unless
+/// the app was installed by its own installer.
+Future<void> _startVelopack(List<String> args) async {
+  if (!Platform.isWindows || updateFeed.isEmpty) return;
+  try {
+    await initializeVelopack(url: updateFeed);
+  } on Object catch (e) {
+    debugPrint('Auto-update is off: $e');
+    return;
+  }
+  // After an install or an update Velopack starts Compii once, with a flag, purely so the
+  // update can be recorded. Nothing else about that launch matters.
+  if (veloLaunchHooks.any(args.contains)) exit(0);
 }
 
 /// Start Compii Core if it isn't running, so the app just works when opened.

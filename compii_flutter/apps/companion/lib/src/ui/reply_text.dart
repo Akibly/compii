@@ -109,7 +109,7 @@ class ReplyText extends StatelessWidget {
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
     decoration: BoxDecoration(
       color: c.surface,
-      borderRadius: BorderRadius.circular(10),
+      borderRadius: Shapes.r10,
       border: Border.all(color: c.border),
     ),
     child: SelectableText(

@@ -1,4 +1,74 @@
-from compii_core.voice import _phrases, speakable
+from compii_core.voice import _complete_sentences, _phrases, speakable
+
+
+class _SpeakerStub:
+    speaking = False
+
+    def __init__(self) -> None:
+        self.said: list[str] = []
+        self.fed: list[str] = []
+        self.chimes = 0
+        self.stops = 0
+
+    def say(self, text: str) -> None:
+        self.said.append(text)
+
+    def feed(self, text: str) -> None:
+        self.fed.append(text)
+
+    def chime(self) -> None:
+        self.chimes += 1
+
+    def stop(self) -> None:
+        self.stops += 1
+
+
+def _voice(tmp_path):
+    from compii_core.voice import Voice
+
+    speaker = _SpeakerStub()
+    return Voice(tmp_path, emit=lambda _event: None, speaker=speaker), speaker
+
+
+def test_speech_starts_before_the_answer_is_finished(tmp_path):
+    voice, speaker = _voice(tmp_path)
+    voice.settings.output_mode = "voice"
+    voice.say_stream("t1", "The report is ready. It covers")
+    assert speaker.fed == ["The report is ready."]  # the half-written sentence waits
+    assert speaker.stops == 1  # a new answer takes the floor
+
+    voice.say_stream("t1", "The report is ready. It covers five sources. Want me to send it?")
+    assert speaker.fed == ["The report is ready.", "It covers five sources."]
+
+    voice.finish_stream("t1", "The report is ready. It covers five sources. Want me to send it?")
+    assert speaker.said == [] and speaker.fed == ["The report is ready.", "It covers five sources."]
+
+
+def test_a_new_step_after_a_tool_call_is_said_too(tmp_path):
+    voice, speaker = _voice(tmp_path)
+    voice.settings.output_mode = "voice"
+    voice.say_stream("t2", "Let me look at your files. There")
+    voice.say_stream("t2", "Let me look at your files. There are three here.")
+    voice.finish_stream("t2", "You have three invoices in Downloads.")
+    assert speaker.fed[-1] == "You have three invoices in Downloads."
+    assert "".join(speaker.fed).count("Let me look at your files.") == 1
+
+
+def test_stop_silences_the_rest_of_that_answer(tmp_path):
+    voice, speaker = _voice(tmp_path)
+    voice.settings.output_mode = "voice"
+    voice.say_stream("t3", "The first sentence. The second one")
+    voice.stop_speaking()
+    voice.say_stream("t3", "The first sentence. The second one. And a third.")
+    voice.finish_stream("t3", "The first sentence. The second one. And a third.")
+    assert "And a third." not in "".join(speaker.fed)
+    assert speaker.said == []
+
+
+def test_complete_sentences_only():
+    assert _complete_sentences("Done! The file is ready. And more") == "Done! The file is ready."
+    assert _complete_sentences("**Done.** Next sentence.") == "**Done.**"
+    assert _complete_sentences("No punctuation yet") == ""
 
 
 def test_replies_are_cleaned_up_before_speaking():

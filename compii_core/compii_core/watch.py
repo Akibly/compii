@@ -3,7 +3,9 @@
 Recorded: what you click (the item's label and window, not pixels), the
 shortcuts you press (Ctrl+S, Enter…), and the windows you switch to. Never
 recorded: what you type (only "typed in the Subject field"), passwords, or
-the screen itself. The steps become a skill you can run again by name.
+the screen itself. The steps become a skill you can run again by name; the
+labelled actions are kept too, so replay_skill can repeat the demonstration
+exactly as shown instead of guessing.
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ class Watcher:
                  key_down: Callable[[int], bool], focused: Callable[[], dict[str, Any] | None]) -> None:
         self._item_at, self._cursor, self._foreground, self._key, self._focused = item_at, cursor, foreground, key_down, focused
         self.steps: list[str] = []
+        self.actions: list[dict[str, Any]] = []  # what replay needs; never includes typed text
         self.running = False
         self.started = 0.0
         self._thread: threading.Thread | None = None
@@ -31,7 +34,7 @@ class Watcher:
     def start(self) -> None:
         if self.running:
             return
-        self.steps, self.running, self.started = [], True, time.monotonic()
+        self.steps, self.actions, self.running, self.started = [], [], True, time.monotonic()
         self._thread = threading.Thread(target=self._loop, name="compii-watch", daemon=True)
         self._thread.start()
 
@@ -41,9 +44,14 @@ class Watcher:
             self._thread.join(timeout=1)
         return list(self.steps)
 
-    def _add(self, step: str) -> None:
+    def recorded(self) -> list[dict[str, Any]]:
+        """The structured actions for replay, index-aligned with the steps."""
+        return [dict(a) for a in self.actions]
+
+    def _add(self, step: str, action: dict[str, Any]) -> None:
         if step and (not self.steps or self.steps[-1] != step):
             self.steps.append(step)
+            self.actions.append(action)
 
     def _loop(self) -> None:
         was_down = False
@@ -56,14 +64,16 @@ class Watcher:
                 w = self._foreground()
                 if w and w != window and "compii" not in w.lower():
                     window = w
-                    self._add(f"Switch to the “{w}” window")
+                    self._add(f"Switch to the “{w}” window", {"kind": "switch", "window": w})
                 # Clicks: what was clicked, by name.
                 down = self._key(0x01)
                 if down and not was_down:
                     x, y = self._cursor()
                     item = self._item_at(x, y)
                     if item and item.get("name") and "compii" not in item.get("window", "").lower():
-                        self._add(f"Click {item['role'].lower() or 'item'} “{item['name']}” in “{item['window']}”")
+                        self._add(f"Click {item['role'].lower() or 'item'} “{item['name']}” in “{item['window']}”",
+                                  {"kind": "click", "target": item["name"], "role": item.get("role", ""),
+                                   "window": item.get("window", "")})
                     typing_in = None
                 was_down = down
                 # Shortcuts (modifier + key) and special keys; never the letters you type.
@@ -76,15 +86,17 @@ class Watcher:
                         if "Ctrl" in mods and "Alt" in mods and vk in (ord("W"), ord("R"), ord("H")):
                             pass  # Compii's own shortcuts are not part of your task
                         elif mods:
-                            self._add(f"Press {'+'.join(mods + [name])}")
+                            combo = "+".join(mods + [name])
+                            self._add(f"Press {combo}", {"kind": "keys", "keys": combo.lower(), "window": window})
                         elif vk in KEY_NAMES:
-                            self._add(f"Press {name}")
+                            self._add(f"Press {name}", {"kind": "keys", "keys": name.lower(), "window": window})
                         elif not mods:
                             f = self._focused() or {}
                             label = f.get("name") or f.get("role") or "the field"
                             if typing_in != label and not f.get("password"):
                                 typing_in = label
-                                self._add(f"Type the text into “{label}”")
+                                self._add(f"Type the text into “{label}”",
+                                          {"kind": "type", "field": label, "window": f.get("window") or window})
                     elif not is_down:
                         held.discard(vk)
             except Exception:  # noqa: BLE001 - recording is best effort

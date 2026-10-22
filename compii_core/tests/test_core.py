@@ -1,6 +1,8 @@
 import asyncio
 import json
 import sys
+import threading
+import types
 from pathlib import Path
 
 import pytest
@@ -160,10 +162,38 @@ def test_the_clipboard_reads_and_copies_without_touching_the_command_line(toolbo
 
 def test_looking_at_the_screen_uses_the_picture_and_its_items(toolbox):
     snap = {"title": "Excel", "elements": [{"id": "v1", "role": "Seen", "name": "C4", "x": 10, "y": 10, "w": 20, "h": 10}]}
-    toolbox.read_screen = lambda question, full: {"text": f"#REF! in C4 ({question}, full={full})", "snap": snap}
+    calls = []
+
+    def read(question, full, window=None):
+        calls.append((question, full, window))
+        return {"text": f"#REF! in C4 ({question}, full={full}, window={window})", "snap": snap}
+
+    toolbox.read_screen = read
     res = toolbox.execute("look_at_screen", {"question": "what's wrong"})
     assert "#REF!" in res.text and "full=False" in res.text
+    assert calls[-1] == ("what's wrong", False, None)
     assert toolbox.snapshot is snap  # so point_at can use v1 next
+    toolbox.execute("look_at_screen", {"question": "and now", "window": "Excel"})
+    assert calls[-1] == ("and now", False, "Excel")
+
+
+def test_a_named_look_without_a_picture_reads_that_window_not_the_one_in_front(toolbox):
+    toolbox.read_screen = lambda *a: None
+    asked = []
+    toolbox.screen = types.SimpleNamespace(
+        read_window=lambda window=None: asked.append(window) or f"Window: {window} - Excel (exact)")
+    res = toolbox.execute("look_at_screen", {"question": "what's wrong", "window": "Excel"})
+    assert asked == ["Excel"]
+    assert "no picture" in res.text and "Window: Excel - Excel" in res.text
+
+
+def test_a_look_with_no_model_still_reads_the_local_ocr_words(toolbox, monkeypatch):
+    snap = {"title": "Editor", "cursor": [1, 2], "elements": [
+        {"id": "t1", "role": "Text", "src": "ocr", "name": "Line 3: NameError", "x": 0, "y": 0, "w": 100, "h": 20}]}
+    monkeypatch.setattr("compii_core.observe.observe", lambda question="": snap)
+    res = toolbox.execute("look_at_screen", {"question": "what's this error"})
+    assert "Line 3: NameError" in res.text and "t1 · Text" in res.text
+    assert toolbox.snapshot is snap  # point_at can use t1 next
 
 
 def test_a_zip_cannot_write_outside_its_folder(toolbox, home):
@@ -228,6 +258,53 @@ class ScriptBrain:
         return BrainReply([{"type": "text", "text": self.final}], self.final, [], "end_turn")
 
 
+class FlakyBrain:
+    """Answers, but raises the first `fails` times, with the words a real server uses."""
+
+    def __init__(self, why: str, fails: int = 1, final: str = "Here it is.") -> None:
+        self.why, self.fails, self.final = why, fails, final
+        self.calls = 0
+
+    async def step(self, system, messages, tools):
+        self.calls += 1
+        if self.calls <= self.fails:
+            raise RuntimeError(self.why)
+        return BrainReply([{"type": "text", "text": self.final}], self.final, [], "end_turn")
+
+
+async def test_a_500_from_the_ai_retries_instead_of_losing_the_thread(toolbox, home, tmp_path):
+    """A free tier hiccupping mid-job used to kill the whole task and the user lost the
+    answer they were watching. Two short waits fix the common case."""
+    brain = FlakyBrain("the server said 500: server_error", fails=1)
+    agent = Agent(brain, toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    task = agent.start("what is on my desktop")
+    await asyncio.wait_for(task.runner, 10)
+    assert brain.calls == 2 and task.status == "done"
+    assert task.events[-1]["text"] == "Here it is."
+
+
+async def test_a_bad_key_fails_at_once_and_says_so_on_the_settings_card(toolbox, home, tmp_path):
+    """Waiting will not fix a wrong key or a model that does not exist: raise on the first
+    try, and tell Settings, so the user is pointed at the one place they can act."""
+    heard: list[str] = []
+    brain = FlakyBrain("the server said 401: invalid_api_key", fails=9)
+    agent = Agent(brain, toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    agent.on_brain_error = heard.append
+    task = agent.start("hi")
+    await asyncio.wait_for(task.runner, 10)
+    assert brain.calls == 1 and task.status == "failed"
+    assert heard and "401" in heard[0]
+
+
+async def test_a_turn_the_user_stops_is_not_retried(toolbox, home, tmp_path):
+    brain = FlakyBrain("the server said 500", fails=9)
+    agent = Agent(brain, toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    task = agent.start("hi")
+    agent.stop(task.id)
+    await asyncio.wait_for(task.runner, 10)
+    assert task.status == "stopped" and brain.calls <= 1
+
+
 async def test_old_finished_conversations_are_dropped_but_recent_ones_stay(toolbox, home, tmp_path, monkeypatch):
     """A routine firing all day must not grow the agent's task memory forever."""
     import time as _time
@@ -239,11 +316,77 @@ async def test_old_finished_conversations_are_dropped_but_recent_ones_stay(toolb
     old = [agent.start(f"old {i}") for i in range(3)]
     for t in old:
         await asyncio.wait_for(t.runner, 5)
-        t.created = _time.time() - 2 * 24 * 3600  # pretend two days ago
+        t.created = t.active = _time.time() - 2 * 24 * 3600  # pretend two days ago
     fresh = agent.start("still here")
     await asyncio.wait_for(fresh.runner, 5)
     agent._trim()
     assert fresh.id in agent.tasks and all(t.id not in agent.tasks for t in old)
+
+
+async def test_the_task_cap_bites_even_when_every_conversation_is_young(toolbox, home, tmp_path, monkeypatch):
+    """A day of routines and team jobs can fill the list before anything reaches the age
+    window; the cap still has to hold, or memory grows without limit."""
+    from compii_core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "MAX_TASKS", 4)
+    agent = Agent(ScriptBrain([], final="ok"), toolbox, Policy(), Journal(tmp_path / "j.jsonl"),
+                  lambda e: asyncio.sleep(0))
+    for i in range(9):
+        task = agent.start(f"routine {i}")
+        await asyncio.wait_for(task.runner, 5)
+    assert len(agent.tasks) <= 4
+
+
+async def test_a_conversation_still_in_use_is_not_dropped_for_having_started_earlier(
+        toolbox, home, tmp_path, monkeypatch):
+    """Yesterday's chat that the user just replied to is the one they are looking at;
+    counting its age from the first question used to drop it out from under them."""
+    import time as _time
+
+    from compii_core import agent as agent_mod
+
+    monkeypatch.setattr(agent_mod, "MAX_TASKS", 4)
+    agent = Agent(ScriptBrain([], final="ok"), toolbox, Policy(), Journal(tmp_path / "j.jsonl"),
+                  lambda e: asyncio.sleep(0))
+    kept = agent.start("a chat I keep using")
+    await asyncio.wait_for(kept.runner, 5)
+    kept.created = _time.time() - 3 * 24 * 3600  # it began three days ago
+    others = [agent.start(f"routine {i}") for i in range(3)]
+    for t in others:
+        await asyncio.wait_for(t.runner, 5)
+    agent.reply(kept.id, "and again")  # the most recently used conversation of the five
+    await asyncio.wait_for(kept.runner, 5)
+    fresh = agent.start("one more")
+    await asyncio.wait_for(fresh.runner, 5)
+    assert kept.id in agent.tasks and len(agent.tasks) <= 4
+
+
+async def test_a_restart_still_knows_which_chat_was_used_last(toolbox, home, tmp_path, monkeypatch):
+    """The archive has to carry the last-used time: after Core comes back up every
+    conversation would otherwise look minutes old, and trim would evict by luck."""
+    from compii_core import agent as agent_mod
+    from compii_core.chats import load as load_chats, restore as restore_chats, save as save_chats
+
+    def fresh_agent(name: str) -> Agent:
+        return Agent(ScriptBrain([], final="ok"), toolbox, Policy(), Journal(tmp_path / name),
+                     lambda e: asyncio.sleep(0))
+
+    agent = fresh_agent("j.jsonl")
+    for i in range(3):
+        task = agent.start(f"chat {i}")
+        await asyncio.wait_for(task.runner, 5)
+    ids = list(agent.tasks)
+    agent.tasks[ids[0]].active -= 2 * 24 * 3600  # this one has been sitting for two days
+    save_chats(tmp_path / "chats.json", list(agent.tasks.values()))
+
+    monkeypatch.setattr(agent_mod, "MAX_TASKS", 3)
+    again = fresh_agent("j2.jsonl")
+    restore_chats(again, load_chats(tmp_path / "chats.json"), set(), None)
+    assert again.tasks[ids[0]].active < again.tasks[ids[2]].active
+
+    newest = again.start("something new")
+    await asyncio.wait_for(newest.runner, 5)
+    assert ids[0] not in again.tasks and ids[1] in again.tasks and newest.id in again.tasks
 
 
 async def test_a_long_task_cannot_grow_its_event_feed_forever(toolbox, home, tmp_path, monkeypatch):
@@ -335,6 +478,64 @@ async def test_stop_while_waiting_for_approval_runs_nothing(toolbox, home, tmp_p
     assert not any(e["type"] == "action_started" for e in events)
 
 
+# The app's Stop, answer and approval buttons are HTTP routes, and FastAPI runs a plain `def`
+# route on a worker thread. Poking a Future or Event from that thread doesn't wake the loop, so a
+# turn waiting for the user stayed asleep until something else roused it.
+
+async def test_a_stop_from_a_worker_thread_reaches_the_running_task(toolbox, home, tmp_path):
+    src = home["downloads"] / "holiday.jpg"
+    brain = ScriptBrain([("move_file", {"source": str(src), "destination": str(home["workspace"])})])
+
+    async def stop(e, agent):
+        if e["type"] == "approval_needed":
+            threading.Thread(target=agent.stop, args=(e["task_id"],), daemon=True).start()
+
+    task, events, _ = await run_agent(toolbox, tmp_path, brain, stop)
+    assert task.status == "stopped"
+    assert src.exists()
+    assert not any(e["type"] == "action_started" for e in events)
+
+
+def test_an_answer_from_a_worker_thread_wakes_a_waiting_turn(home, tmp_path):
+    """The loop has nothing else to do while a card is open, so waking it is the whole job.
+
+    The loop runs on its own thread here and the test thread only ever sleeps: pytest's own
+    timers would rouse it and hide the bug.
+    """
+    brain = ScriptBrain([("move_file", {"source": str(home["downloads"] / "holiday.jpg"),
+                                        "destination": str(home["workspace"])})])
+    reached: list[str] = []
+
+    async def emit(e):
+        if e["type"] == "approval_needed":
+            reached.append(e["approval_id"])
+
+    agent = Agent(brain, Toolbox([home["downloads"]], home["workspace"], lambda _p: None),
+                  Policy(), Journal(tmp_path / "j.jsonl"), emit)
+    loop = asyncio.new_event_loop()
+    finished: list[str] = []
+
+    async def turn():
+        task = agent.start("do it")
+        await task.runner
+        finished.append(task.status)
+
+    runner = threading.Thread(target=lambda: loop.run_until_complete(turn()), daemon=True)
+    runner.start()
+    for _ in range(60):
+        if reached:
+            break
+        time.sleep(0.05)
+    time.sleep(0.3)  # let the loop settle into the idle wait with nothing else scheduled
+    assert reached, "the turn never asked for approval"
+
+    threading.Thread(target=agent.decide, args=(reached[0], True), daemon=True).start()
+    runner.join(2)
+    loop.close()
+    assert finished == ["done"], "the turn stayed asleep although the user approved it"
+    assert (home["workspace"] / "holiday.jpg").exists()
+
+
 async def test_tool_errors_go_back_to_the_model(toolbox, home, tmp_path):
     brain = ScriptBrain([("read_file", {"path": str(home["downloads"] / "missing.txt")})])
     task, events, _ = await run_agent(toolbox, tmp_path, brain)
@@ -423,6 +624,25 @@ async def test_stopped_turn_leaves_a_valid_history_for_follow_ups(toolbox, home,
     assert last["role"] == "user" and last["content"][0]["type"] == "tool_result"
 
 
+async def test_a_connector_enabled_while_a_turn_is_running_does_not_break_it(toolbox, home, tmp_path):
+    """Enabling or disabling a connector happens on a request thread, and a turn may be
+    building its tool list at that exact moment."""
+
+    class Arriving:
+        name = "arriving"
+
+        def schema(self):
+            toolbox.tools["just_enabled"] = Arriving()
+            return {"name": self.name, "description": "x", "input_schema": {"type": "object", "properties": {}}}
+
+    toolbox.tools["arriving"] = Arriving()
+    agent = Agent(ScriptBrain([("list_folder", {"path": str(home["downloads"])})], final="ok"), toolbox, Policy(),
+                  Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
+    task = agent.start("do it")
+    await asyncio.wait_for(task.runner, 5)
+    assert task.status == "done" and "just_enabled" in toolbox.tools
+
+
 async def test_plan_and_file_events_are_emitted(toolbox, home, tmp_path):
     brain = ScriptBrain([
         ("update_plan", {"steps": [{"title": "Write note", "status": "active"}]}),
@@ -485,6 +705,9 @@ class FakeMic:
 
 def quiet_voice(workspace: Path, events: list | None = None) -> Voice:
     v = Voice(workspace / "models", (events.append if events is not None else lambda e: None), FakeMic, FakeSpeaker())
+    # Tests write a fake model.bin to mean "downloaded"; warming it up would hand
+    # that stub to the native loader in a background thread, which crashes hard.
+    v._warm_listen = lambda: None
     return v
 
 
@@ -1012,3 +1235,92 @@ def test_a_phone_glance_at_the_screen_is_a_real_picture_and_audited(paired_app, 
         monkeypatch.setattr(vision, "private_foreground", lambda: True)
         assert client.get("/screen/peek", headers={"X-Compii-Token": "tok"}).status_code == 423
     assert "screen_peek" in (home["workspace"] / "audit" / "audit.jsonl").read_text(encoding="utf-8")
+
+
+# ---- screen timeline ----------------------------------------------------------
+
+
+def test_screen_timeline_endpoints_remember_search_picture_and_forget(home):
+    import numpy as np
+
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    timeline = app.state.timeline
+    timeline._background = False
+    timeline.start = lambda: None
+    timeline._capture = lambda: {"app": "chrome.exe", "title": "Invoices — Chrome",
+                                 "text": "Your invoice for September is ready",
+                                 "pixels": np.full((90, 160, 3), 200, dtype=np.uint8)}
+    h = {"X-Compii-Token": "tok"}
+    with TestClient(app) as client:
+        assert client.get("/timeline").status_code == 401
+        off = client.get("/timeline", headers=h).json()
+        assert off["enabled"] is False and off["moments"] == 0
+        on = client.put("/timeline", json={"enabled": True, "every_seconds": 15}, headers=h).json()
+        assert on["enabled"] is True and on["every_seconds"] == 15
+        assert timeline.capture_once()["new"] is True
+        found = client.get("/timeline/moments", params={"q": "invoice"}, headers=h).json()
+        assert len(found) == 1 and found[0]["app"] == "chrome.exe" and found[0]["has_picture"]
+        mid = found[0]["id"]
+        detail = client.get(f"/timeline/moments/{mid}", headers=h).json()
+        assert detail["text"].startswith("Your invoice")
+        pic = client.get(f"/timeline/moments/{mid}/picture", headers=h)
+        assert pic.status_code == 200 and pic.content[:8] == b"\x89PNG\r\n\x1a\n"
+        assert client.delete(f"/timeline/moments/{mid}", headers=h).json()["ok"] is True
+        assert client.get(f"/timeline/moments/{mid}", headers=h).status_code == 404
+        assert client.delete(f"/timeline/moments/{mid}", headers=h).status_code == 404
+        timeline.capture_once()
+        assert client.delete("/timeline", headers=h).json()["deleted"] == 1
+        assert client.get("/timeline/moments", headers=h).json() == []
+    audit = (home["workspace"] / "audit" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "timeline_settings" in audit and "screen_timeline_forget_moment" in audit
+
+
+# ---- clipboard history and snippets ---------------------------------------------
+
+
+def test_clipboard_history_and_snippet_endpoints(home):
+    app = build_app(brain=ScriptBrain([]), workspace=home["workspace"], roots=[home["downloads"]], token="tok",
+                    voice=quiet_voice(home["workspace"]))
+    clips = app.state.clips
+    # The watcher never touches the real clipboard in tests (and nothing else is copied).
+    clips._read = lambda: ""
+    clips._source = lambda: ("", "")
+    clips._sequence = lambda: 0
+    h = {"X-Compii-Token": "tok"}
+    with TestClient(app) as client:
+        assert client.get("/clips").status_code == 401
+        off = client.get("/clips", headers=h).json()
+        assert off["enabled"] is False and off["items"] == 0
+        on = client.put("/clips", json={"enabled": True, "keep_days": 3, "max_items": 100}, headers=h).json()
+        assert on["enabled"] is True and on["keep_days"] == 3 and on["max_items"] == 100
+
+        clips.remember_text("Your invoice for September is ready", app="outlook.exe", title="Inbox")
+        clips.remember_text("https://example.com/pay", app="chrome.exe", title="Pay — Chrome")
+        found = client.get("/clips/items", params={"q": "invoice"}, headers=h).json()
+        assert len(found) == 1 and found[0]["app"] == "outlook.exe" and found[0]["kind"] == "text"
+        cid = found[0]["id"]
+        assert client.get(f"/clips/items/{cid}", headers=h).json()["text"].startswith("Your invoice")
+        assert client.patch(f"/clips/items/{cid}", json={"pinned": True}, headers=h).json()["pinned"] is True
+        assert len(client.get("/clips/items", params={"pinned": "true"}, headers=h).json()) == 1
+
+        other = client.get("/clips/items", params={"q": "example"}, headers=h).json()[0]
+        assert other["kind"] == "link"
+        assert client.delete(f"/clips/items/{other['id']}", headers=h).json()["ok"] is True
+        assert client.delete(f"/clips/items/{other['id']}", headers=h).status_code == 404
+
+        assert client.post("/snippets", json={"name": "Work signature", "body": "Regards,\nSam"}, headers=h).status_code == 200
+        saved = client.get("/snippets", headers=h).json()
+        assert len(saved) == 1 and saved[0]["name"] == "Work signature"
+        assert client.post("/snippets", json={"name": "work SIGNATURE", "body": "x"}, headers=h).status_code == 400
+        sid = saved[0]["id"]
+        assert client.put(f"/snippets/{sid}", json={"body": "Yours,\nSam"}, headers=h).json()["body"].startswith("Yours")
+        assert len(client.get("/snippets", params={"q": "yours"}, headers=h).json()) == 1
+
+        clips.remember_text("a third copy")
+        assert client.delete("/clips", headers=h).json()["deleted"] == 1
+        assert client.get("/clips", headers=h).json()["items"] == 1  # the pinned one stays
+        assert client.delete(f"/snippets/{sid}", headers=h).json()["ok"] is True
+        assert client.get("/snippets", headers=h).json() == []
+    audit = (home["workspace"] / "audit" / "audit.jsonl").read_text(encoding="utf-8")
+    assert "clipboard_settings" in audit and "snippet_saved" in audit and "clipboard_forget" in audit

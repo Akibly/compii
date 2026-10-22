@@ -1,9 +1,14 @@
 """The cursor buddy: talk to Compii from any app, Clicky-style.
 
 Shortcuts (all work in any app; the Compii window can stay closed):
-- Hold Ctrl + Alt and talk; let go to send. A quick tap does nothing.
+- Hold Ctrl + Alt and talk; let go to send. A quick tap offers the words you have
+  highlighted back to you with taps (Explain, Summarise, Translate, Look it up).
 - While holding, move the mouse over or around something: that's what you
   mean ("this", "here"). Compii sees the items under your trail.
+- Highlight words anywhere first, then hold Ctrl + Alt: Compii reads the
+  selection off the app itself (nothing is copied) and "explain this" /
+  "translate this" work on those exact words. The overlay also shows taps
+  — Explain, Summarise, Translate, Look it up — for when you'd rather not talk.
 - Hold Ctrl + Win and talk: your words are typed where your cursor is
   (dictation), never into password fields.
 - Say "watch me", show Compii a task, then say "done": it saves the steps
@@ -11,17 +16,19 @@ Shortcuts (all work in any app; the Compii window can stay closed):
 - Questions within 10 minutes of the last answer continue the same
   conversation, so "and what about…" works. Say "new topic" to start fresh.
 
-The moment you press, Compii notes the window you're in (items and labels
-only, never passwords), but only sends it to the AI when you ask about the
-screen or point at something; plain questions skip it and answer faster. Events for the overlay are `voice_buddy` with a
+The moment you press, Compii notes the window you're in (items, labels and any
+selected words only, never passwords), but only sends it to the AI when you ask
+about the screen or point at something; plain questions skip it and answer
+faster. Events for the overlay are `voice_buddy` with a
 `state`: listening → thinking → answer (or needs_you / watching /
-dictating / idle / setup / error), plus `voice_buddy_visible`.
+dictating / idle / setup / error / selected), plus `voice_buddy_visible`.
+`selected` carries the words highlighted when the user tapped Ctrl+Alt, so the
+overlay can offer taps instead of making them speak.
 """
 
 from __future__ import annotations
 
 import asyncio
-import random
 import re
 import threading
 import time
@@ -31,10 +38,8 @@ from typing import Any
 from .hotkey import TAP_MAX, VK_CONTROL, VK_WIN, HoldToTalk
 from . import sight
 from .voice import spoken_reply
-from .watch import Watcher
+from .watch import MAX_SECONDS, Watcher
 
-ACKS = ["One sec.", "Let me look.", "Okay, looking.", "Sure, one moment."]
-ACK_AFTER = 1.6  # seconds; most answers arrive sooner and need no filler
 WATCH_START = re.compile(r"^(?:ok(?:ay)?\s+)?(?:watch me|watch this|let me show you|i'?ll show you)\b[\s,.:]*(?P<goal>.*)$", re.I)
 REPEAT = re.compile(r"^(?:ok(?:ay)?\s+)?(?:say (?:that|it) again|repeat (?:that|it)?|what did you say|come again)[?.!]?$", re.I)
 HIDE = re.compile(r"^(?:ok(?:ay)?\s+)?(?:hide|go away|hide yourself|disappear)[.!]?$", re.I)
@@ -49,7 +54,8 @@ class Buddy:
                  handle_intent: Callable[[str], Awaitable[bool]], loop_getter: Callable[[], Any],
                  snapshot: Callable[[], dict[str, Any] | None] | None = None,
                  cursor: Callable[[], tuple[int, int]] | None = None,
-                 save_skill: Callable[[str, str, list[str]], Any] | None = None) -> None:
+                 save_skill: Callable[[str, str, list[str], list[dict[str, Any]]], Any] | None = None,
+                 selection: Callable[[], dict[str, Any] | None] | None = None) -> None:
         self.voice = voice
         self.agent = agent
         self._emit = emit
@@ -60,20 +66,23 @@ class Buddy:
 
         self._snapshot = snapshot or screen.snapshot_foreground
         self._cursor = cursor or screen.cursor_position
+        self._selection = selection or screen.selection
         self._screen = screen
         self._snap: dict[str, Any] | None = None
         self._snap_thread: threading.Thread | None = None
+        # The words the user had highlighted when they pressed, kept for the whole exchange.
+        self._sel: dict[str, Any] | None = None
         self._trail: list[tuple[int, int]] = []
         self._busy = threading.Lock()
         self.tasks: set[str] = set()  # conversations started from the buddy
         self.last_answer = ""
         self.conversation: str | None = None  # the buddy conversation follow-ups continue
-        self._ack: threading.Timer | None = None
         self.vision_key: Callable[[], str | None] | None = None  # set by the server: the NVIDIA key
         self._last_done = 0.0
         self.visible = True
         self.dictating = False
         self.watch_goal = ""
+        self.last_demo: dict[str, Any] | None = None  # the last recording, kept until saved or replaced
         self.watcher = Watcher(screen.item_at, self._cursor, screen.foreground_title, self._key_down, screen.focused_item)
         self.hotkey = HoldToTalk(self.start, self.end, self.cancel)
         self.dictation = HoldToTalk(self.dictate_start, self.dictate_end, self.cancel, first=VK_CONTROL, second=VK_WIN)
@@ -107,6 +116,7 @@ class Buddy:
             self.emit("setup", text="Turn on listening in Compii → Settings → Voice first.")
             return
         self._snap = None
+        self._sel = None
         self._trail = []
 
         def look() -> None:
@@ -114,6 +124,10 @@ class Buddy:
                 self._snap = self._snapshot()
             except Exception:  # noqa: BLE001 - screen awareness is best effort
                 self._snap = None
+            try:
+                self._sel = self._selection()  # read-only: the app's own highlight, nothing copied
+            except Exception:  # noqa: BLE001 - some apps simply won't say
+                self._sel = None
 
         self._snap_thread = threading.Thread(target=look, daemon=True)
         self._snap_thread.start()
@@ -139,11 +153,24 @@ class Buddy:
             time.sleep(0.04)
 
     def end(self, held: float) -> None:
-        """Ctrl+Alt released: send what you said. A quick accidental tap does nothing."""
+        """Ctrl+Alt released: send what you said. A quick tap offers the highlighted words back."""
         if held < TAP_MAX:
-            self.cancel()
+            # A tap with words highlighted is not an accident: it means "do something to these".
+            threading.Thread(target=self.offer_selection, daemon=True).start()
             return
         threading.Thread(target=self.finish, daemon=True).start()
+
+    def offer_selection(self) -> None:
+        """Show the highlighted words beside the cursor, with taps for what to do with them."""
+        if self._snap_thread is not None:
+            self._snap_thread.join(timeout=0.8)  # the read started the moment they pressed
+        text = str((self._sel or {}).get("text") or "").strip()
+        if not text:
+            self.cancel()  # a quick tap with nothing in front of Compii stays the accident it looks like
+            return
+        self.voice.cancel_listening()
+        self.emit("selected", text=text[:220] + ("…" if len(text) > 220 else ""),
+                  words=(self._sel or {}).get("words", 0), window=(self._sel or {}).get("window", ""))
 
     def cancel(self) -> None:
         self.voice.cancel_listening()
@@ -177,6 +204,8 @@ class Buddy:
                 focus = focus_from_trail(snap, self._trail)
                 if focus:
                     snap["focus"] = focus
+                if self._sel:  # "this" is most often the words they highlighted
+                    snap["selection"] = self._sel
             else:
                 snap = {}  # a plain question: answer it without reading the screen (faster)
             self.emit("thinking", heard=text)
@@ -188,21 +217,36 @@ class Buddy:
             self._busy.release()
 
     def _with_picture(self, snap: dict[str, Any], question: str) -> dict[str, Any]:
-        """Apps like Blender draw their own interface, so there's little to read: look at a
-        picture of the window instead (only when asked about the screen, never password managers)."""
+        """Add what a snapshot can't name: the words a local OCR pass reads from a picture of
+        the window (no key needed), plus a vision model when the user has one. Only when asked
+        about the screen, and never for password managers."""
         from . import vision
 
-        key = self.vision_key() if self.vision_key else None
-        if not key or not sight.enabled() or not getattr(self.voice.settings, "see_pictures", True) \
-                or not vision.needs_picture(snap):
+        if not sight.enabled() or not getattr(self.voice.settings, "see_pictures", True):
+            return snap
+        if not vision.needs_picture(snap):
             return snap
         try:
             self.emit("thinking", heard=question, step="Looking at your screen")
-            shot = vision.capture_foreground()
+            shot = vision.grab_foreground()
             if shot is None:
                 return snap
-            png, window = shot
-            return vision.merge(snap, vision.look(png, question, key), window)
+            pixels, window = shot
+            from . import ocr
+            boxes = ocr.read_png_boxes(vision.ocr_png(pixels))
+            if boxes:
+                snap = vision.merge_ocr(snap, boxes, window)
+            key = self.vision_key() if self.vision_key else None
+            if key:
+                snap = vision.merge(snap, vision.look(vision.png_of(pixels), question, key,
+                                                      window=str(snap.get("title") or "")), window)
+            if not snap.get("title"):
+                try:
+                    snap["title"] = self._screen.foreground_title()
+                except Exception:  # noqa: BLE001 - the words are still worth having
+                    pass
+            snap.setdefault("cursor", list(self._cursor()))
+            return snap
         except Exception:  # noqa: BLE001 - seeing is a bonus; answer from the labels instead
             return snap
 
@@ -227,7 +271,6 @@ class Buddy:
         if NEW_TOPIC.match(said):
             self.conversation = None
             return self.emit("idle", text="Okay, fresh start.")
-        self._ack_later()  # a quick "One sec." only if the answer takes a moment
         task = None
         if self.conversation and time.monotonic() - self._last_done < FOLLOW_UP_SECONDS:
             try:  # a follow-up: Compii remembers what you were just talking about
@@ -240,6 +283,36 @@ class Buddy:
             self.conversation = task.id
         self.tasks.add(task.id)
         self.emit("thinking", heard=text, task_id=task.id, screen=(snap or {}).get("title", ""))
+
+    # ---- the words you highlighted: tapped instead of said ----
+
+    @property
+    def selected(self) -> dict[str, Any] | None:
+        """The highlight Compii read when the user pressed Ctrl+Alt, if any."""
+        return self._sel
+
+    def ask(self, instruction: str) -> bool:
+        """Work on the selected words now, because the user tapped a word rather than spoke it.
+
+        The words are the ones that were highlighted when they pressed — read off the app then,
+        never from the clipboard, and never from a password field or manager.
+        """
+        said = " ".join(str(instruction or "").split())[:120]
+        picked = self._sel or {}
+        if not said:
+            return False
+        if not str(picked.get("text") or "").strip():
+            # Say why first: a tap that finds no words is worth an answer, not silence.
+            self.emit("idle", text="I can’t see any selected text. Highlight the words first, "
+                                   "then hold Control Alt.")
+            return False
+        loop = self._loop()
+        if loop is None:
+            return False
+        snap = {"title": picked.get("window") or "", "app": picked.get("app") or "",
+                "cursor": list(self._cursor()), "elements": [], "selection": picked}
+        asyncio.run_coroutine_threadsafe(self._handle(said, snap), loop)
+        return True
 
     # ---- commands (by voice: "say that again", "watch me", "hide") ----
 
@@ -263,25 +336,54 @@ class Buddy:
             self.emit("idle", text=sight.refusal())
             self.say("I can't watch you, because screen reading is turned off in Settings.")
             return
+        if self.watcher.running:
+            return
         self.watch_goal = goal
+        self.last_demo = None
         self.watcher.start()
         self.emit("watching")
         self.say("I'm watching. Show me, then hold Control Alt and say done.")
 
-    def stop_watching(self) -> None:
+    def watch_status(self) -> dict[str, Any]:
+        watching = self.watcher.running
+        return {
+            "watching": watching,
+            "goal": self.watch_goal,
+            "steps": list(self.watcher.steps),
+            "actions": self.watcher.recorded(),
+            "seconds": int(time.monotonic() - self.watcher.started) if watching else 0,
+            "limit": MAX_SECONDS,
+        }
+
+    def stop_watching(self, save: bool = True) -> dict[str, Any]:
+        """Stop recording and return the demonstration. Saves it as a skill when
+        `save` is set (the voice/hotkey path); the app reviews it first."""
         steps = self.watcher.stop()
         if not steps:
             self.emit("idle", text="I didn't see any steps.")
-            return
+            return {}
         goal = self.watch_goal or "What you showed me"
         name = goal[:1].upper() + goal[1:] if self.watch_goal else time.strftime("Shown %d %b %H:%M")
-        if self._save_skill:
-            self._save_skill(name, f"Repeat what the user demonstrated: {goal}.", steps)
+        instruction = f"Repeat what the user demonstrated: {goal}."
+        demo = {"goal": goal, "name": name, "instruction": instruction,
+                "steps": steps, "actions": self.watcher.recorded()}
+        self.last_demo = demo
+        if save and self._save_skill:
+            self._save_skill(name, instruction, steps, self.watcher.recorded())
         n = len(steps)
-        summary = f"Got it: {n} step{'s' if n != 1 else ''}, saved as “{name}”. Ask me to do it any time."
+        if save:
+            summary = f"Got it: {n} step{'s' if n != 1 else ''}, saved as “{name}”. Ask me to do it any time."
+        else:
+            summary = f"Got it: {n} step{'s' if n != 1 else ''}. Review it and save it in Compii."
         self.last_answer = summary
         self.emit("answer", text=summary, steps=steps)
         self.say(summary)
+        return demo
+
+    def cancel_watching(self) -> None:
+        self.watcher.stop()
+        self.last_demo = None
+        self.emit("idle")
 
     # ---- dictation: hold Ctrl + Win ----
 
@@ -321,22 +423,11 @@ class Buddy:
 
     # ---- task events → buddy states ----
 
-    def _ack_later(self) -> None:
-        """Say a short acknowledgement only if the answer isn't back within a moment,
-        so a fast answer is never cut off by "One sec."."""
-        if self._ack is not None:
-            self._ack.cancel()
-        self._ack = threading.Timer(ACK_AFTER, lambda: self.say(random.choice(ACKS)))
-        self._ack.daemon = True
-        self._ack.start()
-
     def on_task_event(self, event: dict[str, Any]) -> None:
         tid = event.get("task_id", "")
         if tid not in self.tasks:
             return
         kind = event.get("type")
-        if kind in ("task_finished", "approval_needed", "question") and self._ack is not None:
-            self._ack.cancel()
         if kind == "task_finished":
             self._last_done = time.monotonic()
             self.last_answer = event.get("text", "")
@@ -348,7 +439,11 @@ class Buddy:
             # Choice buttons beside the cursor; type the answer in the app if none of them fit.
             self.emit("needs_you", task_id=tid, question_id=event.get("question_id", ""),
                       choices=event.get("choices", []), text=event.get("question", ""))
-        elif kind == "question_answered":
+        elif kind == "takeover":
+            # A secret step is the user's to do; the card says "Done — carry on".
+            self.emit("needs_you", task_id=tid, takeover_id=event.get("takeover_id", ""),
+                      text=event.get("what", ""))
+        elif kind == "question_answered" or kind == "takeover_done":
             self.emit("thinking", task_id=tid, step="Thanks — carrying on")
         elif kind == "action_started":
             self.emit("thinking", task_id=tid, step=event.get("label", ""))

@@ -111,6 +111,7 @@ class _FirstRunState extends State<FirstRun> {
   String _localNote = '';
   StreamSubscription<Map<String, dynamic>>? _sub;
   final _groq = TextEditingController();
+  final _opencode = TextEditingController();
   final _nvidia = TextEditingController();
 
   static const steps = ['Hello', 'Thinking', 'Voice', 'Try it', 'Your choices'];
@@ -135,6 +136,7 @@ class _FirstRunState extends State<FirstRun> {
   void dispose() {
     _sub?.cancel();
     _groq.dispose();
+    _opencode.dispose();
     _nvidia.dispose();
     super.dispose();
   }
@@ -172,15 +174,25 @@ class _FirstRunState extends State<FirstRun> {
   Future<void> _saveKey(String name, TextEditingController field) => _run(() async {
     final value = field.text.trim();
     if (value.isEmpty) throw Exception('Paste the key first.');
-    await TrustApi.map('PUT', '/keys/$name', {'value': value});
+    var v = Map<String, dynamic>.from(await TrustApi.map('PUT', '/keys/$name', {'value': value}));
     field.clear(); // the key now lives in Windows Credential Manager, never in the app
-    if (name == 'groq') {
-      // Groq thinks; NVIDIA (if stored) is the backup.
-      await TrustApi.map('PUT', '/brain', {
-        'primary': {'provider': 'groq', 'model': '', 'base_url': ''},
-        'fallback': _has('nvidia') ? {'provider': 'nvidia', 'model': '', 'base_url': ''} : null,
-        'fallback_enabled': _has('nvidia'),
-      });
+    if (name == 'groq' || name == 'opencode') {
+      // Whichever free key was given thinks; the other stored one is the backup.
+      final primary = name == 'opencode' ? 'opencode_go' : 'groq';
+      final backup = name == 'opencode' ? 'groq' : 'nvidia';
+      v = Map<String, dynamic>.from(await TrustApi.map('PUT', '/brain', {
+        'primary': {'provider': primary, 'model': '', 'base_url': ''},
+        'fallback': _has(backup) ? {'provider': backup, 'model': '', 'base_url': ''} : null,
+        'fallback_enabled': _has(backup),
+      }));
+    }
+    // Core tries the AI as soon as it is saved; saying the result here is what stops a
+    // first-run screen that looks finished but leaves the user with a brain that can't answer.
+    final probe = Map<String, dynamic>.from((v['probe'] as Map?) ?? const {});
+    if (probe.isNotEmpty) {
+      _localNote = probe['ok'] == true
+          ? 'That answered, so Compii can think with it.'
+          : 'Saved, but that AI didn’t answer: ${probe['error'] ?? 'check the key and try again'}';
     }
   });
 
@@ -225,7 +237,7 @@ class _FirstRunState extends State<FirstRun> {
           Expanded(
             child: Center(
               child: SingleChildScrollView(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
+                padding: EdgeInsets.symmetric(horizontal: Space.gutter(context), vertical: Space.m),
                 child: ConstrainedBox(
                   constraints: const BoxConstraints(maxWidth: 560),
                   child: Column(
@@ -238,12 +250,16 @@ class _FirstRunState extends State<FirstRun> {
                           size: 190,
                           child: SizedBox.square(
                             dimension: 130,
-                            child: Orbling(mood: step == 0 || step == 4 ? Mood.happy : step == 3 ? Mood.listening : Mood.idle),
+                            child: Ember(mood: step == 0 || step == 4 ? Mood.happy : step == 3 ? Mood.listening : Mood.idle),
                           ),
                         ),
                       ),
                       const SizedBox(height: 8),
                       ..._page(context),
+                      if (busy) ...[
+                        const SizedBox(height: Space.l),
+                        _working(context),
+                      ],
                       if (error != null) ...[
                         const SizedBox(height: 12),
                         Text(error!, style: context.type.bodySmall?.copyWith(color: c.danger)),
@@ -261,33 +277,111 @@ class _FirstRunState extends State<FirstRun> {
     );
   }
 
+  String _stepState(int i) => i == step ? 'Now' : i < step ? 'Done' : 'Upcoming';
+
+  Widget _stepLabel(int i, BuildContext context) {
+    final c = context.c;
+    return Text(
+      steps[i],
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: context.type.labelSmall?.copyWith(
+        color: i == step ? c.text : c.muted,
+        fontWeight: i == step ? FontWeight.w700 : FontWeight.w600,
+      ),
+    );
+  }
+
+  Widget _stepStateLabel(int i, BuildContext context) => Text(
+    _stepState(i),
+    style: context.type.labelSmall?.copyWith(
+      color: i == step ? context.c.accent : context.c.faint,
+      fontWeight: i == step ? FontWeight.w700 : FontWeight.w500,
+    ),
+  );
+
   Widget _progress(BuildContext context) {
     final c = context.c;
-    return Row(
-      children: [
-        for (var i = 0; i < steps.length; i++) ...[
-          if (i > 0) const SizedBox(width: 6),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                AnimatedContainer(
-                  duration: const Duration(milliseconds: 250),
-                  height: 4,
-                  decoration: BoxDecoration(
-                    color: i <= step ? c.accent : c.border,
-                    borderRadius: BorderRadius.circular(2),
-                  ),
+    return LayoutBuilder(builder: (context, box) {
+      if (box.maxWidth < 420 * MediaQuery.textScalerOf(context).scale(1)) return _stepChips(context);
+      return Row(
+        children: [
+          for (var i = 0; i < steps.length; i++) ...[
+            if (i > 0) const SizedBox(width: 6),
+            Expanded(
+              child: Semantics(
+                selected: i == step,
+                label: 'Step ${i + 1} of ${steps.length}: ${steps[i]}, ${_stepState(i).toLowerCase()}',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    AnimatedContainer(
+                      duration: context.motion(Motion.base),
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: i <= step ? c.accent : c.border,
+                        borderRadius: Shapes.pill,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    _stepLabel(i, context),
+                    const SizedBox(height: 2),
+                    _stepStateLabel(i, context),
+                  ],
                 ),
-                const SizedBox(height: 6),
-                Text(steps[i], style: context.type.labelSmall?.copyWith(color: i == step ? c.text : c.muted)),
-              ],
+              ),
+            ),
+          ],
+        ],
+      );
+    });
+  }
+
+  Widget _stepChips(BuildContext context) {
+    final c = context.c;
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: [
+        for (var i = 0; i < steps.length; i++)
+          Semantics(
+            selected: i == step,
+            label: 'Step ${i + 1} of ${steps.length}: ${steps[i]}, ${_stepState(i).toLowerCase()}',
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: i == step ? c.accentSoft : c.raised,
+                border: Border.all(color: i == step ? c.accent : c.border),
+                borderRadius: Shapes.pill,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Glyph(G.dot, size: 9, color: i <= step ? c.accent : c.borderStrong),
+                  const SizedBox(width: 6),
+                  Flexible(child: _stepLabel(i, context)),
+                  const SizedBox(width: 5),
+                  _stepStateLabel(i, context),
+                ],
+              ),
             ),
           ),
-        ],
       ],
     );
   }
+
+  Widget _working(BuildContext context) => Center(
+    child: AdaptiveRow(
+      mainAxisSize: MainAxisSize.min,
+      breakpoint: 160,
+      children: [
+        const SizedBox(width: 15, height: 15, child: CircularProgressIndicator(strokeWidth: 2)),
+        const SizedBox(width: Space.m),
+        Text('Compii is doing that now…',
+            style: context.type.bodySmall?.copyWith(color: context.c.muted)),
+      ],
+    ),
+  );
 
   List<Widget> _page(BuildContext context) {
     final t = context.type;
@@ -311,12 +405,15 @@ class _FirstRunState extends State<FirstRun> {
           const SizedBox(height: 16),
           _keyCard(context, 'groq', 'Groq key', 'Free · thinking and listening', 'https://console.groq.com/keys', _groq),
           const SizedBox(height: 10),
+          _keyCard(context, 'opencode', 'OpenCode key', 'Free models · one key, no card',
+              'https://opencode.ai/auth', _opencode),
+          const SizedBox(height: 10),
           _keyCard(context, 'nvidia', 'NVIDIA key (optional)', 'Free · a backup brain, and seeing apps like Blender',
               'https://build.nvidia.com/settings/api-keys', _nvidia),
           const SizedBox(height: 10),
           _card(context, G.monitor, 'AI on this PC (no key)',
               'If you already run Ollama or LM Studio, Compii can think with it. Nothing leaves your computer.',
-              Row(mainAxisSize: MainAxisSize.min, children: [
+              AdaptiveRow(mainAxisSize: MainAxisSize.min, breakpoint: 300, children: [
                 OutlinedButton(onPressed: busy ? null : () => _useLocal('ollama'), child: const Text('Ollama')),
                 const SizedBox(width: 8),
                 OutlinedButton(onPressed: busy ? null : () => _useLocal('lmstudio'), child: const Text('LM Studio')),
@@ -339,12 +436,18 @@ class _FirstRunState extends State<FirstRun> {
           _card(context, G.speakingHead, natural ? 'Natural voice ready' : 'Natural voice · 120 MB',
               natural ? 'Choose how I sound, then tap Hear me.' : 'A one-time download of an open voice model.',
               natural
-                  ? Row(mainAxisSize: MainAxisSize.min, children: [
-                      DropdownButton<String>(
-                        value: voices.containsKey(_settings['voice']) ? '${_settings['voice']}' : null,
-                        underline: const SizedBox.shrink(),
-                        items: [for (final e in voices.entries) DropdownMenuItem(value: e.key, child: Text('${e.value}'))],
-                        onChanged: (v) => _run(() async => widget.voice?.set({'voice': v})),
+                  ? AdaptiveRow(mainAxisSize: MainAxisSize.min, breakpoint: 300, children: [
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 220),
+                        child: SingleChildScrollView(
+                          scrollDirection: Axis.horizontal,
+                          child: DropdownButton<String>(
+                            value: voices.containsKey(_settings['voice']) ? '${_settings['voice']}' : null,
+                            underline: const SizedBox.shrink(),
+                            items: [for (final e in voices.entries) DropdownMenuItem(value: e.key, child: Text('${e.value}'))],
+                            onChanged: (v) => _run(() async => widget.voice?.set({'voice': v})),
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 8),
                       OutlinedButton(
@@ -354,7 +457,19 @@ class _FirstRunState extends State<FirstRun> {
                       ),
                     ])
                   : progress != null
-                      ? const SizedBox(width: 120, child: LinearProgressIndicator())
+                      ? SizedBox(
+                          width: 150,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              LinearProgressIndicator(
+                                  value: (progress as num).toDouble() > 0 ? progress.toDouble() : null),
+                              const SizedBox(height: 4),
+                              Text('Downloading…', style: context.type.labelMedium),
+                            ],
+                          ),
+                        )
                       : FilledButton(
                           onPressed: busy ? null : () => _run(() async => widget.voice?.download('speak')),
                           child: const Text('Download'),
@@ -362,6 +477,7 @@ class _FirstRunState extends State<FirstRun> {
         ];
       case 3:
         final ready = voiceStatus['listen_ready'] == true;
+        final waiting = heard.isEmpty;
         return [
           h('Try it'),
           const SizedBox(height: 8),
@@ -369,9 +485,14 @@ class _FirstRunState extends State<FirstRun> {
               ? 'Hold Ctrl + Alt, say “Hi Compii, what can you do?”, then let go. You can do this in any app.'
               : 'Add a Groq key (step 2) so I can hear you, or download on-PC listening in Settings → Voice.'),
           const SizedBox(height: 16),
-          _card(context, G.mic, heard.isEmpty ? 'Waiting for you…' : 'I heard you!',
-              heard.isEmpty ? 'Hold both keys while you talk.' : '“$heard”',
-              heard.isEmpty ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+          _card(context, G.mic, waiting ? 'Waiting for you' : 'I heard you!',
+              waiting
+                  ? 'Nothing is happening yet — Compii is idle until you speak, and it is not listening right now. '
+                    'What I need from you: hold Ctrl + Alt in any app, say “Hi Compii, what can you do?”, '
+                    'then let go. What you said appears here.'
+                  : '“$heard”',
+              waiting
+                  ? Text('Your turn', style: context.type.labelMedium?.copyWith(color: context.c.warning))
                   : Glyph(G.checkCircle, color: context.c.success)),
         ];
       default:
@@ -417,21 +538,25 @@ class _FirstRunState extends State<FirstRun> {
     if (_has(key)) return _card(context, G.key, '$title stored', sub, Glyph(G.checkCircle, color: c.success));
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: BorderRadius.circular(14)),
+      decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: Shapes.r14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            GlyphTile(glyph: G.key, size: 34, color: c.accent),
-            const SizedBox(width: 12),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(title, style: context.type.titleSmall),
-              Text(sub, style: context.type.bodySmall),
-            ])),
+          AdaptiveRow(breakpoint: 380, children: [
+            Expanded(
+              child: Row(children: [
+                GlyphTile(glyph: G.key, size: 34, color: c.accent),
+                const SizedBox(width: 12),
+                Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text(title, style: context.type.titleSmall),
+                  Text(sub, style: context.type.bodySmall),
+                ])),
+              ]),
+            ),
             TextButton(onPressed: () => _open(url), child: const Text('Get a free key')),
           ]),
           const SizedBox(height: 10),
-          Row(children: [
+          AdaptiveRow(breakpoint: 380, children: [
             Expanded(
               child: TextField(
                 controller: field,
@@ -454,14 +579,18 @@ class _FirstRunState extends State<FirstRun> {
     final c = context.c;
     return Container(
       padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: BorderRadius.circular(14)),
-      child: Row(children: [
-        GlyphTile(glyph: glyph, size: 34, color: c.accent),
-        const SizedBox(width: 12),
-        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text(title, style: context.type.titleSmall),
-          Text(sub, style: context.type.bodySmall),
-        ])),
+      decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: Shapes.r14),
+      child: AdaptiveRow(breakpoint: 380, children: [
+        Expanded(
+          child: Row(children: [
+            GlyphTile(glyph: glyph, size: 34, color: c.accent),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text(title, style: context.type.titleSmall),
+              Text(sub, style: context.type.bodySmall),
+            ])),
+          ]),
+        ),
         const SizedBox(width: 10),
         trailing,
       ]),
@@ -473,9 +602,11 @@ class _FirstRunState extends State<FirstRun> {
     // Step 1 needs a brain: a stored key, or a local AI already chosen as active.
     final canGo = step != 1 ||
         _has('groq') ||
+        _has('opencode') ||
         _has('nvidia') ||
         const ['ollama', 'lmstudio'].contains('${brain['active'] ?? ''}');
-    return Row(
+    return AdaptiveRow(
+      breakpoint: 380,
       children: [
         if (step > 0) TextButton(onPressed: () => setState(() => step--), child: const Text('Back')),
         if (!canGo)

@@ -20,8 +20,8 @@ const overlayWindow = Size(460, 360);
 /// The desktop pointing overlay (HeyClicky-style). The native runner creates
 /// it as a small borderless, always-on-top popup; here it becomes transparent
 /// and click-through. When Core says "point at this", the window moves beside
-/// the item, the Orbling's free mitten reaches out to it, a ring marks it and
-/// a bubble explains. Then it fades away.
+/// the item, the Ember focuses on it, a ring marks it and a bubble
+/// explains. Then it fades away.
 ///
 /// The window is never resized: resizing a transparent window after creation
 /// leaves its picture stretched or blank on Windows.
@@ -98,6 +98,8 @@ class OverlayApp extends StatelessWidget {
       cursor: cursor ?? () async => Offset.zero,
       onDecide: (id, approved) => core.decide(id, approved: approved),
       onAnswer: (id, text) => core.answerQuestion(id, text),
+      onTakeover: (id, outcome) => core.finishTakeover(id, outcome: outcome),
+      onSelect: (instruction) => core.selectionAsk(instruction),
       setClickThrough: (through) async {
         try {
           await _overlayChannel.invokeMethod<void>('clickThrough', through);
@@ -252,7 +254,7 @@ class _PointerLayerState extends State<PointerLayer> {
             child: IgnorePointer(
               child: DecoratedBox(
                 decoration: BoxDecoration(
-                  border: Border.all(color: OrblingPalette.body, width: 3),
+                  border: Border.all(color: EmberPalette.frame, width: 3),
                   borderRadius: BorderRadius.circular(10),
                 ),
               ),
@@ -260,7 +262,7 @@ class _PointerLayerState extends State<PointerLayer> {
           ),
           Positioned.fromRect(
             rect: layout.character,
-            child: Orbling(mood: Mood.idle, reach: layout.reach),
+            child: Ember(mood: Mood.idle, reach: layout.reach),
           ),
           if (_message.isNotEmpty)
             Positioned(

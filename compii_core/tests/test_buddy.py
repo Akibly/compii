@@ -76,9 +76,10 @@ class Mic(FakeMic):
         pass
 
 
-def test_buddy_round_trip_answers_about_the_screen_and_points_by_id(home):
+def test_buddy_round_trip_answers_about_the_screen_and_points_by_id(home, monkeypatch):
     from compii_core.voice import Voice
 
+    monkeypatch.setattr("compii_core.vision.grab_foreground", lambda: None)  # no live desktop in tests
     calls = [("point_at", {"target": "e2", "message": "This one."})]
     brain = ScriptBrain(calls, final="Click Table, here.")
     voice = Voice(home["workspace"] / "models", lambda e: None, recorder_factory=Mic, speaker=FakeSpeaker())

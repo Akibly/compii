@@ -9,7 +9,7 @@ from compii_core.keys import MemoryKeyStore
 from compii_core.providers import FallbackBrain, OpenAICompatBrain
 from compii_core.server import build_app
 
-from test_core import ScriptBrain, home  # noqa: F401 - fixture
+from test_core import ScriptBrain, home, quiet_voice  # noqa: F401 - fixture
 
 
 class ToolSpy(ScriptBrain):
@@ -33,16 +33,17 @@ def _run(app, request, origin):
 
 def test_a_quick_spoken_question_sends_only_the_slim_tool_set(home):
     brain = ToolSpy([])
-    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
     _run(app, "what time zone is Ghana in", {"buddy": True})
     sent = brain.tool_names[0]
-    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 3  # + more_tools, watch_for_step, ask_user
+    # + more_tools, hand_to_user, watch_for_step, ask_user, remember_bot
+    assert MORE_TOOLS["name"] in sent and len(sent) <= len(QUICK_TOOLS) + 5
     assert "create_spreadsheet" not in sent
 
 
 def test_more_tools_unlocks_everything_mid_task(home):
     brain = ToolSpy([("more_tools", {})])
-    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
     _run(app, "what's up", {"buddy": True})
     assert "create_spreadsheet" not in brain.tool_names[0]
     assert "create_spreadsheet" in brain.tool_names[1]
@@ -52,9 +53,102 @@ def test_typed_and_file_requests_get_every_tool(home):
     for request, origin in [("hello", None), ("tidy my downloads folder", {"buddy": True})]:
         brain = ToolSpy([])
         app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t",
-                        keys=MemoryKeyStore())
+                        keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
         _run(app, request, origin)
         assert "create_spreadsheet" in brain.tool_names[0], request
+
+
+class StreamingBrain:
+    """Writes its answer a word at a time, the way a real provider streams it."""
+
+    def __init__(self) -> None:
+        self.drafts: list[str] = []
+
+    async def step(self, system, messages, tools):
+        raise AssertionError("the streaming path must be used")
+
+    async def step_stream(self, system, messages, tools, on_text):
+        from compii_core.agent import BrainReply
+
+        text = ""
+        for word in ["Ghana ", "uses ", "GMT."]:
+            text += word
+            await on_text(text)
+            await asyncio.sleep(0.12)  # a real provider's tokens arrive over time
+        self.drafts.append(text)
+        return BrainReply([{"type": "text", "text": text}], text, [], "end_turn")
+
+
+def test_a_streaming_brain_reaches_the_app_while_it_is_still_writing(home):
+    brain = StreamingBrain()
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t",
+                    keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
+    agent = app.state.agent
+    seen: list[dict] = []
+    original = agent._emit
+
+    async def capture(event):
+        seen.append(event)
+        await original(event)
+
+    agent._emit = capture
+
+    async def go():
+        task = agent.start("What time zone is Ghana in?", origin={"buddy": True})
+        await asyncio.wait_for(task.runner, 10)
+        return task
+
+    task = asyncio.run(go())
+    drafts = [e["text"] for e in seen if e["type"] == "answer_delta"]
+    assert drafts == ["Ghana ", "Ghana uses ", "Ghana uses GMT."]
+    assert not any(e["type"] == "answer_delta" for e in task.events)  # live frames are not kept in history
+    assert task.events[-1]["type"] == "task_finished" and task.events[-1]["text"] == "Ghana uses GMT."
+
+
+def test_openai_streaming_shows_words_and_collects_tool_calls():
+    body = b"".join([
+        b'data: {"choices":[{"delta":{"content":"Ghana "}}]}\n\n',
+        b'data: {"choices":[{"delta":{"content":"uses GMT."},"finish_reason":"stop"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ])
+    brain = OpenAICompatBrain("https://a/v1", "m", "k",
+                              transport=httpx.MockTransport(lambda request: httpx.Response(200, content=body)))
+    drafts: list[str] = []
+
+    async def on_text(text):
+        drafts.append(text)
+
+    reply = asyncio.run(brain.step_stream("s", [{"role": "user", "content": "hi"}], [], on_text))
+    assert reply.text == "Ghana uses GMT." and reply.stop_reason == "end_turn"
+    assert drafts == ["Ghana", "Ghana uses GMT."]
+
+    tool_body = b"".join([
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"find_files",'
+        b'"arguments":"{\\"q\\":\\"inv"}}]}}]}\n\n',
+        b'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"oice\\"}"}}]},'
+        b'"finish_reason":"tool_calls"}]}\n\n',
+        b"data: [DONE]\n\n",
+    ])
+    brain = OpenAICompatBrain("https://a/v1", "m", "k",
+                              transport=httpx.MockTransport(lambda request: httpx.Response(200, content=tool_body)))
+    reply = asyncio.run(brain.step_stream("s", [{"role": "user", "content": "find my invoice"}], [], on_text))
+    assert reply.stop_reason == "tool_use"
+    assert reply.tool_calls[0].name == "find_files" and reply.tool_calls[0].input == {"q": "invoice"}
+
+
+def test_a_server_that_ignores_streaming_still_answers():
+    brain = OpenAICompatBrain("https://a/v1", "m", "k", transport=httpx.MockTransport(
+        lambda request: httpx.Response(200, json={"choices": [
+            {"message": {"content": "Ghana uses GMT."}, "finish_reason": "stop"},
+        ]})))
+    drafts: list[str] = []
+
+    async def on_text(text):
+        drafts.append(text)
+
+    reply = asyncio.run(brain.step_stream("s", [{"role": "user", "content": "hi"}], [], on_text))
+    assert reply.text == "Ghana uses GMT." and reply.stop_reason == "end_turn"
+    assert drafts == ["Ghana uses GMT."]
 
 
 def test_over_the_limit_hands_to_the_backup_without_waiting():
@@ -92,7 +186,7 @@ class Recorder(ScriptBrain):
 
 def test_follow_ups_remember_the_conversation_compactly(home):
     brain = Recorder(["Ghana uses GMT.", "Yes, London is the same in winter."])
-    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore())
+    app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t", keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
     agent = app.state.agent
 
     async def go():

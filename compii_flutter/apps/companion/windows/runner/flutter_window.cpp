@@ -1,10 +1,68 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <string>
 
 #include <flutter/standard_method_codec.h>
 
+#include <winrt/Windows.Data.Xml.Dom.h>
+#include <winrt/Windows.UI.Notifications.h>
+#include <winrt/base.h>
+
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+// Flutter sends UTF-8; the toast XML wants UTF-16 with &, < and > escaped.
+std::wstring Widen(const std::string& utf8) {
+  if (utf8.empty()) return std::wstring();
+  int size = ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                                   static_cast<int>(utf8.size()), nullptr, 0);
+  std::wstring wide(static_cast<size_t>(size), L'\0');
+  ::MultiByteToWideChar(CP_UTF8, 0, utf8.data(),
+                        static_cast<int>(utf8.size()), wide.data(), size);
+  return wide;
+}
+
+std::wstring EscapeXml(const std::wstring& text) {
+  std::wstring out;
+  out.reserve(text.size());
+  for (wchar_t c : text) {
+    switch (c) {
+      case L'&': out += L"&amp;"; break;
+      case L'<': out += L"&lt;"; break;
+      case L'>': out += L"&gt;"; break;
+      case L'"': out += L"&quot;"; break;
+      case L'\'': out += L"&apos;"; break;
+      default: out += c;
+    }
+  }
+  return out;
+}
+
+std::string MapString(const flutter::EncodableMap& map, const char* key) {
+  auto found = map.find(flutter::EncodableValue(key));
+  if (found == map.end()) return std::string();
+  const auto* text = std::get_if<std::string>(&found->second);
+  return text == nullptr ? std::string() : *text;
+}
+
+// A real Windows toast (notification centre included), no shortcut needed.
+void ShowToast(const std::wstring& title, const std::wstring& body) {
+  using namespace winrt::Windows::UI::Notifications;
+  using namespace winrt::Windows::Data::Xml::Dom;
+
+  std::wstring xml =
+      L"<toast><visual><binding template=\"ToastGeneric\"><text>" +
+      EscapeXml(title) + L"</text><text>" + EscapeXml(body) +
+      L"</text></binding></visual></toast>";
+  XmlDocument document;
+  document.LoadXml(xml);
+  ToastNotification toast(document);
+  ToastNotificationManager::CreateToastNotifier(L"Compii").Show(toast);
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -47,6 +105,23 @@ bool FlutterWindow::OnCreate() {
           }
           result->Success(flutter::EncodableValue(flutter::EncodableList{
               flutter::EncodableValue(static_cast<double>(p.x)), flutter::EncodableValue(static_cast<double>(p.y))}));
+          return;
+        }
+        if (call.method_name() == "toast") {
+          const auto* args = std::get_if<flutter::EncodableMap>(call.arguments());
+          if (args == nullptr) {
+            result->Error("bad-args", "A toast needs a title and a body");
+            return;
+          }
+          std::wstring title = Widen(MapString(*args, "title"));
+          std::wstring body = Widen(MapString(*args, "body"));
+          if (title.empty()) title = L"Compii";
+          try {
+            ShowToast(title, body);
+            result->Success();
+          } catch (const winrt::hresult_error& e) {
+            result->Error("toast-failed", winrt::to_string(e.message()));
+          }
           return;
         }
         if (call.method_name() != "clickThrough") {

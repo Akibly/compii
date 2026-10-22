@@ -74,7 +74,7 @@ def profile_form_tools(profile: Profile, browser: Callable[[], Any]) -> list[Too
         secrets = [k for k in values if is_secret(k, values[k])]
         if secrets:
             raise ToolError(f"Compii never types passwords, card numbers or one-time codes ({', '.join(secrets)}). "
-                            "Ask the user to fill those fields themselves, then carry on.")
+                            "Leave them out and call hand_to_user for those fields; the rest can be filled normally.")
         filled, missing, unverified, page = browser().fill_many(values, bool(a.get("submit")))
         if not filled and not unverified:
             raise ToolError("None of those fields are on the page. Call form_fields to get the exact labels.")

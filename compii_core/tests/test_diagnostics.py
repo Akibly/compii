@@ -8,7 +8,7 @@ from compii_core.diagnostics import clean
 from compii_core.keys import MemoryKeyStore
 from compii_core.server import build_app
 
-from test_core import ScriptBrain, home  # noqa: F401
+from test_core import ScriptBrain, home, quiet_voice  # noqa: F401
 
 
 def test_report_removes_keys_tokens_and_user_name(home, monkeypatch):
@@ -20,7 +20,7 @@ def test_report_removes_keys_tokens_and_user_name(home, monkeypatch):
     (ws / "core.log").write_text(f"started\nkey gsk_SECRETSECRETSECRET123 used\nWebSocket /events?t=tok-abcdefghijklmnop\n"
                                  f"file {Path.home() / 'Documents' / 'x.txt'}\n", encoding="utf-8")
     (ws / "app.log").write_text("Flutter error: boom\n", encoding="utf-8")
-    app = build_app(brain=ScriptBrain([]), workspace=ws, roots=[home["downloads"]], token="tok-abcdefghijklmnop", keys=keys)
+    app = build_app(brain=ScriptBrain([]), workspace=ws, roots=[home["downloads"]], token="tok-abcdefghijklmnop", keys=keys, voice=quiet_voice(ws))
     with TestClient(app) as c:
         r = c.post("/diagnostics", headers={"X-Compii-Token": "tok-abcdefghijklmnop"})
     path = Path(r.json()["path"])

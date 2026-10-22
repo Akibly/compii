@@ -31,6 +31,7 @@ END_SILENCE = 0.5  # pause that ends a burst
 COMMAND_SILENCE = 1.2  # pause that ends a spoken command
 COMMAND_WAIT = 6.0  # how long to wait for a command after "Yes?"
 COMMAND_MAX = 20.0
+COMMAND_KEEP = int(COMMAND_MAX * 10)  # blocks of audio the follow-up window can reach back through
 
 GREETINGS = {"hey", "hi", "hay", "he", "hei", "ok", "okay", "yo", "hello", "a"}
 NAMES = ("compii", "compy", "compie", "compi", "kompi", "kompy", "campy")
@@ -177,10 +178,17 @@ class WakeListener:
             self.on_command(command)
 
     def _listen_for_command(self) -> str:
-        """After "Yes?": record until the user stops talking."""
+        """After "Yes?": record until the user stops talking.
+
+        Whisper spends a second or two deciding that the wake phrase was real, and a person
+        who answers straight away is already recorded by then. The queue is what the microphone
+        caught during that wait, so it is the command; dropping it made Compii say "Yes?" and
+        then ignore the words the user had just spoken.
+        """
         with self._have:
+            backlog = list(self._blocks)[-COMMAND_KEEP:]
             self._blocks.clear()
-        chunks: list[np.ndarray] = []
+        chunks: list[np.ndarray] = backlog
         started = time.monotonic()
         spoke = False
         quiet = 0.0

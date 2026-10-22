@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import secrets
 import socket
 import subprocess
@@ -12,17 +13,29 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
-from . import __version__
+from . import __version__, catalog
 from .agent import Agent, Brain
 from .audit import AuditLog
+from .bots import TEMPLATES, Bots, packs_view
+from .supervise import Supervisor
+from .suggest import Suggestions
+from .chats import load as load_chats, restore as restore_chats, save as save_chats
 from .keys import KeyStore, KeyStoreError
+from .library import Library, LibraryError
+from .knowledge import Knowledge, KnowledgeError, knowledge_tools
+from .daybook import build_daybook, daybook_tool
+from .workjournal import WorkJournal, journal_tool
+from .ledger import Ledger, usage_tool
+from .opinion import second_opinion_tool
+from .reach import Reach, reach_tools
 from .policy import Rule
 from . import providers as prov
+from .search import search_everything
 from .skills import Skills, draft as draft_skill, from_task, skill_tools, suggest_name
 from .walkthrough import Walkthroughs
 from . import intents
@@ -47,8 +60,64 @@ def workspace_dir() -> Path:
     return Path(os.environ.get("COMPII_HOME", Path.home() / "Compii"))
 
 
+_RESERVED_NAMES = {"CON", "PRN", "AUX", "NUL"} | {f"COM{i}" for i in range(1, 10)} | {f"LPT{i}" for i in range(1, 10)}
+
+
+def _safe_filename(raw: str) -> str:
+    """An uploaded file's own name, with anything Windows or a path can't carry taken out."""
+    clean = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", Path(raw.replace("\\", "/")).name).strip(" .")
+    stem, dot, ext = clean.rpartition(".")
+    if not dot:
+        stem, ext = clean, ""
+    stem = (stem[:110] or "file").strip(" .") or "file"
+    ext = re.sub(r"[^A-Za-z0-9]", "", ext)[:16]
+    name = f"{stem}.{ext}" if ext else stem
+    return f"_{name}" if stem.upper() in _RESERVED_NAMES else name
+
+
 class NewTask(BaseModel):
     request: str
+    bot_id: str | None = None
+    # Team chat: 2–6 bots share the thread; the first one speaks first.
+    team: list[str] = []
+    # Files already on this PC that the user attached to the message.
+    attachments: list[str] = []
+
+
+class BotNew(BaseModel):
+    name: str
+    job: str = ""
+    instructions: str = ""
+    color: str = ""
+    avatar: str = ""
+    template: str = ""
+    mode: str = ""
+    tools: list[str] | None = None
+
+
+class BotEdit(BaseModel):
+    name: str | None = None
+    job: str | None = None
+    instructions: str | None = None
+    color: str | None = None
+    avatar: str | None = None
+    pinned: bool | None = None
+    trust: str | None = None
+    mode: str | None = None
+    tools: list[str] | None = None
+
+
+class HireBody(BaseModel):
+    """The user's own name and role for a teammate Compii proposed."""
+    name: str = ""
+    job: str = ""
+    instructions: str = ""
+    avatar: str = ""
+    color: str = ""
+
+
+class BotFact(BaseModel):
+    fact: str
 
 
 class Decision(BaseModel):
@@ -68,6 +137,7 @@ class ClaimBody(BaseModel):
 
 class Reply(BaseModel):
     text: str
+    attachments: list[str] = []
 
 
 class Choice(BaseModel):
@@ -91,21 +161,75 @@ class SkillBody(BaseModel):
     about: str = ""
 
 
+class LibraryImport(BaseModel):
+    path: str = ""
+    url: str = ""
+    allow_private: bool = False
+
+
+class CatalogAdd(BaseModel):
+    entry: dict[str, Any]  # one row from /library/catalog, fetched again from where it names
+
+
+class LibraryApprove(BaseModel):
+    acknowledge: bool = False  # "I read the serious warnings and still want it"
+    allow_private: bool = False
+    name: str = ""
+
+
+class LibrarySecret(BaseModel):
+    value: str
+
+
+class KnowledgeFolder(BaseModel):
+    path: str
+
+
+class ReachBody(BaseModel):
+    enabled: bool | None = None
+    browser_session: bool | None = None
+
+
 class Answer(BaseModel):
     text: str
 
 
+class Takeover(BaseModel):
+    outcome: str = "done"  # done | skip
+
+
 class SkillRoutineBody(BaseModel):
     schedule: dict[str, Any]
+    bot_id: str | None = None
 
 
-KEY_NAMES = {"anthropic", "groq", "gemini", "mistral", "nvidia", "ollama", "openrouter", "openai", "custom"}
+KEY_NAMES = {p["key"] for p in prov.PRESETS.values() if p.get("key")}
 
 
 class RoutineBody(BaseModel):
     title: str
     instruction: str
     schedule: dict[str, Any]
+    bot_id: str | None = None
+
+
+class TeachStart(BaseModel):
+    goal: str = ""
+
+
+class TeachSave(BaseModel):
+    name: str = ""
+    about: str = ""
+    schedule: dict[str, Any] | None = None
+    bot_id: str | None = None
+    # Which recorded steps to keep (indices into the demonstration, in order), and
+    # optional rewording of those kept steps. Replay data follows the same indices.
+    keep: list[int] | None = None
+    steps: list[str] | None = None
+
+
+class TeachCheck(BaseModel):
+    keep: list[int] | None = None
 
 
 class WatchBody(BaseModel):
@@ -126,6 +250,50 @@ class BriefBody(BaseModel):
 
 class ReadBody(BaseModel):
     id: str | None = None
+
+
+class SuggestionAccept(BaseModel):
+    # A time from the user turns a "skill" offer into a scheduled routine; empty means take the suggested one.
+    schedule: dict[str, Any] | None = None
+    bot_id: str | None = None
+
+
+class UndoBody(BaseModel):
+    id: str = ""
+
+
+class JournalBody(BaseModel):
+    enabled: bool | None = None
+    at: str | None = None
+
+
+class TimelineBody(BaseModel):
+    enabled: bool | None = None
+    every_seconds: int | None = None
+    keep_days: float | None = None
+    max_mb: int | None = None
+    pictures: bool | None = None
+
+
+class ClipsBody(BaseModel):
+    enabled: bool | None = None
+    keep_days: float | None = None
+    max_items: int | None = None
+
+
+class ClipPinBody(BaseModel):
+    pinned: bool
+
+
+class SnippetBody(BaseModel):
+    name: str = ""
+    body: str = ""
+    replace: bool = False
+
+
+class SnippetEdit(BaseModel):
+    name: str | None = None
+    body: str | None = None
 
 
 class VoiceSettingsBody(BaseModel):
@@ -255,12 +423,39 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if hub.clients:
             await hub.emit({"type": "voice_command", "task_id": "", "at": time.time(), "text": text})
         else:
-            agent.start(text)
+            primary = bots.primary()
+            agent.start(text, bot_id=primary.id if primary else None)
 
     voice.on_command = lambda text: hub.loop and asyncio.run_coroutine_threadsafe(hands_free(text), hub.loop)
 
     plans = pro.Proactive(workspace / "proactive.json")
+    bots = Bots(workspace / "bots.json")
+    supervisor = Supervisor(workspace / "team.json")
+    suggestions = Suggestions(workspace / "suggestions.json")  # repeated asks Compii has noticed
+    work = WorkJournal(workspace / "journal")  # one Markdown file per day, written once the day has closed
+    archive_path = workspace / "chats.json"
+    save_handle: asyncio.Task[None] | None = None
     buddy: Buddy | None = None  # set once the agent exists
+
+    def screen_for(request: str) -> dict[str, Any] | None:
+        """A look at the screen for a request that actually refers to it.
+
+        Local controls plus local OCR, so this works without a vision key. Runs in a
+        worker thread (the route awaits to_thread): screen capture must never block
+        Core's event loop.
+        """
+        try:
+            from .observe import observe, refers_to_screen
+
+            if not refers_to_screen(request) or not sight.enabled() \
+                    or not getattr(voice.settings, "see_pictures", True):
+                return None
+            snap = observe(request)
+            if not snap or snap.get("blocked"):
+                return None
+            return snap
+        except Exception:  # noqa: BLE001 - a screen look is a bonus, never a failed message
+            return None
 
     async def post(update: pro.Update, speak: bool = True) -> None:
         plans.post(update)
@@ -271,6 +466,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     async def agent_emit(event: dict[str, Any]) -> None:
         await hub.emit(event)
+        if event.get("type") in ("task_started", "user_message", "task_finished", "approval_needed"):
+            schedule_save()  # bots keep their threads across restarts, not just this process's memory
         if buddy is not None:
             buddy.on_task_event(event)
         task = agent.tasks.get(event.get("task_id", ""))
@@ -282,6 +479,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             return
         if origin and "routine" in origin:
             if event["type"] == "task_finished":
+                plans.finish_run(task.id, str(event.get("status") or "done"))
                 await post(pro.Update("routine", f"Routine: {origin['title']}", event.get("text", ""), task_id=task.id))
                 return
             if event["type"] == "approval_needed":
@@ -290,13 +488,19 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 return
         # Jarvis-style: Compii says its answers and its questions out loud.
         if voice.announces:
-            if event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
+            if event["type"] == "answer_delta" and not (origin and any(
+                    kind in origin for kind in ("watch", "routine", "delegated"))):
+                # The answer is still being written: say whole sentences as they arrive.
+                voice.say_stream(str(event.get("task_id") or ""), str(event.get("text") or ""))
+            elif event["type"] == "task_finished" and event.get("status") in ("done", "failed"):
                 answer = event.get("text", "")
-                voice.say(answer, spoken=spoken_reply(answer))
+                voice.finish_stream(str(event.get("task_id") or ""), answer)
             elif event["type"] == "approval_needed":
+                voice.drop_stream(str(event.get("task_id") or ""))
                 ask = f"Can I go ahead? {event.get('label', '')}"
                 voice.say(ask, spoken=spoken_reply(ask, sentences=2, longest=160))
             elif event["type"] == "question":
+                voice.drop_stream(str(event.get("task_id") or ""))
                 ask = str(event.get("question", ""))
                 voice.say(ask, spoken=spoken_reply(ask, sentences=2, longest=160))
 
@@ -308,8 +512,20 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             plans.save()
             await post(pro.Update("watch", w.title, first[3:].lstrip(" :—-") or "It happened."))
 
+    def _write_journal() -> dict[str, Any] | None:
+        """Write yesterday's record from the live stores, then index it so ask_my_files can search it."""
+        made = work.write(tasks=list(agent.tasks.values()), journal=agent.journal, timeline=timeline)
+        if made is None:
+            return None
+        try:
+            knowledge.add_folder(str(work.folder))
+            knowledge.refresh(str(work.folder))
+        except (KnowledgeError, OSError) as e:  # the file is the record; the index is a convenience
+            print(f"[compii] the journal was written but could not be indexed: {e}", file=sys.stderr, flush=True)
+        return made
+
     async def tick() -> None:
-        """One pass of the proactive loop: brief, routines, watches."""
+        """One pass of the proactive loop: brief, journal, routines, watches."""
         now = pro._now()
         b = plans.brief
         if b.get("enabled") and b.get("last") != now.date().isoformat():
@@ -318,8 +534,24 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 b["last"] = now.date().isoformat()
                 await post(pro.compose_brief(tasks=list(agent.tasks.values()), proactive=plans,
                                              downloads=_downloads(toolbox), now=now))
+        j = plans.journal
+        if j.get("enabled") and j.get("last") != now.date().isoformat():
+            h, m = j.get("at", "21:00").split(":")
+            if now.time() >= pro.dt.time(int(h), int(m)):
+                # Marked before writing: a day that fails to record must not be retried every 20 seconds.
+                j["last"] = now.date().isoformat()
+                plans.save()
+                made = await asyncio.to_thread(_write_journal)
+                if made:
+                    await post(pro.Update("journal", f"{made['title']} is written down",
+                                          f"{made['lead']} Saved on this PC as a plain text file, "
+                                          "so Compii can look back through it.",
+                                          sections=[{"title": "Where it is", "items": [made["path"]]}]),
+                               speak=False)
         for r in plans.due_routines(now):
-            task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title})
+            bot = bots.get(r.bot_id) if r.bot_id else None
+            task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title, "bot": r.bot_id or ""},
+                               bot_id=bot.id if bot else None)
             plans.mark_ran(r, now, task.id)
         for w in plans.due_watches(now):
             w.last_check = now.isoformat()
@@ -386,11 +618,67 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return prov.FallbackBrain(main, backup, fell_back) if backup else main
 
     audit = AuditLog(workspace / "audit" / "audit.jsonl")
+    ledger = Ledger(workspace / "usage.jsonl")  # what each answer cost, kept on this PC only
+    if voice is not None:
+        voice.ledger = ledger  # a heard request is counted as audio seconds
     if brain is None:
         brain = make_current_brain()
         mode = brain_settings.primary.provider
     agent = Agent(brain, toolbox, Policy(), Journal(workspace / "journal.jsonl"), agent_emit)
     agent.audit = audit
+    agent.ledger = ledger
+    agent.bot_context = lambda bot_id: (bot.prompt() if (bot := bots.get(bot_id)) else "")
+    agent.bot_info = lambda bot_id: (bot.view() if (bot := bots.get(bot_id)) else None)
+    agent.on_bot_fact = lambda bot_id, fact: bots.add_fact(bot_id, fact)
+    # An AI that gave up mid-job is a Settings problem, not just a lost message: say so on the card.
+    agent.on_brain_error = lambda why: brain_state.update(problem=f"Your AI stopped answering: {why}")
+
+    def roster() -> list[dict[str, Any]]:
+        """Everyone Compii can hand work to, with their live workload and track record."""
+        out = []
+        for view in bots.view():
+            working = [t for t in agent.tasks.values()
+                       if t.bot_id == view["id"] and t.status in ("running", "waiting")]
+            out.append({**view, "stats": supervisor.stats(view["id"]),
+                        "working": [{"id": t.id, "title": t.request[:90], "status": t.status}
+                                    for t in working[:3]]})
+        return out
+
+    def review_job(job_id: str, verdict: str, note: str) -> dict[str, Any]:
+        job = supervisor.review_job(job_id, verdict, note)
+        return {"job": job.view(), "stats": supervisor.stats(job.bot_id)} if job else {"job": None}
+
+    def reopen_job(job_id: str) -> dict[str, Any]:
+        job = supervisor.reopen_job(job_id)
+        return {"job": job.view(), "stats": supervisor.stats(job.bot_id)} if job else {"job": None}
+
+    agent.roster = roster
+    agent.on_job_open = lambda **kw: supervisor.open_job(**kw).view()
+    agent.on_job_done = lambda job_id, status, result, **kw: supervisor.finish_job(job_id, status, result, **kw)
+    agent.on_job_review = review_job
+    agent.on_job_reopen = reopen_job
+    agent.on_job_info = lambda job_id: (job.view() if (job := supervisor.job(job_id)) else None)
+    agent.on_proposal = lambda **kw: supervisor.propose(**kw).view()
+    agent.on_proposal_closed = lambda pid, status: supervisor.resolve_proposal(pid, status)
+
+    def save_conversations() -> None:
+        try:
+            save_chats(archive_path, list(agent.tasks.values()))
+        except OSError:
+            pass  # a full disk must not take Core down; the thread is still in memory
+
+    async def _save_later() -> None:
+        await asyncio.sleep(.6)
+        save_conversations()
+
+    def schedule_save() -> None:
+        nonlocal save_handle
+        if save_handle is not None and not save_handle.done():
+            return
+        save_handle = asyncio.create_task(_save_later())
+
+    restore_chats(agent, load_chats(archive_path), set(bots.items),
+                  bots.primary().id if bots.primary() else None)
 
     rules_file = workspace / "rules.json"
     try:
@@ -410,6 +698,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     for t in web_tools():
         toolbox.tools[t.name] = t
     skills = Skills(workspace / "skills.json")
+    library = Library(workspace, keys=keys)
+    knowledge = Knowledge(workspace, extract=toolbox._file_text)
+    research = Reach(workspace)  # what this PC can look up outside
     from .lessons import Lessons, lesson_tools
 
     lessons = Lessons(workspace / "lesson.json")  # "teach me Blender" → "what next?" carries on
@@ -417,9 +708,20 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     from .forms import profile_form_tools
     from .projects import Projects, project_tools
     from .leads import lead_tools
+    from .system import system_tools
+    from .timeline import Timeline, timeline_tools
+    from .clips import Clips, clip_tools
 
     profile = Profile(workspace / "profile.json")
     projects = Projects(workspace / "projects.json")
+    timeline = Timeline(workspace / "timeline.db", workspace / "timeline.json")
+    clips = Clips(workspace / "clips.db", workspace / "clips.json", workspace / "snippets.json")
+
+    from . import outlook
+
+    # Only offered when there is an Outlook on this PC that opens: six tools that can only ever
+    # answer "not installed" are noise in the model's hands.
+    outlook_tools_list = outlook.outlook_tools() if outlook.installed() else []
 
     def known_facts() -> str:
         facts = [m["fact"] for m in toolbox.memories()][-25:]
@@ -427,15 +729,25 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 + "\n".join(f"- {f}" for f in facts)) if facts else ""
 
     agent.extra_context = lambda: "\n".join(
-        c for c in (known_facts(), profile.context(), projects.context(), skills.context(), lessons.context()) if c)
+        c for c in (known_facts(), profile.context(), projects.context(), skills.context(), lessons.context(),
+                    clips.snippets.context()) if c)
     agent.ambient = desktop_now
-    for t in [*skill_tools(skills), *lesson_tools(lessons), *profile_form_tools(profile, lambda: toolbox.browser),
-              *project_tools(projects), *lead_tools(workspace, toolbox.path)]:
+    for t in [*skill_tools(skills, toolbox), *lesson_tools(lessons), *profile_form_tools(profile, lambda: toolbox.browser),
+              *project_tools(projects), *lead_tools(workspace, toolbox.path), *outlook_tools_list,
+              *system_tools(), *timeline_tools(timeline), *clip_tools(clips), *knowledge_tools(knowledge),
+              *reach_tools(research), usage_tool(ledger),
+              second_opinion_tool(keys, ledger=ledger,
+                                  current=lambda: str(getattr(agent.brain, "provider", "") or "")),
+              daybook_tool(lambda: list(agent.tasks.values()), agent.journal, timeline),
+              journal_tool(work)]:
         toolbox.tools[t.name] = t
+    library.attach(toolbox, skills)
 
     walks = Walkthroughs(toolbox, workspace / "walkthrough.json",
                          notify=lambda e: hub.emit_threadsafe({"task_id": "", "at": time.time(), **e}), say=voice.say)
     toolbox.tools["start_walkthrough"] = walks.tool()
+    toolbox.tools["undo_action"] = _undo_tool(
+        agent.journal, lambda: {t.id: " ".join(str(t.request).split())[:120] for t in agent.tasks.values()})
 
     pairing = Pairing(workspace / "devices")
     remote: RemoteHost | None = None
@@ -452,14 +764,25 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         # The one switch for Compii's eyes, told to the app as it happens, restored from the user's choice.
         stop_sight = sight.on_change(hub.emit_threadsafe)
         sight.set_enabled(voice.settings.screen_aware)
+        timeline.start()
+        clips.start()
         voice.warm_up()
         ticker = asyncio.create_task(loop())
+        # Asked in the background, so the first task of the day knows whether this AI can call tools
+        # at all, instead of finding out by describing work it will never do.
+        check_brain = asyncio.create_task(probe_now())
         yield
+        check_brain.cancel()
         stop_sight()
+        buddy.hotkey.stop()
+        buddy.dictation.stop()
+        timeline.stop()
+        clips.stop()
         ticker.cancel()
         if remote is not None:
             await remote.stop()
         agent.stop_all()
+        save_conversations()
         voice.cancel_listening()
         voice.stop_speaking()
         voice.close()
@@ -468,23 +791,34 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
     app.state.lessons = lessons
+    app.state.library = library
+    app.state.knowledge = knowledge
+    app.state.research = research
+    app.state.ledger = ledger
     app.state.agent = agent
+    app.state.bots = bots
+    app.state.supervisor = supervisor
     app.state.profile = profile
     app.state.projects = projects
     remote = RemoteHost(app, pairing, REMOTE_PORT)
     app.state.pairing = pairing
     app.state.remote = remote
     app.state.voice = voice
+    app.state.timeline = timeline
+    app.state.clips = clips
     app.state.plans = plans
+    app.state.suggestions = suggestions
+    app.state.work = work
     app.state.tick = tick
     app.state.ticker = ticker_state
     app.state.act_on = act_on
     buddy = Buddy(voice, agent, hub.emit_threadsafe, act_on, lambda: hub.loop,
-                  save_skill=lambda name, instruction, steps: skills.add(name, instruction, steps))
+                  save_skill=lambda name, instruction, steps, actions=None: skills.add(
+                      name, instruction, steps, actions=actions))
     buddy.vision_key = vision_key
     _wire_seeing(agent, toolbox, voice, hub, vision_key)
     app.state.buddy = buddy
-    _proactive_tools(toolbox, plans)
+    _proactive_tools(toolbox, plans, bots)
 
     def auth(x_compii_token: str = Header(""), x_compii_device: str = Header("")) -> None:
         """This PC's app (token from disk) or a paired phone (its own key)."""
@@ -501,7 +835,22 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     def task_view(t: Any) -> dict[str, Any]:
         return {"id": t.id, "request": t.request, "status": t.status, "created": t.created, "events": t.events,
-                "origin": t.origin}
+                "origin": t.origin, "bot_id": t.bot_id, "team": t.team, "parent_id": t.parent_id,
+                "job": t.supervised, "probation": t.probation}
+
+    def _attached(paths: list[str]) -> list[str]:
+        """Files the app attached: real files Compii is allowed to read, in order, once each."""
+        out: list[str] = []
+        for raw in paths[:10]:
+            try:
+                p = toolbox.path(raw)
+            except ToolError as e:
+                raise HTTPException(403, f"Can't attach {Path(raw).name}: {e}") from e
+            if not p.is_file():
+                raise HTTPException(400, f"The attached file {p.name} is no longer there.")
+            if str(p) not in out:
+                out.append(str(p))
+        return out
 
     @app.get("/health")
     def health() -> dict[str, Any]:
@@ -527,6 +876,22 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             subprocess.Popen(["explorer.exe", f"/select,{path}"])
         return {"path": str(path)}
 
+    # ---- updates: the app asks Core to get out of the way ----
+
+    @app.post("/shutdown", dependencies=[Depends(auth_local)])
+    def shutdown_core() -> dict[str, str]:
+        """Close Core cleanly so an update can replace the files it is holding open.
+        Only this PC's app can ask; a paired phone has no business stopping the PC."""
+        buddy.hotkey.stop()  # release the keyboard before anything else
+        buddy.dictation.stop()
+        audit.record("core_shutdown")
+        hub.emit_threadsafe({"type": "core_shutdown"})
+        server = getattr(app.state, "uvicorn", None)
+        if server is not None:
+            # Answer first, then wind down: the same lifespan teardown as a Ctrl+C.
+            hub.loop.call_later(0.5, lambda: setattr(server, "should_exit", True))
+        return {"stopping": "yes" if server is not None else "no"}
+
     # ---- brain: which AI thinks, and its keys ----
 
     def brain_view() -> dict[str, Any]:
@@ -546,8 +911,29 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     def get_brain() -> dict[str, Any]:
         return brain_view()
 
+    def store_probe(result: dict[str, Any] | None) -> None:
+        """The probe is not only a card in Settings. The loop needs to know when the model on the
+        other end cannot call tools at all, so a task can say that out loud instead of describing
+        work it will never do."""
+        brain_state["probe"] = result
+        agent.can_call_tools = None if result is None else bool(result.get("tools"))
+
+    async def probe_now() -> None:
+        """Ask the AI we just configured one tiny question.
+
+        A wrong key or a model id that does not exist used to be saved happily and then
+        killed every task the user tried afterwards, with the reason buried in a chat
+        bubble. Testing at the moment of saving puts it on the Settings card instead."""
+        if fixed_brain or isinstance(agent.brain, prov.MissingBrain):
+            return
+        try:
+            store_probe({**(await asyncio.wait_for(prov.probe(agent.brain), 15)), "at": time.time()})
+        except asyncio.TimeoutError:
+            store_probe({"ok": False, "tools": False, "ms": 15000, "at": time.time(),
+                         "error": "No answer in 15 seconds. Check the address and the model name."})
+
     @app.put("/brain", dependencies=[Depends(auth_local)])
-    def set_brain(body: BrainBody) -> dict[str, Any]:
+    async def set_brain(body: BrainBody) -> dict[str, Any]:
         nonlocal brain_settings, mode
         if body.primary.provider not in prov.PRESETS:
             raise HTTPException(400, "Unknown AI provider")
@@ -557,16 +943,18 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             body.fallback_enabled,
         )
         brain_settings.save(brain_file)
-        brain_state.update(probe=None, fallback_note=None)
+        store_probe(None)
+        brain_state["fallback_note"] = None
         audit.record("brain_changed", provider=body.primary.provider, model=body.primary.model,
                      fallback=body.fallback.provider if body.fallback and body.fallback_enabled else "")
         if not fixed_brain:
             agent.brain = make_current_brain()
             mode = brain_settings.primary.provider
+            await probe_now()
         return brain_view()
 
     @app.put("/keys/{name}", dependencies=[Depends(auth_local)])
-    def set_key(name: str, body: KeyBody) -> dict[str, Any]:
+    async def set_key(name: str, body: KeyBody) -> dict[str, Any]:
         """Write-only: the key goes to Windows Credential Manager and is never sent back."""
         if name not in KEY_NAMES:
             raise HTTPException(404, "Unknown key")
@@ -577,6 +965,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         audit.record("key_saved", name=name)
         if not fixed_brain:
             agent.brain = make_current_brain()
+            await probe_now()  # a pasted placeholder key must fail here, not in the user's first task
         return brain_view()
 
     @app.delete("/keys/{name}", dependencies=[Depends(auth_local)])
@@ -591,8 +980,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.post("/brain/test", dependencies=[Depends(auth_local)])
     async def test_brain() -> dict[str, Any]:
-        result = await prov.probe(agent.brain)
-        brain_state["probe"] = {**result, "at": time.time()}
+        store_probe({**(await prov.probe(agent.brain)), "at": time.time()})
         return brain_view()
 
     @app.get("/brain/models", dependencies=[Depends(auth_local)])
@@ -602,7 +990,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if preset.get("key") and not key:
             return {"models": [], "running": False, "error": "Add the key first to see the models."}
         try:
-            models = await prov.local_models(preset.get("base_url") or base_url, key)
+            models = await prov.local_models(preset.get("base_url") or base_url, key, preset.get("models_url"))
             return {"models": sorted(models), "running": True}
         except Exception as e:  # noqa: BLE001 - server not running
             return {"models": [], "running": False, "error": str(e)[:200]}
@@ -673,8 +1061,15 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.delete("/skills/{skill_id}", dependencies=[Depends(auth)])
     def delete_skill(skill_id: str) -> list[dict[str, Any]]:
-        if not skills.remove(skill_id):
+        skill = skills.items.get(skill_id)
+        if skill is None:
             raise HTTPException(404, "No such skill")
+        # An imported skill is owned by its Library entry: turning it off there
+        # keeps the next start from bringing it back.
+        if skill.library_id and skill.library_id in library.items:
+            library.disable(skill.library_id)
+        else:
+            skills.remove(skill_id)
         return skills.view()
 
     @app.post("/skills/{skill_id}/run", dependencies=[Depends(auth)])
@@ -691,10 +1086,284 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if skill is None:
             raise HTTPException(404, "No such skill")
         try:
-            plans.add_routine(skill.name, f"Do my skill “{skill.name}”.\n\n{skill.as_prompt()}", body.schedule)
+            plans.add_routine(skill.name, f"Do my skill “{skill.name}”.\n\n{skill.as_prompt()}", body.schedule,
+                              bot_id=_bot_owner(body.bot_id))
         except (ValueError, KeyError) as e:
             raise HTTPException(400, str(e)) from e
         return plans.view()
+
+    # ---- library: imported skills and connectors (quarantined until approved) ----
+
+    @app.get("/library", dependencies=[Depends(auth)])
+    def list_library() -> dict[str, Any]:
+        return library.view()
+
+    @app.get("/library/catalog", dependencies=[Depends(auth)])
+    def search_catalog(q: str = "", kind: str = "") -> dict[str, Any]:
+        """What the public catalogues call the skills and remote servers Compii could learn."""
+        try:
+            return catalog.search(q, library=library, kind=kind)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/library/catalog/add", dependencies=[Depends(auth_local)])
+    def add_from_catalog(body: CatalogAdd) -> dict[str, Any]:
+        try:
+            items = catalog.add(library, body.entry)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        for item in items:
+            audit.record("library_imported", id=item.id, name=item.name, format=item.format)
+        return library.view()
+
+    @app.post("/library/import", dependencies=[Depends(auth_local)])
+    def import_library(body: LibraryImport) -> dict[str, Any]:
+        try:
+            if body.path.strip():
+                items = library.import_path(body.path.strip())
+            elif body.url.strip():
+                items = library.import_url(body.url.strip(), allow_private=body.allow_private)
+            else:
+                raise LibraryError("Choose a file, a folder, or a link to import.")
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        except OSError as e:
+            raise HTTPException(400, f"Compii couldn't read that: {e}") from e
+        for item in items:
+            audit.record("library_imported", id=item.id, name=item.name, format=item.format)
+        return library.view()
+
+    @app.post("/library/{item_id}/approve", dependencies=[Depends(auth_local)])
+    def approve_library(item_id: str, body: LibraryApprove) -> dict[str, Any]:
+        try:
+            item = library.approve(item_id, acknowledge=body.acknowledge, allow_private=body.allow_private,
+                                   name=body.name)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        except Exception as e:  # noqa: BLE001 - a broken server must read as a review problem, not a crash
+            raise HTTPException(400, f"Compii couldn't switch that on: {str(e)[:300]}") from e
+        audit.record("library_approved", id=item.id, name=item.name, kind=item.kind)
+        return library.view()
+
+    @app.post("/library/{item_id}/reject", dependencies=[Depends(auth_local)])
+    def reject_library(item_id: str) -> dict[str, Any]:
+        try:
+            item = library.reject(item_id)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("library_rejected", id=item.id, name=item.name)
+        return library.view()
+
+    @app.post("/library/{item_id}/enable", dependencies=[Depends(auth_local)])
+    def enable_library(item_id: str) -> dict[str, Any]:
+        try:
+            item = library.enable(item_id)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("library_enabled", id=item.id, name=item.name)
+        return library.view()
+
+    @app.post("/library/{item_id}/disable", dependencies=[Depends(auth_local)])
+    def disable_library(item_id: str) -> dict[str, Any]:
+        try:
+            item = library.disable(item_id)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("library_disabled", id=item.id, name=item.name)
+        return library.view()
+
+    @app.delete("/library/{item_id}", dependencies=[Depends(auth_local)])
+    def remove_library(item_id: str) -> dict[str, Any]:
+        try:
+            item = library._get(item_id)
+            library.remove(item_id)
+        except LibraryError as e:
+            raise HTTPException(404 if "No such" in str(e) else 400, str(e)) from e
+        audit.record("library_removed", id=item.id, name=item.name)
+        return library.view()
+
+    @app.post("/library/{item_id}/secret", dependencies=[Depends(auth_local)])
+    def set_library_secret(item_id: str, body: LibrarySecret) -> dict[str, Any]:
+        try:
+            library.set_secret(item_id, body.value)
+        except LibraryError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("library_key_set", id=item_id)
+        return library.view()
+
+    @app.delete("/library/{item_id}/secret", dependencies=[Depends(auth_local)])
+    def clear_library_secret(item_id: str) -> dict[str, Any]:
+        library.clear_secret(item_id)
+        audit.record("library_key_removed", id=item_id)
+        return library.view()
+
+    # ---- Knowledge: the user's own folders, searched on this PC ----
+
+    @app.get("/knowledge", dependencies=[Depends(auth)])
+    def knowledge_view() -> dict[str, Any]:
+        return knowledge.view()
+
+    @app.get("/knowledge/search", dependencies=[Depends(auth)])
+    def knowledge_search(q: str = "", limit: int = 8) -> dict[str, Any]:
+        try:
+            return {"query": q, "results": knowledge.search(q, limit=limit)}
+        except KnowledgeError as e:
+            raise HTTPException(400, str(e)) from e
+
+    @app.post("/knowledge/folders", dependencies=[Depends(auth_local)])
+    def add_knowledge_folder(body: KnowledgeFolder) -> dict[str, Any]:
+        try:
+            path = knowledge.add_folder(body.path)
+        except (KnowledgeError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("knowledge_folder_added", path=path)
+        return knowledge.view()
+
+    @app.delete("/knowledge/folders", dependencies=[Depends(auth_local)])
+    def remove_knowledge_folder(path: str) -> dict[str, Any]:
+        try:
+            removed = knowledge.remove_folder(path)
+        except (KnowledgeError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        if not removed:
+            raise HTTPException(404, "That folder isn't in Knowledge")
+        audit.record("knowledge_folder_removed", path=path)
+        return knowledge.view()
+
+    @app.post("/knowledge/refresh", dependencies=[Depends(auth_local)])
+    def refresh_knowledge(folder: str = "") -> dict[str, Any]:
+        try:
+            stats = knowledge.refresh(folder)
+        except (KnowledgeError, OSError) as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("knowledge_refreshed", folder=folder, files=stats["files"], indexed=stats["indexed"])
+        return {**knowledge.view(), "last": stats}
+
+    # ---- catch me up: the user's own day, from stores already on this PC ----
+
+    @app.get("/daybook", dependencies=[Depends(auth)])
+    def daybook(hours: int = 24) -> dict[str, Any]:
+        return build_daybook(tasks=list(agent.tasks.values()), journal=agent.journal, timeline=timeline,
+                             hours=hours)
+
+    # ---- research: what this PC can actually reach, and the one read-only door ----
+    # (the URLs are /research: /reach already means "how a phone finds this PC")
+
+    @app.get("/research", dependencies=[Depends(auth)])
+    def research_status(probe: bool = False) -> dict[str, Any]:
+        return research.status(probe=probe)
+
+    @app.put("/research", dependencies=[Depends(auth_local)])
+    def research_settings(body: ReachBody) -> dict[str, Any]:
+        changes = {k: v for k, v in body.model_dump().items() if v is not None}
+        st = research.set(changes)
+        # Turning on the browser session hands Compii the user's logged-in read access: worth a line in the audit log.
+        audit.record("reach_changed", enabled=st["enabled"], browser_session=st["browser_session"], by="this PC")
+        return research.status()
+
+    # ---- usage: what answering has cost here, counted from what each provider reported ----
+
+    @app.get("/usage", dependencies=[Depends(auth)])
+    def usage_summary(days: int = 7) -> dict[str, Any]:
+        return ledger.report(days=days)
+
+    # ---- teach a task: demonstrate it once, review the steps, keep them ----
+
+    def _teach_status() -> dict[str, Any]:
+        st = buddy.watch_status()
+        st["available"] = sight.enabled()
+        st["reason"] = "" if sight.enabled() else sight.refusal()
+        st["draft"] = buddy.last_demo is not None
+        return st
+
+    def _teach_slice(keep: list[int] | None) -> tuple[list[str], list[dict[str, Any]]]:
+        demo = buddy.last_demo
+        if not demo:
+            raise HTTPException(409, "There's no recording to review. Teach it again first.")
+        steps = list(demo.get("steps") or [])
+        actions = list(demo.get("actions") or [])
+        if keep is not None:
+            idx = list(dict.fromkeys(i for i in keep if isinstance(i, int) and 0 <= i < len(steps)))
+            steps = [steps[i] for i in idx]
+            actions = [actions[i] for i in idx]
+        return steps, actions
+
+    @app.get("/teach", dependencies=[Depends(auth_local)])
+    def teach_state() -> dict[str, Any]:
+        return _teach_status()
+
+    @app.post("/teach/start", dependencies=[Depends(auth_local)])
+    def teach_start(body: TeachStart) -> dict[str, Any]:
+        if not sight.enabled():
+            raise HTTPException(423, sight.refusal())
+        if not buddy.watcher.running:
+            buddy.start_watching(body.goal.strip())
+            if not buddy.watcher.running:
+                raise HTTPException(409, "Screen recording couldn't start.")
+        return _teach_status()
+
+    @app.post("/teach/stop", dependencies=[Depends(auth_local)])
+    def teach_stop() -> dict[str, Any]:
+        if not buddy.watcher.running:
+            if buddy.last_demo:
+                return {"watching": False, **buddy.last_demo}
+            if not buddy.watcher.steps:
+                raise HTTPException(409, "Nothing is being recorded.")
+        demo = buddy.stop_watching(save=False)
+        if not demo:
+            raise HTTPException(409, "I didn't see any steps. Try again and click or switch windows as you go.")
+        return {"watching": False, **demo}
+
+    @app.post("/teach/cancel", dependencies=[Depends(auth_local)])
+    def teach_cancel() -> dict[str, Any]:
+        buddy.cancel_watching()
+        return {"watching": False}
+
+    @app.post("/teach/check", dependencies=[Depends(auth_local)])
+    def teach_check(body: TeachCheck | None = None) -> dict[str, Any]:
+        steps, actions = _teach_slice(body.keep if body else None)
+        from .replay import Replayer
+
+        checks = Replayer(toolbox).check(actions)
+        return {"steps": steps, "checks": checks, "ok": all(c["ok"] for c in checks)}
+
+    @app.post("/teach/save", dependencies=[Depends(auth_local)])
+    def teach_save(body: TeachSave) -> dict[str, Any]:
+        demo = buddy.last_demo
+        if not demo:
+            raise HTTPException(409, "There's no recording to save. Teach it again first.")
+        steps, actions = _teach_slice(body.keep)
+        if body.steps is not None:
+            if len(body.steps) != len(steps):
+                raise HTTPException(400, "The edited steps don't line up with the recording.")
+            steps = [s.strip()[:200] for s in body.steps]
+            if not all(steps):
+                raise HTTPException(400, "Every kept step needs some words.")
+        if not steps:
+            raise HTTPException(400, "Keep at least one step.")
+        owner: str | None = None
+        if body.schedule:
+            try:
+                spec = pro.validate_schedule(body.schedule)
+                if pro.next_run(spec, pro._now()) is None:
+                    raise ValueError("That time has already passed.")
+                owner = _bot_owner(body.bot_id)
+            except (ValueError, KeyError) as e:
+                raise HTTPException(400, str(e)) from e
+        name = body.name.strip() or str(demo.get("name") or "My skill")
+        try:
+            skill = skills.add(name, str(demo.get("instruction") or "Repeat what the user demonstrated."),
+                               steps, about=body.about, actions=actions)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        routine = None
+        if body.schedule:
+            routine = plans.add_routine(skill.name, f"Do my skill “{skill.name}”.\n\n{skill.as_prompt()}",
+                                        body.schedule, bot_id=owner)
+        buddy.last_demo = None
+        audit.record("skill_taught", name=skill.name, steps=len(skill.actions),
+                     routine=routine.id if routine else "")
+        return {"skill": prov.asdict(skill), "routine": pro.asdict(routine) if routine else None}
 
     @app.get("/walkthrough", dependencies=[Depends(auth)])
     def walkthrough_state() -> dict[str, Any]:
@@ -702,9 +1371,24 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.post("/tasks", dependencies=[Depends(auth)])
     async def create_task(body: NewTask) -> dict[str, Any]:
-        if not body.request.strip():
+        files = _attached(body.attachments)
+        request = body.request.strip() or ("Please take a look at the attached file(s)." if files else "")
+        if not request:
             raise HTTPException(400, "Empty request")
-        return task_view(agent.start(voice.annotate(body.request.strip())))
+        team = [b.id for i in body.team if (b := bots.get(i)) is not None]
+        team = list(dict.fromkeys(team))  # keep who spoke first first
+        if len(team) > 6:
+            raise HTTPException(400, "A team chat fits at most 6 bots.")
+        if len(team) < 2:
+            team = []  # one name (or none) is just a normal chat
+        bot = bots.get(body.bot_id)
+        if team and (bot is None or bot.id not in team):
+            bot = bots.get(team[0])
+        if bot is None:
+            raise HTTPException(400, "No such bot")
+        screen = await asyncio.to_thread(screen_for, request)
+        return task_view(agent.start(voice.annotate(request), bot_id=bot.id, team=team, attachments=files,
+                                     screen=screen))
 
     @app.get("/tasks", dependencies=[Depends(auth)])
     def list_tasks() -> list[dict[str, Any]]:
@@ -712,14 +1396,23 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.post("/tasks/{task_id}/messages", dependencies=[Depends(auth)])
     async def follow_up(task_id: str, body: Reply) -> dict[str, Any]:
-        if not body.text.strip():
+        files = _attached(body.attachments)
+        text = body.text.strip() or ("Please take a look at the attached file(s)." if files else "")
+        if not text:
             raise HTTPException(400, "Empty message")
         try:
-            return task_view(agent.reply(task_id, voice.annotate(body.text.strip())))
+            screen = await asyncio.to_thread(screen_for, text)
+            return task_view(agent.reply(task_id, voice.annotate(text), attachments=files, screen=screen))
         except KeyError as e:
             raise HTTPException(404, "No such conversation") from e
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
+
+    @app.get("/search", dependencies=[Depends(auth)])
+    def search(q: str = "", limit: int = 5) -> dict[str, Any]:
+        """One query across conversations, teammates, routines, skills, memories, clips and screen moments."""
+        return search_everything(q, agent=agent, bots=bots, skills=skills, plans=plans, toolbox=toolbox,
+                                 clips=clips, timeline=timeline, limit=limit)
 
     @app.get("/memory", dependencies=[Depends(auth)])
     def memory() -> list[dict[str, Any]]:
@@ -730,6 +1423,273 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if not toolbox.forget(memory_id):
             raise HTTPException(404, "No such memory")
         return {"ok": True}
+
+    # ---- bots: named teammates, each with a job and its own memory ----
+
+    def bots_view() -> dict[str, Any]:
+        primary = bots.primary()
+        return {"bots": roster(), "templates": TEMPLATES, "packs": packs_view(),
+                "primary": primary.id if primary else None}
+
+    def changed_bots() -> dict[str, Any]:
+        """What a route returns after it moved the roster: the new list, plus a nudge to every open
+        Compii, so a teammate that was just created or renamed is never missing from the Team page
+        because that window fetched its list before the change."""
+        hub.emit_threadsafe({"type": "team_changed", "task_id": "", "at": time.time()})
+        return bots_view()
+
+    def _bot_owner(bot_id: str | None) -> str | None:
+        """A routine's owner must be a bot that exists; empty means Compii."""
+        if not bot_id:
+            return None
+        if bots.get(bot_id) is None:
+            raise HTTPException(400, "That teammate doesn't exist any more.")
+        return bot_id
+
+    @app.get("/bots", dependencies=[Depends(auth)])
+    def list_bots() -> dict[str, Any]:
+        return bots_view()
+
+    @app.post("/bots", dependencies=[Depends(auth)])
+    def new_bot(body: BotNew) -> dict[str, Any]:
+        try:
+            bot = bots.create(body.name, job=body.job, instructions=body.instructions,
+                              color=body.color, template=body.template, avatar=body.avatar,
+                              mode=body.mode, tools=body.tools)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("bot_created", bot=bot.id, name=bot.name)
+        return changed_bots()
+
+    @app.patch("/bots/{bot_id}", dependencies=[Depends(auth)])
+    def edit_bot(bot_id: str, body: BotEdit) -> dict[str, Any]:
+        try:
+            bot = bots.update(bot_id, **body.model_dump(exclude_none=True))
+        except KeyError as e:
+            raise HTTPException(404, "No such bot") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("bot_changed", bot=bot.id)
+        return changed_bots()
+
+    @app.delete("/bots/{bot_id}", dependencies=[Depends(auth)])
+    def remove_bot(bot_id: str) -> dict[str, Any]:
+        try:
+            found = bots.delete(bot_id)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        if not found:
+            raise HTTPException(404, "No such bot")
+        audit.record("bot_removed", bot=bot_id)
+        return changed_bots()
+
+    @app.post("/bots/{bot_id}/facts", dependencies=[Depends(auth)])
+    def remember_for_bot(bot_id: str, body: BotFact) -> dict[str, Any]:
+        try:
+            bots.add_fact(bot_id, body.fact)
+        except KeyError as e:
+            raise HTTPException(404, "No such bot") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return changed_bots()
+
+    @app.delete("/bots/{bot_id}/facts/{index}", dependencies=[Depends(auth)])
+    def forget_for_bot(bot_id: str, index: int) -> dict[str, Any]:
+        if not bots.forget_fact(bot_id, index):
+            raise HTTPException(404, "No such memory")
+        return changed_bots()
+
+    # ---- the supervisor: delegated jobs, reviews and hiring ----
+
+    @app.get("/team", dependencies=[Depends(auth)])
+    def team_view() -> dict[str, Any]:
+        primary = bots.primary()
+        return {"roster": roster(), "jobs": supervisor.jobs_view(80), "proposals": supervisor.proposals_view(),
+                "packs": packs_view(), "primary": primary.id if primary else None}
+
+    @app.post("/team/hires/{proposal_id}", dependencies=[Depends(auth)])
+    def hire(proposal_id: str, body: HireBody | None = None) -> dict[str, Any]:
+        prop = supervisor.proposal(proposal_id)
+        if prop is None:
+            raise HTTPException(404, "That hiring card doesn't exist any more.")
+        if prop.status == "hired":
+            raise HTTPException(409, "That teammate was already hired.")
+        if prop.status in ("declined", "expired"):
+            raise HTTPException(409, "That hiring card has expired. Ask Compii to propose it again.")
+        data = body or HireBody()
+        try:
+            bot = bots.create(
+                (data.name or prop.name).strip(), job=(data.job or prop.job).strip(),
+                instructions=data.instructions.strip(), color=data.color.strip(),
+                avatar=(data.avatar or prop.avatar).strip(),
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        supervisor.resolve_proposal(proposal_id, "hired", bot_id=bot.id)
+        agent.resolve_hire(proposal_id, bot.view())
+        audit.record("teammate_hired", proposal=proposal_id, bot=bot.id, name=bot.name)
+        return {"bots": changed_bots(), "hired": bot.view()}
+
+    @app.post("/team/hires/{proposal_id}/decline", dependencies=[Depends(auth)])
+    def decline_hire(proposal_id: str) -> dict[str, Any]:
+        prop = supervisor.proposal(proposal_id)
+        if prop is None:
+            raise HTTPException(404, "That hiring card doesn't exist any more.")
+        supervisor.resolve_proposal(proposal_id, "declined")
+        agent.resolve_hire(proposal_id, None)
+        audit.record("teammate_declined", proposal=proposal_id)
+        return {"ok": True}
+
+    # ---- screen timeline: local, opt-in memory of what was on screen ----
+
+    @app.get("/timeline", dependencies=[Depends(auth)])
+    def timeline_status() -> dict[str, Any]:
+        return timeline.status()
+
+    @app.put("/timeline", dependencies=[Depends(auth)])
+    def set_timeline(body: TimelineBody) -> dict[str, Any]:
+        changed = body.model_dump(exclude_none=True)
+        result = timeline.update(**changed)
+        audit.record("timeline_settings", **changed)
+        return result
+
+    @app.get("/timeline/moments", dependencies=[Depends(auth)])
+    def timeline_moments(q: str = "", after: float | None = None, before: float | None = None,
+                         app: str = "", limit: int = 60, full: bool = False) -> list[dict[str, Any]]:
+        return timeline.search(q, after=after, before=before, app=app, limit=limit, full=full)
+
+    @app.get("/timeline/moments/{moment_id}", dependencies=[Depends(auth)])
+    def timeline_moment(moment_id: int) -> dict[str, Any]:
+        found = timeline.moment(moment_id)
+        if found is None:
+            raise HTTPException(404, "No such moment")
+        return found
+
+    @app.delete("/timeline/moments/{moment_id}", dependencies=[Depends(auth)])
+    def forget_timeline_moment(moment_id: int) -> dict[str, bool]:
+        if not timeline.forget_moment(moment_id):
+            raise HTTPException(404, "No such moment")
+        audit.record("screen_timeline_forget_moment", moment=moment_id)
+        return {"ok": True}
+
+    @app.get("/timeline/moments/{moment_id}/picture", dependencies=[Depends(auth)])
+    def timeline_picture(moment_id: int):
+        """The small picture kept with a moment. Never leaves this PC."""
+        from fastapi.responses import Response
+
+        png = timeline.picture(moment_id)
+        if png is None:
+            raise HTTPException(404, "No picture for that moment")
+        return Response(png, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+    @app.delete("/timeline", dependencies=[Depends(auth)])
+    def forget_timeline(hours: float = 0) -> dict[str, int]:
+        deleted = timeline.forget(hours=hours, everything=hours <= 0)
+        audit.record("screen_timeline_forget", hours=hours, deleted=deleted)
+        return {"deleted": deleted}
+
+    # ---- clipboard history and snippets: local, opt-in, forgettable ----
+
+    @app.get("/clips", dependencies=[Depends(auth)])
+    def clips_status() -> dict[str, Any]:
+        return clips.status()
+
+    @app.put("/clips", dependencies=[Depends(auth)])
+    def set_clips(body: ClipsBody) -> dict[str, Any]:
+        changed = body.model_dump(exclude_none=True)
+        result = clips.update(**changed)
+        audit.record("clipboard_settings", **changed)
+        return result
+
+    @app.get("/clips/items", dependencies=[Depends(auth)])
+    def clip_items(q: str = "", limit: int = 100, pinned: bool | None = None) -> list[dict[str, Any]]:
+        return clips.search(q, limit=limit, pinned=pinned)
+
+    @app.get("/clips/items/{clip_id}", dependencies=[Depends(auth)])
+    def clip_item(clip_id: int) -> dict[str, Any]:
+        found = clips.item(clip_id)
+        if found is None:
+            raise HTTPException(404, "No such copy")
+        return found
+
+    @app.post("/clips/items/{clip_id}/copy", dependencies=[Depends(auth)])
+    def copy_clip(clip_id: int) -> dict[str, Any]:
+        found = clips.item(clip_id)
+        if found is None:
+            raise HTTPException(404, "No such copy")
+        try:
+            from .clips import write_clipboard
+
+            write_clipboard(found["text"])
+        except ToolError as e:
+            raise HTTPException(501, str(e)) from e
+        audit.record("clipboard_restored", clip=clip_id, chars=len(found["text"]))
+        return {"ok": True, "chars": len(found["text"])}
+
+    @app.patch("/clips/items/{clip_id}", dependencies=[Depends(auth)])
+    def pin_clip(clip_id: int, body: ClipPinBody) -> dict[str, Any]:
+        if not clips.pin(clip_id, body.pinned):
+            raise HTTPException(404, "No such copy")
+        return clips.item(clip_id) or {}
+
+    @app.delete("/clips/items/{clip_id}", dependencies=[Depends(auth)])
+    def forget_clip(clip_id: int) -> dict[str, bool]:
+        if not clips.forget(clip_id):
+            raise HTTPException(404, "No such copy")
+        audit.record("clipboard_forget_item", clip=clip_id)
+        return {"ok": True}
+
+    @app.delete("/clips", dependencies=[Depends(auth)])
+    def forget_clips(hours: float = 0) -> dict[str, int]:
+        deleted = clips.forget_many(hours=hours, keep_pinned=True)
+        audit.record("clipboard_forget", hours=hours, deleted=deleted)
+        return {"deleted": deleted}
+
+    @app.get("/snippets", dependencies=[Depends(auth)])
+    def list_snippets(q: str = "") -> list[dict[str, Any]]:
+        return clips.snippets.search(q)
+
+    @app.post("/snippets", dependencies=[Depends(auth)])
+    def save_snippet(body: SnippetBody) -> dict[str, Any]:
+        try:
+            snippet = clips.snippets.add(body.name, body.body, replace=body.replace)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("snippet_saved", name=snippet.name)
+        return prov.asdict(snippet)
+
+    @app.put("/snippets/{snippet_id}", dependencies=[Depends(auth)])
+    def edit_snippet(snippet_id: str, body: SnippetEdit) -> dict[str, Any]:
+        try:
+            snippet = clips.snippets.update(snippet_id, name=body.name, body=body.body)
+        except KeyError as e:
+            raise HTTPException(404, "No such snippet") from e
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        audit.record("snippet_edited", name=snippet.name)
+        return prov.asdict(snippet)
+
+    @app.delete("/snippets/{snippet_id}", dependencies=[Depends(auth)])
+    def delete_snippet(snippet_id: str) -> dict[str, bool]:
+        if not clips.snippets.remove(snippet_id):
+            raise HTTPException(404, "No such snippet")
+        audit.record("snippet_deleted", snippet=snippet_id)
+        return {"ok": True}
+
+    @app.post("/snippets/{snippet_id}/copy", dependencies=[Depends(auth)])
+    def copy_snippet(snippet_id: str) -> dict[str, Any]:
+        snippet = clips.snippets.items.get(snippet_id)
+        if snippet is None:
+            raise HTTPException(404, "No such snippet")
+        try:
+            from .clips import write_clipboard
+
+            write_clipboard(snippet.body)
+        except ToolError as e:
+            raise HTTPException(501, str(e)) from e
+        clips.snippets.used(snippet)
+        audit.record("snippet_copied", name=snippet.name, chars=len(snippet.body))
+        return {"ok": True, "chars": len(snippet.body)}
 
     @app.post("/files/open", dependencies=[Depends(auth)])
     def open_file(body: FileRequest) -> dict[str, bool]:
@@ -773,17 +1733,41 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return Response(vis.encode_png(vis.np.ascontiguousarray(pixels[::step, ::step])), media_type="image/png",
                         headers={"Cache-Control": "no-store"})
 
+    class SelectionAsk(BaseModel):
+        instruction: str
+
+    @app.get("/screen/selection", dependencies=[Depends(auth)])
+    def screen_selection() -> dict[str, Any]:
+        """The words the user has highlighted in front of them, read off the app itself.
+
+        Nothing is copied and no key is pressed: the app's own selection is asked what it holds.
+        Password fields and password managers answer nothing at all."""
+        from . import screen
+
+        picked = screen.selection()
+        if picked:
+            audit.record("selection_read", words=picked.get("words"), window=picked.get("window", ""))
+        return {"selection": picked, "available": sight.enabled(),
+                "reason": "" if sight.enabled() else sight.refusal()}
+
+    @app.post("/screen/selection", dependencies=[Depends(auth)])
+    def screen_selection_act(body: SelectionAsk) -> dict[str, Any]:
+        """Do that to the words Compii is holding from the last Ctrl+Alt press."""
+        return {"started": buddy.ask(body.instruction) if buddy is not None else False}
+
     class ClipBody(BaseModel):
         text: str
 
     @app.post("/clipboard", dependencies=[Depends(auth)])
     def push_clipboard(body: ClipBody) -> dict[str, bool]:
         """Put text from the phone on the PC's clipboard, ready to paste."""
-        from .tools import _powershell
+        from .clips import write_clipboard
 
-        if sys.platform != "win32":
-            raise HTTPException(501, "The clipboard works on Windows only.")
-        _powershell("Set-Clipboard -Value $env:COMPII_CLIPBOARD_TEXT", {"COMPII_CLIPBOARD_TEXT": body.text[:100_000]})
+        try:
+            write_clipboard(body.text)
+        except ToolError as e:
+            raise HTTPException(501, str(e)) from e
+        clips.remember_text(body.text, app="phone", title="Sent from your phone")
         audit.record("clipboard_from_phone", chars=len(body.text))
         return {"ok": True}
 
@@ -802,16 +1786,77 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             toolbox._open(str(p.parent))
         return {"ok": True}
 
+    @app.post("/uploads", dependencies=[Depends(auth)])
+    async def upload_file(request: Request, x_compii_filename: str = Header("")) -> dict[str, Any]:
+        """Take a file from the app - a phone across the room, or this PC - so Compii can read it.
+
+        The bytes land in Compii's own uploads folder, named by the file's own name (never a path),
+        and the returned path is what a message attaches. Nothing outside that folder is written.
+        """
+        from urllib.parse import unquote
+
+        name = _safe_filename(unquote(x_compii_filename or "file"))
+        folder = toolbox.workspace / "uploads" / time.strftime("%Y-%m-%d")
+        folder.mkdir(parents=True, exist_ok=True)
+        p = folder / name
+        n = 2
+        while p.exists():
+            p = folder / f"{Path(name).stem} ({n}){Path(name).suffix}"
+            n += 1
+        limit = 64 * 1024 * 1024
+        total = 0
+        try:
+            with p.open("wb") as fh:
+                async for chunk in request.stream():
+                    total += len(chunk)
+                    if total > limit:
+                        raise HTTPException(413, "That file is larger than 64 MB.")
+                    fh.write(chunk)
+        except HTTPException:
+            p.unlink(missing_ok=True)
+            raise
+        if total == 0:
+            p.unlink(missing_ok=True)
+            raise HTTPException(400, "That file is empty.")
+        audit.record("file_attached", name=p.name, bytes=total)
+        return {"name": p.name, "path": str(p), "size": total, "kind": p.suffix.lower().lstrip(".")}
+
+    # ---- habits: repeated asks Compii can offer to take over ----
+
+    def _already_mine() -> list[str]:
+        """Text of anything already scheduled or saved as a skill, so Compii never offers it twice."""
+        return [f"{r.title} {r.instruction}" for r in plans.routines.values()] + \
+               [f"{s.name} {s.about} {s.instruction}" for s in skills.items.values()]
+
+    def _habit_offers() -> dict[str, Any]:
+        return {"suggestions": suggestions.refresh(load_chats(archive_path), exclude=_already_mine())}
+
+    def _journal_view() -> dict[str, Any]:
+        return {"journal": dict(plans.journal), "days": work.days(), "folder": str(work.folder)}
+
+    _habit_tool(toolbox, lambda: _habit_offers()["suggestions"])
+
     @app.get("/proactive", dependencies=[Depends(auth)])
     def proactive_view() -> dict[str, Any]:
         # Tell the app when the loop that fires these is broken, so the screen
         # can say "not running" instead of implying a schedule Compii can't keep.
-        return {**plans.view(), "error": ticker_state["error"]}
+        return {**plans.view(), **_habit_offers(), **_journal_view(), "error": ticker_state["error"]}
 
     @app.post("/routines", dependencies=[Depends(auth)])
     def add_routine(body: RoutineBody) -> dict[str, Any]:
         try:
-            plans.add_routine(body.title, body.instruction, body.schedule)
+            plans.add_routine(body.title, body.instruction, body.schedule, bot_id=_bot_owner(body.bot_id))
+        except (ValueError, KeyError) as e:
+            raise HTTPException(400, str(e)) from e
+        return plans.view()
+
+    @app.put("/routines/{routine_id}", dependencies=[Depends(auth)])
+    def edit_routine(routine_id: str, body: RoutineBody) -> dict[str, Any]:
+        try:
+            plans.edit_routine(routine_id, body.title, body.instruction, body.schedule,
+                               bot_id=_bot_owner(body.bot_id))
+        except KeyError as e:
+            raise HTTPException(404, "No such routine") from e
         except (ValueError, KeyError) as e:
             raise HTTPException(400, str(e)) from e
         return plans.view()
@@ -849,9 +1894,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         r = plans.routines.get(routine_id)
         if r is None:
             raise HTTPException(404, "No such routine")
-        task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title})
-        r.last_run, r.last_task = pro._now().isoformat(), task.id  # the schedule itself is unchanged
-        plans.save()
+        bot = bots.get(r.bot_id) if r.bot_id else None
+        task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title, "bot": r.bot_id or ""},
+                           bot_id=bot.id if bot else None)
+        plans.note_run(r, task.id)  # the schedule itself is unchanged
         return task_view(task)
 
     @app.put("/brief", dependencies=[Depends(auth)])
@@ -875,10 +1921,60 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         await post(update)
         return pro.asdict(update)
 
+    @app.get("/journal", dependencies=[Depends(auth)])
+    def journal_view() -> dict[str, Any]:
+        return _journal_view()
+
+    @app.put("/journal", dependencies=[Depends(auth)])
+    def journal_settings(body: JournalBody) -> dict[str, Any]:
+        if body.at is not None:
+            try:
+                h, m = body.at.split(":")
+                pro.dt.time(int(h), int(m))
+            except ValueError as e:
+                raise HTTPException(400, "Use a time like 21:00") from e
+            plans.journal["at"] = body.at
+        if body.enabled is not None:
+            plans.journal["enabled"] = body.enabled
+        plans.save()
+        return _journal_view()
+
+    @app.post("/journal/now", dependencies=[Depends(auth)])
+    async def journal_now() -> dict[str, Any]:
+        """Write the last closed day down, whether or not the nightly time has come."""
+        made = await asyncio.to_thread(_write_journal)
+        return {**_journal_view(), "written": made}
+
+    @app.get("/journal/{day}", dependencies=[Depends(auth)])
+    def journal_day(day: str) -> dict[str, Any]:
+        text = work.read(day)
+        if text is None:
+            raise HTTPException(404, "Nothing is written down for that day")
+        return {"date": day, "text": text}
+
     @app.post("/inbox/read", dependencies=[Depends(auth)])
     def inbox_read(body: ReadBody) -> dict[str, Any]:
         plans.mark_read(body.id)
         return plans.view()
+
+    @app.post("/suggestions/{suggestion_id}/accept", dependencies=[Depends(auth)])
+    def accept_suggestion(suggestion_id: str, body: SuggestionAccept) -> dict[str, Any]:
+        """Turn an offer into the routine or skill it proposed. Nothing is scheduled without this call."""
+        if suggestions.get(suggestion_id) is None:
+            raise HTTPException(404, "No such suggestion")
+        owner = _bot_owner(body.bot_id)
+        try:
+            made = suggestions.accept(suggestion_id, plans=plans, skills=skills,
+                                      bot_id=owner, schedule=body.schedule)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return {**plans.view(), "made": made, "error": ticker_state["error"], **_habit_offers()}
+
+    @app.post("/suggestions/{suggestion_id}/decline", dependencies=[Depends(auth)])
+    def decline_suggestion(suggestion_id: str) -> dict[str, Any]:
+        if suggestions.resolve(suggestion_id, "declined") is None:
+            raise HTTPException(404, "No such suggestion")
+        return {**plans.view(), "error": ticker_state["error"], **_habit_offers()}
 
     @app.get("/voice", dependencies=[Depends(auth)])
     def voice_status() -> dict[str, Any]:
@@ -892,9 +1988,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             voice.settings.output_mode = body.output_mode
         if body.voice is not None:
             voice.settings.voice = body.voice
-        if body.engine in ("natural", "windows"):
+        if body.engine in ("natural", "fast", "windows"):
             voice.stop_speaking()
             voice.settings.engine = body.engine
+            voice.warm_up()  # switching engines shouldn't cost the first reply its opening words
         if body.wake_word is not None:
             try:
                 voice.set_wake(body.wake_word)
@@ -968,10 +2065,33 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     def undo(task_id: str) -> dict[str, str]:
         return {"result": agent.journal.undo_last(task_id)}
 
+    @app.get("/undo", dependencies=[Depends(auth)])
+    def undo_list(hours: int = 24) -> dict[str, Any]:
+        # hours 0 means the whole journal, not nothing.
+        since = time.time() - hours * 3600 if hours > 0 else None
+        asked = {t.id: " ".join(str(t.request).split())[:120] for t in agent.tasks.values()}
+        return {"actions": [dict(r, about=asked.get(r["task_id"], ""))
+                            for r in agent.journal.reversible(since=since)]}
+
+    @app.post("/undo", dependencies=[Depends(auth)])
+    def undo_one(body: UndoBody) -> dict[str, str]:
+        if not body.id.strip():
+            raise HTTPException(400, "Say which action to put back.")
+        return {"result": agent.journal.undo_by_id(body.id)}
+
     @app.post("/questions/{question_id}/answer", dependencies=[Depends(auth)])
     def answer_question(question_id: str, body: Answer) -> dict[str, bool]:
         if not agent.answer(question_id, body.text):
             raise HTTPException(404, "That question has already been answered")
+        return {"ok": True}
+
+    @app.post("/takeovers/{takeover_id}", dependencies=[Depends(auth)])
+    def finish_takeover(takeover_id: str, body: Takeover) -> dict[str, bool]:
+        """The user says they finished (or skipped) a password/card/code step; the task carries on."""
+        if body.outcome not in ("done", "skip"):
+            raise HTTPException(400, "Outcome must be done or skip")
+        if not agent.finish_takeover(takeover_id, body.outcome):
+            raise HTTPException(404, "That hand-off is no longer waiting")
         return {"ok": True}
 
     @app.get("/profile", dependencies=[Depends(auth)])
@@ -1131,7 +2251,12 @@ def main() -> None:
         from .screen import warm_up
 
         warm_up()  # the first screen read of a browser-based app is slow: do it now, not on first use
-    uvicorn.run(app, host=HOST, port=PORT, log_level="info", access_log=False)  # the app polls every second
+    # Keep the Server object: POST /shutdown tells it to stop. The app holds a WebSocket open
+    # for its whole life, so without a timeout uvicorn would wait for a connection that never closes.
+    server = uvicorn.Server(uvicorn.Config(
+        app, host=HOST, port=PORT, log_level="info", access_log=False, timeout_graceful_shutdown=3))
+    app.state.uvicorn = server
+    server.run()  # the app polls every second
 
 
 def _port_busy(host: str, port: int) -> bool:
@@ -1158,16 +2283,84 @@ def _log_to_file() -> None:
         sys.stdout = sys.stderr = out
 
 
-def _proactive_tools(toolbox, plans: "pro.Proactive") -> None:
+def _habit_tool(toolbox, notices) -> None:
+    """Let Compii count its own repetitions, so a habit is raised from evidence rather than a guess."""
+    from .tools import ToolResult
+
+    def noticed_habits(_a: dict[str, Any]) -> ToolResult:
+        items = notices()
+        if not items:
+            return ToolResult("Nothing has come back three times on different days, so there is no habit "
+                              "worth offering a routine for.")
+        lines = []
+        for it in items:
+            line = f"- {it['title']} ({it['kind']}): asked {it['count']} times."
+            if it["steps"]:
+                line += " Steps that worked: " + "; ".join(it["steps"][:6])
+            lines.append(line)
+        return ToolResult("Repeated asks counted from the conversations saved on this PC:\n" + "\n".join(lines)
+                          + "\nOffer one of these as a routine or a skill and let the user decide. Never schedule "
+                          "or save anything on your own, and never say a number of times that isn't listed here.")
+
+    toolbox.tools["noticed_habits"] = Tool(
+        "noticed_habits", "What the user keeps asking for, counted from their saved conversations on this PC. "
+                          "Use it before saying anything has repeated, and before offering to make a habit into a "
+                          "routine or skill.", {}, [], AK.READ, noticed_habits,
+        lambda a: "Check what keeps repeating")
+
+
+def _undo_tool(journal, asks: Callable[[], dict[str, str]] | None = None) -> Tool:
+    """Let Compii reverse its own changes, one at a time, from what the journal recorded."""
+    from .tools import ToolResult
+
+    def undo_action(args: dict[str, Any]) -> ToolResult:
+        wanted = str(args.get("id") or "").strip()
+        if not wanted:
+            rows = journal.reversible()
+            if not rows:
+                return ToolResult("Nothing Compii changed is still waiting to be put back.")
+            asked = asks() if asks is not None else {}
+            lines = []
+            for r in rows:
+                how = asked.get(r["task_id"], "")
+                lines.append(f"- {r['id']} ({time.strftime('%H:%M on %d %B', time.localtime(r['at']))}): "
+                             f"{r['summary']}" + (f" — asked as “{how}”" if how else ""))
+            return ToolResult("What Compii changed and can still put back, newest first:\n" + "\n".join(lines)
+                              + "\nOnly reverse one of these when the user asks, and only the one they mean. "
+                                "Call undo_action with the id from this list; never make one up.")
+        return ToolResult(journal.undo_by_id(wanted))
+
+    return Tool(
+        "undo_action", "Put back something Compii changed earlier - a move it made or a file it created. "
+                       "Call it with no id to list what can still be reversed, then pass that id to undo it. "
+                       "Changes that later work was built on are not offered.",
+        {"id": {"type": "string", "description": "The id from the list of reversible actions"}},
+        [], lambda a: AK.CHANGE if str(a.get("id") or "").strip() else AK.READ, undo_action,
+        lambda a: "Putting back a change Compii made" if str(a.get("id") or "").strip()
+                  else "Checking what Compii can put back")
+
+
+def _proactive_tools(toolbox, plans: "pro.Proactive", bots: Bots) -> None:
     """Tools the agent uses when you ask for routines and watches in plain language."""
     from .tools import ToolError, ToolResult
 
+    def _owner(name: str) -> str | None:
+        want = name.strip().lower()
+        if not want or want == "compii":
+            return None
+        bot = next((b for b in bots.items.values() if b.name.lower() == want), None)
+        if bot is None:
+            raise ToolError(f"There's no teammate called “{name}”. Ask the user which of their bots should own it.")
+        return bot.id
+
     def create_routine(a: dict[str, Any]) -> ToolResult:
         try:
-            r = plans.add_routine(a["title"], a["instruction"], a["schedule"])
+            r = plans.add_routine(a["title"], a["instruction"], a["schedule"],
+                                  bot_id=_owner(a.get("bot", "")))
         except (ValueError, KeyError) as e:
             raise ToolError(f"Couldn't schedule that: {e}") from e
-        return ToolResult(f"Routine “{r.title}” scheduled: {pro.describe(r.schedule)}. Next run {r.next_run}.")
+        who = bots.get(r.bot_id).name if r.bot_id and bots.get(r.bot_id) else "Compii"
+        return ToolResult(f"Routine “{r.title}” scheduled with {who}: {pro.describe(r.schedule)}. Next run {r.next_run}.")
 
     def create_watch(a: dict[str, Any]) -> ToolResult:
         kind = a["kind"]
@@ -1185,7 +2378,11 @@ def _proactive_tools(toolbox, plans: "pro.Proactive") -> None:
 
     def list_plans(a: dict[str, Any]) -> ToolResult:
         v = plans.view()
-        lines = [f"- routine {r['id']}: {r['title']} — {r['when']}{'' if r['enabled'] else ' (paused)'}" for r in v["routines"]]
+        lines = []
+        for r in v["routines"]:
+            owner = bots.get(r.get("bot_id")).name if r.get("bot_id") and bots.get(r.get("bot_id")) else "Compii"
+            lines.append(f"- routine {r['id']}: {r['title']} ({owner}) — {r['when']}"
+                         f"{'' if r['enabled'] else ' (paused)'}")
         lines += [f"- watch {w['id']}: {w['title']} ({w['kind']}, every {w['every_minutes']} min)" for w in v["watches"]]
         b = v["brief"]
         lines.append(f"- daily brief: {'on at ' + b['at'] if b['enabled'] else 'off'}")
@@ -1212,8 +2409,11 @@ def _proactive_tools(toolbox, plans: "pro.Proactive") -> None:
     }
     for t in [
         Tool("create_routine", "Schedule something for Compii to do on its own, e.g. every weekday at 8. "
-             "The instruction is what you would be asked to do at that time.",
-             {"title": s, "instruction": s, "schedule": schedule}, ["title", "instruction", "schedule"],
+             "The instruction is what you would be asked to do at that time. Set bot to a teammate's name when the "
+             "user wants one of their bots to own it; leave it out for Compii itself.",
+             {"title": s, "instruction": s, "schedule": schedule,
+              "bot": {**s, "description": "Name of the teammate who owns it, or empty for Compii."}},
+             ["title", "instruction", "schedule"],
              AK.CHANGE, create_routine, lambda a: f"Schedule “{a['title']}”"),
         Tool("create_watch", "Tell the user when something happens. kind=folder (new files matching a pattern; free), "
              "web (a page starts containing some text, or changes; free), ai (anything needing judgement; uses Claude, at most every 30 min).",
@@ -1256,57 +2456,133 @@ def _restore_voice(voice: Voice, path: Path) -> None:
 
 
 def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
-    """Pictures of the window you're in, for apps whose own labels aren't enough: answering about
-    them, pointing at things in them, and the lesson coach that notices when a step is done."""
+    """Looking at the window you're in: the app's own controls, the words a local OCR pass
+    reads from a picture (both work with no key and nothing leaving the PC), plus a vision
+    model when one is configured — and the lesson coach that notices when a step is done."""
+    from . import ocr as local_ocr
     from . import vision as vis
     from .agent import COACH_NOTE
     from .coach import Coach
 
-    def allowed() -> bool:
-        return (sight.enabled() and bool(vision_key()) and getattr(voice.settings, "see_pictures", True)
-                and not vis.blocked_foreground())
+    def can_read(named: bool = False) -> bool:
+        """Compii may look. Local reading needs no model key, only the user's switch."""
+        return (sight.enabled() and getattr(voice.settings, "see_pictures", True)
+                and (named or not vis.blocked_foreground()))
+
+    def can_see(named: bool = False) -> bool:
+        """A vision model is also available, for pictures of things that aren't text."""
+        return can_read(named) and bool(vision_key())
+
+    def read_words(png: bytes) -> dict[str, Any] | None:
+        try:
+            return local_ocr.read_png_boxes(png)
+        except Exception:  # noqa: BLE001 - the app's own labels are still there
+            return None
 
     def look_at(snap: dict[str, Any], question: str) -> dict[str, Any]:
-        if not allowed():
+        if not can_read():
             return snap
-        shot = vis.capture_foreground()
+        shot = vis.grab_foreground()
         if shot is None:
             return snap
-        png, window = shot
-        return vis.merge(snap, vis.look(png, question, vision_key()), window)
+        pixels, window = shot
+        boxes = read_words(vis.ocr_png(pixels))
+        if boxes and not snap.get("ocr_text"):
+            snap = vis.merge_ocr(snap, boxes, window)
+        if can_see():
+            try:
+                snap = vis.merge(snap, vis.look(vis.png_of(pixels), question, vision_key(),
+                                                window=str(snap.get("title") or "")), window)
+            except Exception:  # noqa: BLE001 - the local words are already a real look
+                pass
+        return snap
 
     def see_item(target: str) -> dict[str, Any] | None:
-        if not allowed():
+        if not can_read():
             return None
         shot = vis.grab_foreground()
         if shot is None:
             return None
         pixels, window = shot
+        # Text first: OCR matches a visible label exactly, where a vision model guesses.
+        hit = vis.locate_text(read_words(vis.ocr_png(pixels)), window, target)
+        if hit:
+            return {**hit, "src": "ocr"}
+        if not can_see():
+            return None
         return vis.locate_precise(pixels, window, target, vision_key())
 
-    def read_screen(question: str, full: bool) -> dict[str, Any] | None:
-        if not allowed():
+    def read_screen(question: str, full: bool, window: str | None = None) -> dict[str, Any] | None:
+        if not can_read(named=bool(window)):
             return None
-        from .screen import describe_snapshot, snapshot_foreground
+        from .screen import (BLOCKED_APPS, describe_snapshot, find_window, private_window, snapshot_foreground,
+                             window_titles)
 
-        shot = vis.grab_screen() if full else vis.grab_foreground()
+        target = ""
+        if window:
+            hwnd, target = find_window(window)
+            if not hwnd:
+                others = [t for t in window_titles(12) if not any(b in t.lower() for b in BLOCKED_APPS)]
+                listing = (" Right now these windows are visible: " + "; ".join(f"“{t}”" for t in others[:8]) + "."
+                           if others else "")
+                return {"text": f"No visible window has “{window}” in its title right now.{listing} "
+                                "Use part of one of those titles, or look at the window in front.", "snap": None}
+            if private_window(hwnd, target):
+                return {"text": f"“{target}” is a private window (like a password manager), so Compii won't look at it.",
+                        "snap": None}
+            shot = vis.grab_foreground(hwnd)
+        else:
+            shot = vis.grab_screen() if full else vis.grab_foreground()
         if shot is None:
             return None
-        pixels, window = shot
-        step = max(1, -(-pixels.shape[1] // vis.MAX_WIDTH))
-        seen = vis.read(vis.encode_png(vis.np.ascontiguousarray(pixels[::step, ::step])), question, vision_key())
-        try:
-            base = snapshot_foreground() or {}
-        except Exception:  # noqa: BLE001
-            base = {}
-        snap = vis.merge({**base, "elements": [] if full else base.get("elements", [])}, seen, window)
-        items = "\n".join(f"{e['id']}: {e['name']}" for e in snap["elements"] if e.get("role") == "Seen")
-        text = f"{seen['summary']}\n\nVisible text:\n{seen['text'] or '(none read)'}"
+        pixels, rect = shot
+        base: dict[str, Any] = {}
+        if not target and not full:
+            try:
+                base = snapshot_foreground() or {}
+            except Exception:  # noqa: BLE001
+                base = {}
+            if base.get("blocked"):
+                return {"text": f"The user is in “{base.get('title')}”, which Compii doesn't read.", "snap": None}
+        # Telling the model which window it is looking at stops it describing whatever else it
+        # half-recognises in the picture (a browser behind, a thumbnail, its own idea of Excel).
+        looked_at = target or ("the whole screen" if full else str(base.get("title") or ""))
+        snap: dict[str, Any] = {**base, "elements": [] if full else base.get("elements", [])}
+        if target:
+            snap["title"] = target
+        boxes = read_words(vis.ocr_png(pixels))
+        if boxes:
+            snap = vis.merge_ocr(snap, boxes, rect, max_items=140)
+        seen = None
+        if can_see(named=bool(window)):
+            try:
+                seen = vis.read(vis.png_of(pixels), question, vision_key(), window="" if full else looked_at)
+                snap = vis.merge(snap, seen, rect)
+            except Exception:  # noqa: BLE001 - local OCR and the controls are still a real look
+                seen = None
+        words = str(snap.get("ocr_text") or "")
+        details = seen.get("summary", "") if seen else ""
+        if not words and seen:
+            words = str(seen.get("text") or "")
+        if not words and not details and not snap.get("elements") and not full:
+            return None  # nothing readable: let the caller fall back to the controls
+        lines = [f"Looked at: {looked_at or 'the screen'}"
+                 + (" (read locally: the app's controls and Windows OCR)" if not seen else "")]
+        if details:
+            lines.append(details)
+        if words:
+            source = "local OCR, accurate to a few pixels" if snap.get("ocr_text") else "from the picture"
+            lines.append(f"Visible text ({source}; may contain small mistakes):\n{words[:4000]}")
+        items = "\n".join(f"{e['id']}: {e['name']}" for e in snap["elements"]
+                          if e.get("role") in ("Seen", "Text"))
         if items:
-            text += f"\n\nItems you can point at by id:\n{items}"
-        if not full and base and not base.get("blocked"):
-            text += "\n\nThe window's own labels:\n" + describe_snapshot(base)[:3000]
-        return {"text": text, "snap": snap}
+            lines.append(f"Items you can point at by id (t = OCR text, v = seen in the picture):\n{items}")
+        if base and not full and not target:
+            controls = [e for e in base.get("elements", []) if e.get("name")]
+            if controls:
+                lines.append("The window's own controls (exact labels and actions):\n"
+                             + describe_snapshot({**base, "seen": "", "ocr_text": ""})[:3000])
+        return {"text": "\n\n".join(lines), "snap": snap}
 
     def step_done(task_id: str, done_when: str, why: str) -> None:
         async def go() -> None:
@@ -1331,8 +2607,8 @@ def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
     agent.look_at = look_at
     toolbox.see_item = see_item
     toolbox.read_screen = read_screen
-    agent.coach = Coach(lambda png, done_when: vis.check(png, done_when, vision_key()), step_done, allowed,
-                        emit=hub.emit_threadsafe)
+    agent.coach = Coach(lambda png, done_when: vis.check(png, done_when, vision_key()), step_done,
+                        lambda: can_see(), emit=hub.emit_threadsafe)
 
 
 if __name__ == "__main__":

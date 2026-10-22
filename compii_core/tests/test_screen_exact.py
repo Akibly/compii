@@ -3,8 +3,12 @@ information came from (the app's own element, or a picture of it)."""
 
 from __future__ import annotations
 
+import sys
+import threading
 import time
 import types
+
+import pytest
 
 from compii_core import screen
 from compii_core.screen import (PATTERN_CLICK, PATTERN_OPEN, PATTERN_PICK, PATTERN_TEXT, PATTERN_TOGGLE,
@@ -251,3 +255,35 @@ def test_text_is_only_claimed_when_the_field_shows_it():
     assert "can't confirm it landed" in what_changed(field, filled, typed="Dear Madam only")
     hidden = Found("Code", "Edit", "Mail", 0, 0, 10, 10, value="hidden")
     assert "never reads what's in it" in what_changed(field, hidden, typed="123456")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="the screen worker is Windows UI Automation")
+def test_a_hung_app_cannot_hold_the_screen_hostage(monkeypatch):
+    """One UIA thread means one queue: a call that never returns would stop every read behind it."""
+    monkeypatch.setattr(screen, "UIA_TIMEOUT", 0.2)
+    monkeypatch.setattr(screen, "_uia_stalls", 0)
+    monkeypatch.setattr(screen, "_uia_stuck", "")
+
+    @screen._on_uia_thread
+    def stuck_call() -> str:
+        time.sleep(30)  # an app that is wedged inside UI Automation
+        return "late"
+
+    started = time.monotonic()
+    with pytest.raises(screen.ScreenError, match="hung"):
+        stuck_call()
+    assert time.monotonic() - started < 3, "Compii waited on the stuck call instead of giving up"
+
+    @screen._on_uia_thread
+    def next_call() -> str:
+        return threading.current_thread().name
+
+    assert next_call() == "compii-uia", "the screen kept working on a fresh worker"
+
+    # Enough hung apps in a row and Compii admits it can't see, rather than waiting 20s a call.
+    for _ in range(screen.UIA_RESTARTS + 1):
+        with pytest.raises(screen.ScreenError):
+            stuck_call()
+    with pytest.raises(screen.ScreenError, match="Restart Compii Core"):
+        next_call()
+

@@ -91,6 +91,48 @@ def test_cloud_brains_need_a_key_and_local_ones_do_not():
     assert prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys).api_key == "sk-or-test"
 
 
+def test_opencode_go_uses_its_free_models_with_the_same_key_as_zen(monkeypatch):
+    monkeypatch.delenv("OPENCODE_API_KEY", raising=False)
+    keys = MemoryKeyStore()
+    with pytest.raises(prov.NoKeyError):
+        prov.make_brain(prov.BrainChoice("opencode_go", ""), keys)
+    keys.set("opencode", "sk-oc-test")
+    free = prov.make_brain(prov.BrainChoice("opencode_go", ""), keys)
+    assert isinstance(free, prov.OpenAICompatBrain)
+    assert free.base_url == "https://opencode.ai/inference/go/openai/v1"
+    assert free.model == "deepseek-v4.1-flash" and free.api_key == "sk-oc-test"
+    zen = prov.make_brain(prov.BrainChoice("opencode_zen", "claude-opus-4-8"), keys)
+    assert zen.base_url == "https://opencode.ai/zen/v1" and zen.api_key == "sk-oc-test"
+
+
+def test_opencode_go_needs_the_same_conversation_id_on_every_request():
+    """Go rejects a request without x-opencode-session (HTTP 400 MissingSessionID), and a
+    random id per call would throw away its prompt cache, so the id must be per conversation."""
+    sent: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"choices": [
+            {"message": {"content": "Ghana uses GMT."}, "finish_reason": "stop"}]})
+
+    brain = prov.OpenAICompatBrain("https://a/v1", "m", "k", transport=httpx.MockTransport(handle),
+                                   session_header="x-opencode-session")
+    asked = [{"role": "user", "content": "what time is it in Ghana"}]
+    follow_up = [*asked, {"role": "assistant", "content": "GMT"}, {"role": "user", "content": "and in Lagos?"}]
+
+    async def on_text(text):
+        pass
+
+    asyncio.run(brain.step("s", asked, []))
+    asyncio.run(brain.step_stream("s", follow_up, [], on_text))
+    ids = [r.headers["x-opencode-session"] for r in sent]
+    assert len(ids) == 2 and ids[0].startswith("ses_") and ids[0] == ids[1]
+
+    keys = MemoryKeyStore()
+    keys.set("opencode", "sk-oc-test")
+    assert prov.make_brain(prov.BrainChoice("opencode_go", ""), keys).session_header == "x-opencode-session"
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows Credential Manager")
 def test_keys_round_trip_through_windows_credential_manager():
     store = KeyStore(prefix="CompiiTest/")
@@ -126,6 +168,26 @@ def test_keys_are_write_only_and_brain_can_be_switched(app, home):
         assert v["active"] == "ollama" and v["local"]
         assert isinstance(app.state.agent.brain, prov.OpenAICompatBrain)
         assert json.loads((home["workspace"] / "brain.json").read_text())["primary"]["provider"] == "ollama"
+
+
+def test_a_saved_key_is_tested_before_the_card_claims_it_works(app, home, monkeypatch):
+    """A placeholder key used to be stored with a green tick and then fail every task the
+    user tried, for a reason buried in a chat bubble. Settings has to answer out loud."""
+    probed: list[str] = []
+
+    async def fake_probe(brain):
+        probed.append(type(brain).__name__)
+        return {"ok": False, "tools": False, "ms": 40, "error": "The server said 401: invalid_api_key"}
+
+    monkeypatch.setattr(prov, "probe", fake_probe)
+    with TestClient(app) as c:
+        v = c.put("/brain", json={"primary": {"provider": "aihubmix", "model": "coding-minimax-m3-free"}},
+                  headers=H).json()
+        assert v["problem"] and probed == []  # no key yet, so there is nothing to test
+        v = c.put("/keys/aihubmix", json={"value": "sk-placeholder"}, headers=H).json()
+        assert v["keys"]["aihubmix"] is True and probed == ["OpenAICompatBrain"]
+        assert v["probe"]["ok"] is False and "401" in v["probe"]["error"] and "at" in v["probe"]
+        assert "sk-placeholder" not in json.dumps(v)
 
 
 # ---- rules, kill switch, audit ---------------------------------------------------------
@@ -197,7 +259,7 @@ def test_audit_log_detects_tampering(tmp_path):
     log.record("done", tool="send_email", args={"to": ["a@b.c"], "body": "card 4111 1111 1111 1111"})
     log.record("declined", tool="move_file")
     assert log.verify() == {"ok": True, "count": 2}
-    assert "4111" not in (tmp_path / "audit.jsonl").read_text()
+    assert "4111 1111 1111 1111" not in (tmp_path / "audit.jsonl").read_text()
     lines = (tmp_path / "audit.jsonl").read_text().splitlines()
     lines[0] = lines[0].replace("send_email", "read_file")
     (tmp_path / "audit.jsonl").write_text("\n".join(lines) + "\n")

@@ -27,6 +27,21 @@ void main() {
     expect(turns.last.files, isEmpty);
   });
 
+  test('attachments stay with the turn they were sent in', () {
+    final turns = turnsOf(_task([
+      {'type': 'task_started', 'at': 0, 'attachments': [
+        {'name': 'report.pdf', 'path': 'C:\\Compii\\uploads\\report.pdf', 'size': 1200, 'kind': 'pdf'},
+      ]},
+      {'type': 'task_finished', 'status': 'done', 'text': 'Read it.', 'at': 4},
+      {'type': 'user_message', 'text': 'and this', 'at': 10, 'attachments': [
+        {'name': 'sheet.xlsx', 'path': 'C:\\Compii\\uploads\\sheet.xlsx', 'size': 2048, 'kind': 'xlsx'},
+      ]},
+      {'type': 'task_finished', 'status': 'done', 'text': 'Done.', 'at': 12},
+    ]));
+    expect(turns.first.attachments.single['name'], 'report.pdf');
+    expect(turns.last.attachments.single['name'], 'sheet.xlsx');
+  });
+
   test('a pending approval is only offered while the turn is active', () {
     final events = [
       {'type': 'task_started', 'at': 0},
@@ -52,6 +67,22 @@ void main() {
     ], status: 'running')).single;
     expect(answered.pendingQuestion, isNull);
     expect(turnsOf(_task(events, status: 'stopped')).single.pendingQuestion, isNull);
+  });
+
+  test('a secret step stays on screen until the user hands it back', () {
+    final events = [
+      {'type': 'task_started', 'at': 0},
+      {'type': 'takeover', 'takeover_id': 'k1', 'what': 'Type your password.', 'fields': [
+        {'label': 'Password', 'kind': 'secret'},
+      ], 'at': 1},
+    ];
+    expect(turnsOf(_task(events, status: 'waiting')).single.pendingTakeover?['takeover_id'], 'k1');
+    final done = turnsOf(_task([
+      ...events,
+      {'type': 'takeover_done', 'takeover_id': 'k1', 'outcome': 'done', 'at': 2},
+    ], status: 'running')).single;
+    expect(done.pendingTakeover, isNull);
+    expect(turnsOf(_task(events, status: 'stopped')).single.pendingTakeover, isNull);
   });
 
   test('web pages Compii actually read become sources on the turn that used them', () {
@@ -86,5 +117,48 @@ void main() {
     ], status: 'running')).single;
     expect(turn.current?['label'], 'Read x');
     expect(turn.finished, isEmpty);
+  });
+
+  test('words appear while the answer is still being written, then give way to the final reply', () {
+    final live = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'answer_delta', 'text': 'Ghana ', 'at': 1},
+      {'type': 'answer_delta', 'text': 'Ghana uses GMT.', 'at': 2},
+    ], status: 'running')).single;
+    expect(live.reply, isNull);
+    expect(live.draft, 'Ghana uses GMT.');
+
+    final finished = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'answer_delta', 'text': 'Ghana uses', 'at': 1},
+      {'type': 'task_finished', 'status': 'done', 'text': 'Ghana uses GMT.', 'at': 2},
+    ])).single;
+    expect(finished.draft, isNull);
+    expect(finished.reply, 'Ghana uses GMT.');
+  });
+
+  test('a half-written preamble is dropped when Compii moves on to an action', () {
+    final turn = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'answer_delta', 'text': 'Let me open that', 'at': 1},
+      {'type': 'action_started', 'tool': 'open_item', 'label': 'Open the report', 'at': 2},
+    ], status: 'running')).single;
+    expect(turn.draft, isNull);
+    expect(turn.current?['label'], 'Open the report');
+  });
+
+  test('what Compii looked at stays with the turn that looked, not the next one', () {
+    final turns = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'screen_seen', 'title': 'Budget.xlsx - Excel', 'items': 42, 'ocr': 30, 'at': 1},
+      {'type': 'task_finished', 'status': 'done', 'text': 'C4 has a #REF! error.', 'at': 3},
+      {'type': 'user_message', 'text': 'and this one?', 'at': 10},
+      {'type': 'screen_seen', 'title': '', 'items': 0, 'ocr': 0, 'at': 11},
+    ]));
+    expect(turns, hasLength(2));
+    expect(turns.first.screens.single['title'], 'Budget.xlsx - Excel');
+    expect(turns.first.screens.single['ocr'], 30);
+    expect(turns.last.screens.single['title'], '');
+    expect(turns.last.screens, hasLength(1));
   });
 }

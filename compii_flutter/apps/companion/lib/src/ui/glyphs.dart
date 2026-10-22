@@ -26,6 +26,10 @@ class G {
   static const chat = GlyphData(['M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z'],
       f: ['M5 5h14a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 19 17h-8l-4.5 3.5V17H5a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 5 5z'],
       dots: [(8.5, 11, 1.1), (12, 11, 1.1), (15.5, 11, 1.1)]);
+  static const team = GlyphData(['M9 4.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z',
+      'M3.5 20v-1.5A4.5 4.5 0 0 1 8 14h2a4.5 4.5 0 0 1 4.5 4.5V20',
+      'M15.5 5.2a3 3 0 0 1 0 5.6', 'M16.5 14h.5a4.5 4.5 0 0 1 4.5 4.5V20'],
+      f: ['M9 4.5a3 3 0 1 1 0 6 3 3 0 0 1 0-6z']);
   static const bell = GlyphData(['M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z', 'M10 21h4'],
       f: ['M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z']);
   static const routine = GlyphData(['M4.5 7.5A2.5 2.5 0 0 1 7 5h10a2.5 2.5 0 0 1 2.5 2.5V17A2.5 2.5 0 0 1 17 19.5H7A2.5 2.5 0 0 1 4.5 17z', 'M4.5 9.5h15', 'M8.5 3v4', 'M15.5 3v4', 'M14.6 13.2a2.7 2.7 0 1 0 .3 2.6', 'M15 11.6v1.8h-1.8'],
@@ -48,6 +52,9 @@ class G {
 
   // ---- actions ----
   static const plus = GlyphData(['M12 5v14', 'M5 12h14']);
+  static const more = GlyphData([], dots: [(6.5, 12, 1.35), (12, 12, 1.35), (17.5, 12, 1.35)]);
+  static const menu = GlyphData(['M4 7h16', 'M4 12h16', 'M4 17h16']);
+  static const clip = GlyphData(['M9 12.5 15.6 5.9a3 3 0 0 1 4.2 4.2l-8 8a4.5 4.5 0 0 1-6.4-6.4l8-8']);
   static const close = GlyphData(['M6.5 6.5l11 11', 'M17.5 6.5l-11 11']);
   static const check = GlyphData(['M5 12.5l4.5 4.5L19 7.5']);
   static const checkCircle = GlyphData(['M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17z', 'M8.2 12.2l2.6 2.6 5-5'],
@@ -62,6 +69,8 @@ class G {
   static const trash = GlyphData(['M4.5 7h15', 'M9.5 7V5a1 1 0 0 1 1-1h3a1 1 0 0 1 1 1v2', 'M6.5 7l.8 11.6A1.5 1.5 0 0 0 8.8 20h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7', 'M10.3 11v5', 'M13.7 11v5'],
       f: ['M6.5 7l.8 11.6A1.5 1.5 0 0 0 8.8 20h6.4a1.5 1.5 0 0 0 1.5-1.4L17.5 7z']);
   static const edit = GlyphData(['M15.5 4.5l4 4L9 19H5v-4z', 'M13 7l4 4'], f: ['M15.5 4.5l4 4L9 19H5v-4z']);
+  static const copy = GlyphData(['M8.5 8.5h9A1.5 1.5 0 0 1 19 10v9.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 7 19.5V10a1.5 1.5 0 0 1 1.5-1.5z', 'M15.5 8.5V5A1.5 1.5 0 0 0 14 3.5H5A1.5 1.5 0 0 0 3.5 5v9A1.5 1.5 0 0 0 5 15.5h2'],
+      f: ['M8.5 8.5h9A1.5 1.5 0 0 1 19 10v9.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 7 19.5V10a1.5 1.5 0 0 1 1.5-1.5z']);
   static const undo = GlyphData(['M9 7.5 5 11.5l4 4', 'M5 11.5h9.5a4.5 4.5 0 0 1 0 9H11']);
   static const external = GlyphData(['M13.5 4.5H19.5v6', 'M19.5 4.5l-8 8', 'M17 14v4.5a1.5 1.5 0 0 1-1.5 1.5h-10A1.5 1.5 0 0 1 4 18.5v-10A1.5 1.5 0 0 1 5.5 7H10']);
   static const expand = GlyphData(['M6.5 9.5 12 15l5.5-5.5']);
@@ -127,6 +136,8 @@ class G {
   static const note = GlyphData(['M6.5 3.5h7l4.5 4.5v11A1.5 1.5 0 0 1 16.5 20.5h-10A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z', 'M11.5 11v6', 'M8.5 14h6'],
       f: ['M6.5 3.5h7l4.5 4.5v11A1.5 1.5 0 0 1 16.5 20.5h-10A1.5 1.5 0 0 1 5 19V5a1.5 1.5 0 0 1 1.5-1.5z']);
   static const bookmark = GlyphData(['M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 16.5l-6.5 4V5A1.5 1.5 0 0 1 7 3.5z'], f: ['M7 3.5h10A1.5 1.5 0 0 1 18.5 5v15.5L12 16.5l-6.5 4V5A1.5 1.5 0 0 1 7 3.5z']);
+  static const clipboard = GlyphData(['M8.5 4.5h7A1.5 1.5 0 0 1 17 6v14a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20V6a1.5 1.5 0 0 1 1.5-1.5z', 'M9.5 3.5h5a1 1 0 0 1 1 1V6h-7V4.5a1 1 0 0 1 1-1z', 'M9.5 10.5h5', 'M9.5 14h5'],
+      f: ['M8.5 4.5h7A1.5 1.5 0 0 1 17 6v14a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 20V6a1.5 1.5 0 0 1 1.5-1.5z']);
   static const pip = GlyphData(['M4.5 5h15A1.5 1.5 0 0 1 21 6.5v11a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5v-11A1.5 1.5 0 0 1 4.5 5z', 'M12.5 11.5h5.5v4.5h-5.5z'], f: ['M12.5 11.5h5.5v4.5h-5.5z']);
 
   // ---- voice ----
@@ -155,6 +166,9 @@ class G {
     'phone': phone,
     'keyboard': keyboard,
     'plus': plus,
+    'more': more,
+    'menu': menu,
+    'clip': clip,
     'close': close,
     'check': check,
     'checkCircle': checkCircle,
@@ -164,6 +178,7 @@ class G {
     'block': block,
     'trash': trash,
     'edit': edit,
+    'copy': copy,
     'undo': undo,
     'external': external,
     'expand': expand,
@@ -206,6 +221,7 @@ class G {
     'hand': hand,
     'note': note,
     'bookmark': bookmark,
+    'clipboard': clipboard,
     'pip': pip,
     'mic': mic,
     'wave': wave,

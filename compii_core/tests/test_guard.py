@@ -20,6 +20,34 @@ def test_a_script_cannot_delete_for_good():
         assert guard.blocked_reason("run_python", {"code": code}) is None, code
 
 
+def test_a_script_cannot_smuggle_a_blocked_verb():
+    """`pip\\s+install` never matches ["pip","install"], so these are read as syntax instead of text."""
+    smuggled = [
+        'import subprocess\nsubprocess.run(["pip", "install", "requests"])',
+        "import os as o\no.remove('notes.txt')",
+        "from pathlib import Path\nPath('notes.txt').unlink()",
+        '__import__("os").system("del secrets.txt")',
+        "import subprocess",
+        "import ctypes\nprint(1)",
+        "os.kill(pid, 9)",
+        'from os import system\nsystem("del x")',
+        'import os\ngetattr(os, "sys" + "tem")("del x")',
+    ]
+    for code in smuggled:
+        assert guard.blocked_reason("run_python", {"code": code}), code
+    ordinary = [
+        "import csv, statistics\nprint(statistics.mean([1, 2, 3]))",
+        "from pypdf import PdfWriter\nw = PdfWriter()\nw.append('a.pdf')\nw.write('out.pdf')",
+        "x = [1, 2, 3]\nx.remove(2)\nprint(x)",
+        "import os\nprint(os.path.join('a', 'b'), os.listdir('.'))",
+        "import shutil\nshutil.copy(a, b)\nshutil.move(a, b)",
+        'print(getattr(row, "name"))',
+        "with open('out.txt', 'w') as f:\n    f.write('hello')",
+    ]
+    for code in ordinary:
+        assert guard.blocked_reason("run_python", {"code": code}) is None, code
+
+
 def test_text_read_out_of_files_is_untrusted():
     assert "search_in_files" in guard.UNTRUSTED_TOOLS
 

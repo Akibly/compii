@@ -1,0 +1,94 @@
+# Pushing a tag like v0.2.0 builds a Windows installer, runs the tests it passed to get there, and
+# publishes it as a GitHub release. That release is what an installed Compii reads to update itself,
+# so this file is the whole distance between "works on my PC" and "anyone can install it".
+name: release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: "3.41.9"
+  PYTHON_VERSION: "3.12"
+  # Where a packed Compii looks for what comes next. Velopack reads RELEASES and the .nupkg from here,
+  # and "latest" means an installed Compii never has to be told a version number again.
+  VELOPACK_URL: https://github.com/${{ github.repository }}/releases/latest/download/
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which version this is
+        id: version
+        run: |
+          pubspec=$(grep -m1 '^version:' compii_flutter/apps/companion/pubspec.yaml | cut -d' ' -f2 | cut -d+ -f1)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$tag" != "$pubspec" ]; then
+            echo "You pushed v$tag but pubspec.yaml says $pubspec. Bump the version, then tag it." >&2
+            exit 1
+          fi
+          echo "value=$pubspec" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: astral-sh/setup-uv@v5
+      # velopack_flutter is Rust under a Dart lid: cargo has to be there when the app is built.
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          architecture: x64
+          cache: true
+
+      - name: Compii Core's packages
+        working-directory: compii_core
+        run: uv sync --frozen
+
+      - name: Compii Core's tests
+        working-directory: compii_core
+        run: |
+          # test_a_screenshot_is_a_real_picture needs a real, visible foreground window; a runner has none.
+          uv run --no-sync pytest -q --tb=short -p no:faulthandler \
+            --deselect tests/test_core.py::test_a_screenshot_is_a_real_picture
+
+      - name: The app's tests
+        working-directory: compii_flutter/apps/companion
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+
+      - name: Build the app
+        working-directory: compii_flutter/apps/companion
+        run: flutter build windows --release --dart-define=VELOPACK_URL=$VELOPACK_URL
+
+      - name: Pack the installer
+        run: |
+          # Signing is not wired up yet: it needs a certificate. When there is one, add
+          #   --sign 'signtool sign /fd SHA256 /a /f cert.pfx {{file}}'
+          # and vpk runs it over the installer and every dll and python inside it.
+          dotnet tool update --global vpk
+          python packaging/build_windows.py --setup \
+            --version ${{ steps.version.outputs.value }} \
+            --app compii_flutter/apps/companion/build/windows/x64/runner/Release
+
+      - name: Publish the release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          dotnet vpk upload github \
+            --repoUrl https://github.com/${{ github.repository }} \
+            --outputDir dist/Releases \
+            --tag v${{ steps.version.outputs.value }} \
+            --releaseName "Compii ${{ steps.version.outputs.value }}" \
+            --publish --token "$GITHUB_TOKEN"

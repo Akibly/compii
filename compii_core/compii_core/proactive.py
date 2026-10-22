@@ -1,5 +1,5 @@
 """Compii thinking ahead: routines on a schedule, watches that tell you when
-something happens, a daily brief, and an inbox of updates.
+something happens, a daily brief, a nightly journal entry, and an inbox of updates.
 
 Everything here is stored in the workspace (`proactive.json`) and checked by a
 background loop in Core. Folder and web watches and the brief are computed
@@ -105,6 +105,10 @@ class Routine:
     next_run: str | None = None
     last_run: str | None = None
     last_task: str | None = None
+    # The teammate who owns this routine; empty means Compii itself.
+    bot_id: str | None = None
+    # Recent runs, newest first: {"at", "task_id", "status"}.
+    runs: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -123,7 +127,7 @@ class Watch:
 
 @dataclass
 class Update:
-    kind: str  # brief | watch | routine | needs_you
+    kind: str  # brief | watch | routine | needs_you | journal
     title: str
     body: str
     id: str = field(default_factory=lambda: "u" + uuid.uuid4().hex[:8])
@@ -147,6 +151,8 @@ class Proactive:
         self.watches: dict[str, Watch] = {}
         self.inbox: list[Update] = []
         self.brief = {"enabled": True, "at": "08:00", "last": None}
+        # Off by default: unlike the rolling stores it reads from, this keeps a day on disk for good.
+        self.journal = {"enabled": False, "at": "21:00", "last": None}
         self._load()
 
     # ---- persistence ---------------------------------------------------------
@@ -164,6 +170,7 @@ class Proactive:
         self.watches = {w["id"]: Watch(**w) for w in d.get("watches", [])}
         self.inbox = [Update(**u) for u in d.get("inbox", [])]
         self.brief.update(d.get("brief", {}))
+        self.journal.update(d.get("journal", {}))
 
     def save(self) -> None:
         with self._lock:
@@ -172,6 +179,7 @@ class Proactive:
                 "watches": [asdict(w) for w in self.watches.values()],
                 "inbox": [asdict(u) for u in self.inbox[-MAX_INBOX:]],
                 "brief": self.brief,
+                "journal": self.journal,
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
@@ -179,26 +187,66 @@ class Proactive:
 
     # ---- routines --------------------------------------------------------------
 
-    def add_routine(self, title: str, instruction: str, schedule: dict[str, Any]) -> Routine:
+    def add_routine(self, title: str, instruction: str, schedule: dict[str, Any],
+                    bot_id: str | None = None) -> Routine:
         spec = validate_schedule(schedule)
         nxt = next_run(spec, _now())
         if nxt is None:
             raise ValueError("That time has already passed.")
-        r = Routine(title.strip() or instruction[:40], instruction.strip(), spec, next_run=nxt.isoformat())
+        r = Routine(title.strip() or instruction[:40], instruction.strip(), spec, next_run=nxt.isoformat(),
+                    bot_id=bot_id or None)
         with self._lock:
             self.routines[r.id] = r
             self.save()
         return r
+
+    def edit_routine(self, item_id: str, title: str, instruction: str, schedule: dict[str, Any],
+                     bot_id: str | None = None) -> Routine:
+        with self._lock:
+            r = self.routines.get(item_id)
+            if r is None:
+                raise KeyError(item_id)
+            spec = validate_schedule(schedule)
+            nxt = next_run(spec, _now())
+            if nxt is None:
+                raise ValueError("That time has already passed.")
+            r.title = title.strip() or instruction[:40]
+            r.instruction = instruction.strip()
+            r.schedule = spec
+            r.bot_id = bot_id or None
+            r.next_run = nxt.isoformat()
+            self.save()
+            return r
 
     def due_routines(self, now: dt.datetime) -> list[Routine]:
         with self._lock:
             return [r for r in self.routines.values()
                     if r.enabled and r.next_run and dt.datetime.fromisoformat(r.next_run) <= now]
 
+    def note_run(self, r: Routine, task_id: str, now: dt.datetime | None = None) -> None:
+        """Remember that a run started, without touching its schedule."""
+        with self._lock:
+            at = (now or _now()).isoformat()
+            r.last_run, r.last_task = at, task_id
+            r.runs = ([{"at": at, "task_id": task_id, "status": "running"}] + r.runs)[:20]
+            self.save()
+
+    def finish_run(self, task_id: str, status: str) -> None:
+        """Mark the routine run that produced this task as finished."""
+        changed = False
+        with self._lock:
+            for r in self.routines.values():
+                for run in r.runs:
+                    if run.get("task_id") == task_id and run.get("status") == "running":
+                        run["status"] = status
+                        changed = True
+            if changed:
+                self.save()
+
     def mark_ran(self, r: Routine, now: dt.datetime, task_id: str | None) -> None:
         with self._lock:
-            r.last_run = now.isoformat()
-            r.last_task = task_id
+            if task_id:
+                self.note_run(r, task_id, now)
             nxt = next_run(r.schedule, now)
             r.next_run = nxt.isoformat() if nxt else None
             if nxt is None:
@@ -277,6 +325,7 @@ class Proactive:
                 "inbox": [asdict(u) for u in reversed(self.inbox)],
                 "unread": sum(1 for u in self.inbox if not u.read),
                 "brief": dict(self.brief),
+                "journal": dict(self.journal),
             }
 
 

@@ -10,21 +10,59 @@ import 'phones.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 import '../app_control.dart';
+import '../console/character.dart';
+import '../updates.dart';
 import 'first_run.dart';
 
-class _Page extends StatelessWidget {
-  const _Page({required this.title, required this.subtitle, required this.children});
-  final String title;
-  final String subtitle;
-  final List<Widget> children;
+/// One of Compii's bodies, shown wearing the face it will actually use.
+class _FormTile extends StatelessWidget {
+  const _FormTile({required this.body, required this.selected, required this.onTap});
+  final CompiiBody body;
+  final bool selected;
+  final VoidCallback onTap;
 
   @override
-  Widget build(BuildContext context) => PageScaffold(
-    glyph: pageGlyph(title),
-    title: title,
-    subtitle: subtitle,
-    children: children,
-  );
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${body.label}: ${body.note}',
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: Shapes.r12,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          padding: const EdgeInsets.fromLTRB(6, 10, 6, 9),
+          decoration: BoxDecoration(
+            color: selected ? c.accent.withValues(alpha: .10) : c.sunken,
+            borderRadius: Shapes.r12,
+            border: Border.all(color: selected ? c.accent : c.border, width: selected ? 1.6 : 1),
+          ),
+          child: Column(
+            children: [
+              SizedBox.square(
+                dimension: 62,
+                child: Ember(
+                  mood: Mood.idle,
+                  body: body,
+                  animate: false,
+                  phase: .3,
+                  followPointer: false,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                body.label,
+                style: context.type.labelMedium?.copyWith(color: c.text, fontWeight: FontWeight.w600),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _Card extends StatelessWidget {
@@ -40,15 +78,20 @@ class _Card extends StatelessWidget {
 
 /// What Compii remembers about you: inspectable and deletable.
 class MemoryPage extends StatefulWidget {
-  const MemoryPage({super.key, required this.core, required this.run});
+  const MemoryPage({super.key, required this.core, required this.run, this.focusId});
   final CoreClient core;
   final Run run;
+
+  /// A memory to call out, when search brought the user here.
+  final String? focusId;
   @override
   State<MemoryPage> createState() => _MemoryPageState();
 }
 
 class _MemoryPageState extends State<MemoryPage> {
   List<Map<String, dynamic>>? _items;
+  final _focusTile = GlobalKey();
+  bool _loadFailed = false;
 
   @override
   void initState() {
@@ -56,26 +99,55 @@ class _MemoryPageState extends State<MemoryPage> {
     _load();
   }
 
-  Future<void> _load() => widget.run(() async {
-    final items = await widget.core.memories();
-    if (mounted) setState(() => _items = items);
-  });
+  @override
+  void didUpdateWidget(MemoryPage old) {
+    super.didUpdateWidget(old);
+    if (widget.focusId != null && widget.focusId != old.focusId) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealFocus());
+    }
+  }
+
+  Future<void> _load() async {
+    await widget.run(() async {
+      if (mounted) setState(() => _loadFailed = false);
+      try {
+        final items = await widget.core.memories();
+        if (mounted) setState(() => _items = items);
+      } catch (_) {
+        if (mounted) setState(() => _loadFailed = true);
+        rethrow;
+      }
+    });
+    if (mounted && widget.focusId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _revealFocus());
+    }
+  }
+
+  void _revealFocus() {
+    final found = _focusTile.currentContext;
+    if (found != null) {
+      Scrollable.ensureVisible(found, duration: const Duration(milliseconds: 240),
+          alignment: .35, curve: Curves.easeOutCubic);
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final items = _items;
-    return _Page(
+    return PageScaffold(
+      glyph: pageGlyph('Memory'),
       title: 'Memory',
       subtitle: 'Things Compii keeps to help you next time. Only what you or it chose to save — delete anything.',
       children: [
+        if (_loadFailed) LoadFailure(onRetry: _load),
         if (items == null)
-          const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()))
+          _loadFailed ? const SizedBox.shrink() : const SkeletonCards(rows: 3)
         else if (items.isEmpty)
           _Card(
             child: Padding(
               padding: const EdgeInsets.all(24),
-              child: Row(
+              child: AdaptiveRow(
                 children: [
                   GlyphTile(glyph: G.memory, size: 34, color: c.accent),
                   const SizedBox(width: 14),
@@ -96,6 +168,8 @@ class _MemoryPageState extends State<MemoryPage> {
                 for (final (i, m) in items.indexed) ...[
                   if (i > 0) Divider(height: 1, color: c.border),
                   ListTile(
+                    key: widget.focusId != null && '${m['id']}' == widget.focusId ? _focusTile : null,
+                    tileColor: widget.focusId != null && '${m['id']}' == widget.focusId ? c.accentSoft : null,
                     leading: GlyphTile(glyph: G.bookmark, size: 34, color: c.accent),
                     title: Text('${m['fact']}', style: context.type.bodyMedium),
                     subtitle: m['at'] == null ? null : Text('Saved ${ago((m['at'] as num).toDouble())} ago', style: context.type.labelMedium),
@@ -144,84 +218,105 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   Map<String, String>? _dial;
+  bool _loadFailed = false;
 
   @override
   void initState() {
     super.initState();
-    widget.run(() async {
+    _load();
+  }
+
+  Future<void> _load() => widget.run(() async {
+    if (mounted) setState(() => _loadFailed = false);
+    try {
       final d = await widget.core.policy();
       if (mounted) setState(() => _dial = d);
-    });
-  }
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+      rethrow;
+    }
+  });
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     final dial = _dial;
-    return _Page(
+    return PageScaffold(
+      glyph: pageGlyph('Settings'),
       title: 'Settings',
       subtitle: 'How much Compii may do on its own, and how it looks.',
       children: [
-        Text('Brain', style: context.type.titleLarge),
-        const SizedBox(height: 4),
-        Text('Which AI does the thinking. Free local models run on this PC; cloud ones need your own key.',
-            style: context.type.bodySmall),
-        const SizedBox(height: 12),
+        SectionHeader('Brain',
+            subtitle: 'Which AI does the thinking. Free local models run on this PC; cloud ones need your own key.',
+            top: 0),
         BrainCard(run: widget.run),
+        const SizedBox(height: 14),
+        UsageCard(run: widget.run),
         const SizedBox(height: 28),
-        Text('Autonomy', style: context.type.titleLarge),
-        const SizedBox(height: 4),
-        Text('For each kind of action, choose whether Compii asks first. Every action is recorded either way.', style: context.type.bodySmall),
-        const SizedBox(height: 12),
-        _Card(
-          child: dial == null
-              ? const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
-              : Column(
-                  children: [
-                    for (final (i, (kind, title, sub, icon)) in _kinds.indexed) ...[
-                      if (i > 0) Divider(height: 1, color: c.border),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-                        child: Row(
-                          children: [
-                            GlyphTile(glyph: icon, size: 34, color: tierColors(context, kind).$1),
-                            const SizedBox(width: 14),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(title, style: context.type.titleSmall),
-                                  Text(sub, style: context.type.bodySmall),
-                                ],
+        SectionHeader('Autonomy',
+            subtitle: 'For each kind of action, choose whether Compii asks first. Every action is recorded either way.',
+            top: 0),
+        if (_loadFailed) LoadFailure(onRetry: _load),
+        if (dial != null || !_loadFailed)
+          _Card(
+            child: dial == null
+                ? const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
+                : Column(
+                    children: [
+                      for (final (i, (kind, title, sub, icon)) in _kinds.indexed) ...[
+                        if (i > 0) Divider(height: 1, color: c.border),
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+                          child: AdaptiveRow(
+                            children: [
+                              GlyphTile(glyph: icon, size: 34, color: tierColors(context, kind).$1),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(title, style: context.type.titleSmall),
+                                    Text(sub, style: context.type.bodySmall),
+                                  ],
+                                ),
                               ),
-                            ),
-                            SegmentedButton<String>(
-                              showSelectedIcon: false,
-                              style: SegmentedButton.styleFrom(
-                                textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
-                                visualDensity: VisualDensity.compact,
-                              ),
-                              segments: [
-                                for (final (value, label) in _levels)
-                                  ButtonSegment(
-                                    value: value,
-                                    label: Text(label),
-                                    enabled: !(kind == 'spend' && value == 'just_do_it'),
+                              ConstrainedBox(
+                                constraints: const BoxConstraints(maxWidth: 250),
+                                child: SingleChildScrollView(
+                                  scrollDirection: Axis.horizontal,
+                                  child: SegmentedButton<String>(
+                                    showSelectedIcon: false,
+                                    style: SegmentedButton.styleFrom(
+                                      textStyle: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                                      visualDensity: VisualDensity.compact,
+                                    ),
+                                    segments: [
+                                      for (final (value, label) in _levels)
+                                        ButtonSegment(
+                                          value: value,
+                                          label: Text(label),
+                                          enabled: !(kind == 'spend' && value == 'just_do_it'),
+                                        ),
+                                    ],
+                                    selected: {dial[kind] ?? 'ask_every_time'},
+                                    onSelectionChanged: (s) => widget.run(() async {
+                                      final d = await widget.core.setPolicy(kind, s.first);
+                                      if (!mounted) return;
+                                      setState(() {
+                                        _dial = d;
+                                        _loadFailed = false;
+                                      });
+                                    }),
                                   ),
-                              ],
-                              selected: {dial[kind] ?? 'ask_every_time'},
-                              onSelectionChanged: (s) => widget.run(() async {
-                                final d = await widget.core.setPolicy(kind, s.first);
-                                if (mounted) setState(() => _dial = d);
-                              }),
-                            ),
-                          ],
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
-                      ),
+                      ],
                     ],
-                  ],
-                ),
-        ),
+                  ),
+          ),
         const SizedBox(height: 28),
         if (widget.state.voice != null) ...[
           VoiceSettings(voice: widget.state.voice!, run: widget.run),
@@ -229,26 +324,31 @@ class _SettingsPageState extends State<SettingsPage> {
         ],
         PhonesSettings(core: widget.core, run: widget.run),
         const SizedBox(height: 28),
-        Text('Appearance', style: context.type.titleLarge),
-        const SizedBox(height: 12),
+        SectionHeader('Appearance', top: 0),
         _Card(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            child: Row(
+            child: AdaptiveRow(
               children: [
                 GlyphTile(glyph: G.contrast, size: 34, color: c.muted),
                 const SizedBox(width: 14),
                 Expanded(child: Text('Theme', style: context.type.titleSmall)),
-                SegmentedButton<ThemeMode>(
-                  showSelectedIcon: false,
-                  style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
-                  segments: const [
-                    ButtonSegment(value: ThemeMode.system, label: Text('System')),
-                    ButtonSegment(value: ThemeMode.light, label: Text('Light')),
-                    ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
-                  ],
-                  selected: {widget.state.themeMode},
-                  onSelectionChanged: (s) => widget.state.setTheme(s.first),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 210),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: SegmentedButton<ThemeMode>(
+                      showSelectedIcon: false,
+                      style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
+                      segments: const [
+                        ButtonSegment(value: ThemeMode.system, label: Text('System')),
+                        ButtonSegment(value: ThemeMode.light, label: Text('Light')),
+                        ButtonSegment(value: ThemeMode.dark, label: Text('Dark')),
+                      ],
+                      selected: {widget.state.themeMode},
+                      onSelectionChanged: (s) => widget.state.setTheme(s.first),
+                    ),
+                  ),
                 ),
               ],
             ),
@@ -261,26 +361,86 @@ class _SettingsPageState extends State<SettingsPage> {
             title: 'How Compii answers',
             subtitle: 'Character: Compii is the main figure and replies in a speech bubble. Chat: a full message history.',
             color: c.muted,
-            trailing: SegmentedButton<bool>(
-              showSelectedIcon: false,
-              style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
-              segments: const [
-                ButtonSegment(value: false, label: Text('Character')),
-                ButtonSegment(value: true, label: Text('Chat')),
+            trailing: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 170),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: SegmentedButton<bool>(
+                  showSelectedIcon: false,
+                  style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
+                  segments: const [
+                    ButtonSegment(value: false, label: Text('Character')),
+                    ButtonSegment(value: true, label: Text('Chat')),
+                  ],
+                  selected: {widget.state.chatView},
+                  onSelectionChanged: (s) => widget.state.setChatView(s.first),
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 10),
+        _Card(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AdaptiveRow(
+                  children: [
+                    GlyphTile(glyph: G.wand, size: 34, color: c.muted),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Compii’s form', style: context.type.titleSmall),
+                          const SizedBox(height: 3),
+                          Text(
+                            'The same face and the same moods in every body — only the shape changes. '
+                            'Kept on this PC.',
+                            style: context.type.bodySmall?.copyWith(color: c.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                LayoutBuilder(
+                  builder: (context, box) {
+                    const gap = 10.0;
+                    final n = CompiiBody.values.length;
+                    final w = ((box.maxWidth - gap * (n - 1)) / n).clamp(72.0, 118.0);
+                    return Wrap(
+                      spacing: gap,
+                      runSpacing: gap,
+                      children: [
+                        for (final b in CompiiBody.values)
+                          SizedBox(
+                            width: w,
+                            child: _FormTile(
+                              body: b,
+                              selected: b == widget.state.body,
+                              onTap: () => widget.state.setBody(b),
+                            ),
+                          ),
+                      ],
+                    );
+                  },
+                ),
               ],
-              selected: {widget.state.chatView},
-              onSelectionChanged: (s) => widget.state.setChatView(s.first),
             ),
           ),
         ),
         const SizedBox(height: 28),
-        Text('Shortcuts', style: context.type.titleLarge),
-        const SizedBox(height: 12),
+        SectionHeader('Shortcuts', top: 0),
         _Card(
           child: Column(
             children: [
               for (final (i, (keys, what)) in const [
                 ('Hold Ctrl + Alt', 'Talk to Compii from any app; move the mouse over what you mean, let go to send'),
+                ('Tap Ctrl + Alt', 'With words highlighted: Compii reads them off the app and asks what to do — no copying'),
                 ('Hold Ctrl + Win', 'Dictate: your words are typed where your cursor is'),
                 ('Alt + Space', 'Show or hide the Compii window'),
                 ('Ctrl + Alt + Shift + S', 'Emergency stop: stop everything'),
@@ -293,12 +453,12 @@ class _SettingsPageState extends State<SettingsPage> {
                 if (i > 0) Divider(height: 1, color: c.border),
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  child: Row(
+                  child: AdaptiveRow(
                     children: [
                       Expanded(child: Text(what, style: context.type.bodyMedium)),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: c.sunken, borderRadius: BorderRadius.circular(6), border: Border.all(color: c.border)),
+                        decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r6, border: Border.all(color: c.border)),
                         child: Text(keys, style: context.type.labelMedium?.copyWith(color: c.text)),
                       ),
                     ],
@@ -344,7 +504,90 @@ class _SettingsPageState extends State<SettingsPage> {
             trailing: OutlinedButton(onPressed: appControl.quit, child: const Text('Quit')),
           ),
         ),
+        const SizedBox(height: 28),
+        Text('On this PC', style: context.type.titleLarge),
+        const SizedBox(height: 12),
+        AboutCard(core: widget.core),
       ],
+    );
+  }
+}
+
+/// What is installed, and how it moves up. A build that didn't come from Compii's own installer
+/// can't update itself, and this says that instead of offering a button that would fail.
+class AboutCard extends StatefulWidget {
+  const AboutCard({super.key, required this.core});
+  final CoreClient core;
+
+  @override
+  State<AboutCard> createState() => _AboutCardState();
+}
+
+class _AboutCardState extends State<AboutCard> {
+  final ChangeNotifier _idle = ChangeNotifier();
+
+  @override
+  void dispose() {
+    _idle.dispose();
+    super.dispose();
+  }
+
+  (String, Widget?) _shown(Updater? up) {
+    final here = 'Compii Core ${widget.core.coreVersion.isEmpty ? 'is running' : widget.core.coreVersion}';
+    if (up == null) {
+      return (
+        '$here. This copy wasn’t installed with Compii’s installer, so it can’t update itself — '
+            'run the new Setup.exe when you want a newer one.',
+        null,
+      );
+    }
+    final busy = const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2.2));
+    return switch (up.stage) {
+      UpdateStage.checking => ('$here. Checking for a newer version…', busy),
+      UpdateStage.current => (
+        '$here. This is the newest version.',
+        OutlinedButton(onPressed: up.check, child: const Text('Check again')),
+      ),
+      UpdateStage.ready => (
+        '$here. Version ${up.to} is waiting.',
+        FilledButton(onPressed: up.install, child: const Text('Update and restart')),
+      ),
+      UpdateStage.downloading => (
+        '$here. Downloading version ${up.to}${up.percent > 0 ? ' — ${up.percent}%' : ''}…',
+        busy,
+      ),
+      UpdateStage.applying => (
+        'Closing Compii and putting version ${up.to} in place. It opens again by itself.',
+        busy,
+      ),
+      UpdateStage.problem => (
+        '$here. ${up.problem}',
+        OutlinedButton(
+          onPressed: up.canInstall ? up.install : up.check,
+          child: const Text('Try again'),
+        ),
+      ),
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final up = updates;
+    return ListenableBuilder(
+      listenable: up ?? _idle,
+      builder: (context, _) {
+        final (about, action) = _shown(up);
+        return _Card(
+          child: OptionRow(
+            glyph: G.sync,
+            title: 'Keep Compii up to date',
+            subtitle: about,
+            color: c.muted,
+            trailing: action,
+          ),
+        );
+      },
     );
   }
 }
@@ -367,7 +610,7 @@ class VoiceSettings extends StatelessWidget {
       final settings = Map<String, dynamic>.from(st?['settings'] as Map? ?? {});
       Widget row(GlyphData icon, String title, String sub, Widget trailing) => Padding(
         padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-        child: Row(
+        child: AdaptiveRow(
           children: [
             GlyphTile(glyph: icon, size: 34, color: c.accent),
             const SizedBox(width: 14),
@@ -407,17 +650,23 @@ class VoiceSettings extends StatelessWidget {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Voice', style: context.type.titleLarge),
-          const SizedBox(height: 4),
-          Text(
-            'Free: Compii’s voice runs on this PC. With a Groq key stored, what you say is recognised on Groq (fast, and spares your PC); turn that off below to keep everything on this PC.',
-            style: context.type.bodySmall,
+          SectionHeader(
+            'Voice',
+            top: 0,
+            subtitle:
+                'Free: Compii’s voice runs on this PC. With a Groq key stored, what you say is recognised on Groq (fast, and spares your PC); turn that off below to keep everything on this PC.',
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 4),
+          if (voice.statusFailed && st != null) ...[
+            LoadFailure(onRetry: voice.refresh),
+            const SizedBox(height: Space.m - 4),
+          ],
           Container(
-            decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: BorderRadius.circular(14)),
+            decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: Shapes.r14),
             child: st == null
-                ? const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
+                ? voice.statusFailed
+                    ? Padding(padding: const EdgeInsets.all(Space.s), child: LoadFailure(onRetry: voice.refresh))
+                    : const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
                 : Column(
                     children: [
                       row(
@@ -467,11 +716,17 @@ class VoiceSettings extends StatelessWidget {
                       Divider(height: 1, color: c.border),
                       row(
                         G.wave,
-                        voice.naturalVoice ? 'Natural voice (Kokoro)' : 'Windows voice (built in)',
-                        voice.naturalVoice
-                            ? 'An open voice model on your PC. Pick how Compii sounds.'
-                            : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
-                        voice.naturalVoice
+                        voice.engine == 'fast'
+                            ? 'Fast voice (Piper)'
+                            : voice.naturalVoice
+                                ? 'Natural voice (Kokoro)'
+                                : 'Windows voice (built in)',
+                        voice.engine == 'fast'
+                            ? 'Compii speaks at the speed the words arrive, so answers never trail behind the text.'
+                            : voice.naturalVoice
+                                ? 'An open voice model on your PC. Pick how Compii sounds.'
+                                : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
+                        voice.engine != 'fast' && voice.naturalVoice
                             ? DropdownButton<String>(
                                 value: '${settings['voice']}',
                                 underline: const SizedBox.shrink(),
@@ -481,7 +736,27 @@ class VoiceSettings extends StatelessWidget {
                                 ],
                                 onChanged: (v) => run(() => voice.set({'voice': v})),
                               )
-                            : download('speak', 'Get natural voice'),
+                            : voice.naturalVoice
+                                ? Glyph(G.checkCircle, color: c.success)
+                                : download('speak', 'Get natural voice'),
+                      ),
+                      Divider(height: 1, color: c.border),
+                      row(
+                        G.bolt,
+                        'Speak faster',
+                        voice.fastVoice
+                            ? 'Piper, a compact voice model that runs faster than real time on this PC. '
+                                'Free, downloaded once, never leaves your PC.'
+                            : 'A compact voice model that keeps up with the text instead of trailing behind it. '
+                                'Free, 64 MB, stays on this PC.',
+                        voice.fastVoice
+                            ? Switch(
+                                value: voice.engine == 'fast',
+                                onChanged: (v) => run(() => voice.set({
+                                  'engine': v ? 'fast' : (voice.naturalVoice ? 'natural' : 'windows'),
+                                })),
+                              )
+                            : download('speak_fast', 'Get fast voice'),
                       ),
                       Divider(height: 1, color: c.border),
                       row(

@@ -2,7 +2,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-/// What the companion is doing right now. Every character design must show each one.
+/// What the companion is doing right now. Every state has to be readable at a
+/// glance, from across the room and at eighteen pixels.
 enum Mood { idle, listening, thinking, acting, speaking, waiting, happy, problem, offline }
 
 String moodLabel(Mood mood) => switch (mood) {
@@ -17,10 +18,42 @@ String moodLabel(Mood mood) => switch (mood) {
   Mood.offline => 'Offline',
 };
 
-/// Compii is an Orbling: a small, warm creature that carries its own little
-/// orbit. Each golden firefly circling it is a job it is working on, so you can
-/// see at a glance how busy it is. Its hands float free of its body so they can
-/// go and do things. Soft, glowing indigo with a golden sprout on top: gentle, like its voice.
+/// Compii's body. The face is one shared rig worn by all of them: the rig is the
+/// identity and the body is a preference, which is how Muse and ChatGPT's dots
+/// shipped it. `plush` is the default — a big-headed round creature with large
+/// dark eyes and nothing that names a species, because a silhouette that only
+/// reads if you know the animal has nowhere to go at 38 px.
+enum CompiiBody { plush, moth, spark, shell, drop }
+
+extension CompiiBodyInfo on CompiiBody {
+  String get label => switch (this) {
+    CompiiBody.plush => 'Pip',
+    CompiiBody.moth => 'Mica',
+    CompiiBody.spark => 'Ember',
+    CompiiBody.shell => 'Pebble',
+    CompiiBody.drop => 'Dew',
+  };
+
+  String get note => switch (this) {
+    CompiiBody.plush => 'Round, soft and warm. The one Compii starts as.',
+    CompiiBody.moth => 'Furry and wide, wings folded over its back.',
+    CompiiBody.spark => 'A small flame the colour of whatever it is doing.',
+    CompiiBody.shell => 'A smooth pebble with a seam. Quiet and steady.',
+    CompiiBody.drop => 'Soft-bodied: it leans, squashes and settles.',
+  };
+}
+
+/// The body Compii wears, chosen in Settings and kept on this PC.
+final compiiBody = ValueNotifier<CompiiBody>(CompiiBody.plush);
+
+/// Compii is one small creature with a face, wearing a body you choose. Not a
+/// logo, not a lens, not an abstract light: a face fires from three dots in a
+/// downward triangle, large eyes and a big head carry the liking, and a
+/// stylised creature beats a realistic one.
+///
+/// The face carries *feeling*. The lights beside it carry *work* — one per
+/// running job. Everything else — what it is doing, what it found, what it
+/// needs — is text next to the character, never a code to decode from its shape.
 class CharacterSlot extends StatelessWidget {
   const CharacterSlot({
     super.key,
@@ -30,58 +63,58 @@ class CharacterSlot extends StatelessWidget {
   });
   final Mood mood;
 
-  /// Tasks running right now; each one is drawn as a mote.
+  /// Tasks running right now; each one is drawn as a small light beside Compii.
   final int jobs;
   final double size;
 
   @override
   Widget build(BuildContext context) => Semantics(
-    label:
-        'Compii, ${moodLabel(mood)}${jobs > 1 ? ', $jobs tasks running' : ''}',
+    label: 'Compii, ${moodLabel(mood)}${jobs > 1 ? ', $jobs tasks running' : ''}',
     image: true,
     child: SizedBox.square(
       dimension: size,
-      child: Orbling(mood: mood, jobs: jobs),
+      child: Ember(mood: mood, jobs: jobs),
     ),
   );
 }
 
-class OrblingPalette {
-  // The app's own indigo, softly lit from within.
-  static const body = Color(0xFF5B4FE6);
-  static const bodyDeep = Color(0xFF3A2EC4);
-  static const bodyLight = Color(0xFF9A90FF);
-  static const belly = Color(0xFFECE9FF);
-  // Cream hands with indigo cuffs.
-  static const mitten = Color(0xFFFFF4E2);
-  static const mittenShade = Color(0xFFF1DDBE);
-  // Eyes and lines in the app's ink.
-  static const ink = Color(0xFF15122E);
-  static const brow = Color(0xFF221A6E);
-  static const cheek = Color(0xFFFF8FA3);
-  // The golden sprout on top: its signature outline, in the app's sparkle gold.
-  static const sprout = Color(0xFFFFC94D);
-  static const sproutDeep = Color(0xFFE09A1E);
-  static const gold = Color(0xFFFFC94D);
-  // Asleep / offline.
-  static const dim = Color(0xFF8C86C8);
-  static const dimDeep = Color(0xFF6A63B8);
+/// The fixed materials. The state colour comes from [core].
+class EmberPalette {
+  /// Cream fur: the body material. Identity, never a mood colour.
+  static const paper = Color(0xFFF2E3C8);
+  static const paperShade = Color(0xFFB99A72);
+  static const fur = Color(0xFF4A382F);
+  static const furLight = Color(0xFF8A6647);
+  static const ash = Color(0xFF241D2A);
+  static const deep = Color(0xFF120D16);
+  static const room = Color(0xFF1C1322);
 
-  /// The glow behind the character in the app.
-  static const glow = Color(0xFF4B3FE0);
+  /// The cool edge, so warm cream never turns to jam against a warm light.
+  static const rim = Color(0xFF5FD8C8);
 
-  static Color mote(Mood mood) => switch (mood) {
-    Mood.thinking => const Color(0xFF7CC8FF),
-    Mood.waiting => const Color(0xFFFFA928),
-    Mood.problem => const Color(0xFFFF6B6B),
-    Mood.offline => const Color(0xFFB8BCC6),
-    Mood.listening => const Color(0xFF5CE1E6),
-    _ => gold,
+  /// Focus rings and the overlay frame — the product's indigo, not the creature's.
+  static const frame = Color(0xFF6B5FFF);
+  static const light = Color(0xFFFFF0D8);
+  static const gold = Color(0xFFFFC86B);
+
+  /// Cheek blush, deliberately outside the mood colours so it is never a state.
+  static const blush = Color(0xFFF4907E);
+
+  static Color core(Mood mood) => switch (mood) {
+    Mood.idle => const Color(0xFFEFC08A),
+    Mood.listening => const Color(0xFF5FE0D2),
+    Mood.thinking => const Color(0xFF8FC4FF),
+    Mood.acting => const Color(0xFFFFA23A),
+    Mood.speaking => const Color(0xFFFFE2A8),
+    Mood.waiting => const Color(0xFFFF8A6B),
+    Mood.happy => const Color(0xFF7FE8A8),
+    Mood.problem => const Color(0xFFFF5A52),
+    Mood.offline => const Color(0xFF7E7570),
   };
 }
 
-class Orbling extends StatefulWidget {
-  const Orbling({
+class Ember extends StatefulWidget {
+  const Ember({
     super.key,
     required this.mood,
     this.jobs = 0,
@@ -91,36 +124,42 @@ class Orbling extends StatefulWidget {
     this.reach,
     this.level = 0,
     this.followPointer = true,
+    this.body,
   });
   final Mood mood;
   final int jobs;
   final bool animate;
 
-  /// Microphone level 0..1 while listening; makes the motes pulse with your voice.
+  /// Microphone level 0..1 while speaking or listening; the mouth answers it.
   final double level;
 
-  /// Eyes follow the mouse pointer when the character is free to look around.
+  /// Compii turns its eyes toward the mouse pointer when free to attend.
   final bool followPointer;
 
-  /// Close-up: the face fills the whole area (the phone's Face View).
+  /// Close-up: Compii fills the room (the phone's Presence View).
   final bool face;
 
-  /// Where the free right mitten reaches to, in units of this widget's size
-  /// (may be outside 0..1). Used by the desktop overlay to point at things.
+  /// Where Compii should reach, in units of this widget's size (may be outside
+  /// 0..1). Used by the desktop overlay to point at things.
   final Offset? reach;
 
   /// Animation phase used when not animating (for stills and tests).
   final double phase;
+
+  /// Overrides [compiiBody] for a one-off render, as the picker does.
+  final CompiiBody? body;
+
   @override
-  State<Orbling> createState() => _OrblingState();
+  State<Ember> createState() => _EmberState();
 }
 
-class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
+class _EmberState extends State<Ember> with TickerProviderStateMixin {
   late final AnimationController clock = AnimationController(
     vsync: this,
-    duration: const Duration(seconds: 6),
+    duration: const Duration(seconds: 8),
   );
-  // Eases between poses so hands and face glide rather than jump.
+
+  // Eases between states so the face glides into an expression instead of jumping.
   late final AnimationController blend = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 420),
@@ -129,16 +168,31 @@ class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
   late Mood previous = widget.mood;
 
   @override
-  void didUpdateWidget(covariant Orbling old) {
+  void initState() {
+    super.initState();
+    compiiBody.addListener(_changed);
+  }
+
+  void _changed() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void didUpdateWidget(covariant Ember old) {
     super.didUpdateWidget(old);
     if (old.mood != widget.mood) {
       previous = old.mood;
-      blend.forward(from: 0);
+      if (MediaQuery.disableAnimationsOf(context)) {
+        blend.value = 1;
+      } else {
+        blend.forward(from: 0);
+      }
     }
   }
 
   @override
   void dispose() {
+    compiiBody.removeListener(_changed);
     clock.dispose();
     blend.dispose();
     super.dispose();
@@ -156,14 +210,35 @@ class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
       child: AnimatedBuilder(
         animation: Listenable.merge([clock, blend, if (widget.followPointer) pointer]),
         builder: (context, _) {
-          final b = Curves.easeOutBack.transform(blend.value).clamp(0.0, 1.08);
+          final b = Curves.easeOutCubic.transform(blend.value).clamp(0.0, 1.0);
           final t = still ? widget.phase : clock.value;
           final look = widget.followPointer ? _look(context) : null;
           return CustomPaint(
             size: Size.infinite,
             painter: widget.face
-                ? OrblingFacePainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, look: look, level: widget.level)
-                : OrblingPainter(mood: widget.mood, previous: previous, blend: b, jobs: widget.jobs, t: t, still: still, reach: widget.reach, look: look, level: widget.level),
+                ? EmberFacePainter(
+                    body: widget.body ?? compiiBody.value,
+                    mood: widget.mood,
+                    previous: previous,
+                    blend: b,
+                    jobs: widget.jobs,
+                    t: t,
+                    still: still,
+                    look: look,
+                    level: widget.level,
+                  )
+                : EmberPainter(
+                    body: widget.body ?? compiiBody.value,
+                    mood: widget.mood,
+                    previous: previous,
+                    blend: b,
+                    jobs: widget.jobs,
+                    t: t,
+                    still: still,
+                    reach: widget.reach,
+                    look: look,
+                    level: widget.level,
+                  ),
           );
         },
       ),
@@ -185,547 +260,757 @@ class _OrblingState extends State<Orbling> with TickerProviderStateMixin {
 /// Last known mouse position in global coordinates, fed by the app root.
 final pointer = ValueNotifier<Offset?>(null);
 
-/// Moods where the character is free to look at you (and your pointer).
-bool _canLook(Mood m) => m == Mood.idle || m == Mood.listening || m == Mood.speaking || m == Mood.waiting;
+// ---------------------------------------------------------------------------
+// The expression. One table read by every body, so the 18 px chip and the
+// phone's full-screen close-up wear the same face in the same mood.
+// ---------------------------------------------------------------------------
 
-/// Pose = where everything sits for a mood, in unit coordinates.
-class _Pose {
-  const _Pose({
-    required this.left,
-    required this.right,
-    required this.gaze,
+/// What a mood does to the face and the stance. `brow` is raised(+)/furrowed(-),
+/// `tilt` is worried(+)/aimed(-), `eye` is shut..wide, and `mouth` runs
+/// frown..smile with values above 1.5 meaning "open, speaking".
+class _Rig {
+  const _Rig({
     required this.brow,
-    required this.squash,
-    this.leftTurn = 0,
-    this.rightTurn = 0,
+    required this.tilt,
+    required this.eye,
+    required this.mouth,
+    required this.bob,
+    required this.lean,
   });
-  final Offset left;
-  final Offset right;
-  final Offset gaze; // -1..1
-  final double brow; // + raised/worried inner, - focused
-  final double squash; // + wider/shorter
-  final double leftTurn;
-  final double rightTurn;
+  final double brow;
+  final double tilt;
+  final double eye;
+  final double mouth;
+  final double bob;
+  final double lean;
 
-  static _Pose of(Mood mood) => switch (mood) {
-    Mood.idle => const _Pose(left: Offset(.19, .71), right: Offset(.81, .71), gaze: Offset(0, .1), brow: 0, squash: 0),
-    // Mittens cupped by its sides, leaning in to hear you.
-    Mood.listening => const _Pose(left: Offset(.15, .56), right: Offset(.85, .56), gaze: Offset(0, .05), brow: .35, squash: -.04, leftTurn: .5, rightTurn: -.5),
-    // One mitten gestures while it talks.
-    Mood.speaking => const _Pose(left: Offset(.19, .72), right: Offset(.84, .6), gaze: Offset(0, .1), brow: .15, squash: 0, rightTurn: -.35),
-    Mood.thinking => const _Pose(left: Offset(.18, .72), right: Offset(.63, .695), gaze: Offset(-.55, -.7), brow: .25, squash: -.02, rightTurn: -.6),
-    Mood.acting => const _Pose(left: Offset(.37, .775), right: Offset(.63, .775), gaze: Offset(0, .8), brow: -.35, squash: .015, leftTurn: -.25, rightTurn: .25),
-    Mood.waiting => const _Pose(left: Offset(.18, .71), right: Offset(.84, .44), gaze: Offset(0, .05), brow: .45, squash: -.03, rightTurn: -.4),
-    Mood.happy => const _Pose(left: Offset(.15, .42), right: Offset(.85, .42), gaze: Offset.zero, brow: .3, squash: -.05, leftTurn: .5, rightTurn: -.5),
-    Mood.problem => const _Pose(left: Offset(.2, .72), right: Offset(.67, .3), gaze: Offset(-.2, -.2), brow: .8, squash: .02, rightTurn: -1.1),
-    Mood.offline => const _Pose(left: Offset(.31, .8), right: Offset(.69, .8), gaze: Offset.zero, brow: 0, squash: .08),
+  static _Rig of(Mood m) => switch (m) {
+    // Ready: nothing is happening, and that is fine.
+    Mood.idle => const _Rig(brow: 0, tilt: 0, eye: 1, mouth: .35, bob: .012, lean: 0),
+    // Listening: a little wide, brows up, leaning toward the sound.
+    Mood.listening => const _Rig(brow: .55, tilt: .15, eye: 1.18, mouth: .1, bob: .02, lean: -.05),
+    // Thinking: eyes partly down and away, one brow up. Looking inward.
+    Mood.thinking => const _Rig(brow: .3, tilt: -.12, eye: .66, mouth: .0, bob: .008, lean: .06),
+    // Working: narrowed and steady. Not unhappy — aimed, so the mouth stays calm.
+    Mood.acting => const _Rig(brow: -.15, tilt: -.28, eye: .74, mouth: .08, bob: .026, lean: 0),
+    // Speaking: an open mouth sized by the voice.
+    Mood.speaking => const _Rig(brow: .2, tilt: 0, eye: 1.02, mouth: 2, bob: .018, lean: 0),
+    // Needs you: brows up and pulled together — the classic worried face.
+    Mood.waiting => const _Rig(brow: .7, tilt: .85, eye: 1.15, mouth: -.45, bob: .014, lean: -.03),
+    // Done: eyes closed into arcs and a big smile. The one happy face.
+    Mood.happy => const _Rig(brow: .5, tilt: 0, eye: .05, mouth: .95, bob: .05, lean: 0),
+    // Problem: brows down and in, mouth turned down, nothing else moving.
+    Mood.problem => const _Rig(brow: -.7, tilt: -.8, eye: .68, mouth: -.6, bob: 0, lean: .02),
+    // Offline: shut and slack.
+    Mood.offline => const _Rig(brow: 0, tilt: 0, eye: 0, mouth: 0, bob: 0, lean: .09),
   };
 
-  static _Pose lerp(_Pose a, _Pose b, double t) => _Pose(
-    left: Offset.lerp(a.left, b.left, t)!,
-    right: Offset.lerp(a.right, b.right, t)!,
-    gaze: Offset.lerp(a.gaze, b.gaze, t)!,
+  static _Rig mix(_Rig a, _Rig b, double t) => _Rig(
     brow: a.brow + (b.brow - a.brow) * t,
-    squash: a.squash + (b.squash - a.squash) * t,
-    leftTurn: a.leftTurn + (b.leftTurn - a.leftTurn) * t,
-    rightTurn: a.rightTurn + (b.rightTurn - a.rightTurn) * t,
+    tilt: a.tilt + (b.tilt - a.tilt) * t,
+    eye: a.eye + (b.eye - a.eye) * t,
+    mouth: a.mouth + (b.mouth - a.mouth) * t,
+    bob: a.bob + (b.bob - a.bob) * t,
+    lean: a.lean + (b.lean - a.lean) * t,
   );
 }
 
-class OrblingPainter extends CustomPainter {
-  OrblingPainter({
+/// Where a body puts its face, and how big the face is there.
+class _Fit {
+  const _Fit(this.centre, this.scale);
+  final Offset centre;
+  final double scale;
+}
+
+/// One running job, as a small light rising beside the body.
+class _Job {
+  const _Job(this.at, this.r, this.alpha);
+  final Offset at;
+  final double r;
+  final double alpha;
+}
+
+/// The creature. Figure units: the body fits inside about -0.5..0.5 on both
+/// axes, origin at the middle of the figure, y down.
+class _Figure {
+  _Figure({
+    required this.body,
+    required this.rig,
+    required this.mood,
+    required this.t,
+    required this.still,
+    required this.jobs,
+    required this.level,
+    required this.look,
+    required this.detail,
+    required this.unit,
+    required this.color,
+    required this.dim,
+  });
+
+  final CompiiBody body;
+  final _Rig rig;
+  final Mood mood;
+  final double t;
+  final bool still;
+  final int jobs;
+  final double level;
+  final Offset? look;
+
+  /// 0 chip, 1 bar, 2 close-up. Detail adds and removes parts; it never blurs.
+  final int detail;
+
+  /// One device pixel in figure units, so a hairline stays a hairline at 18 px.
+  final double unit;
+  final Color color;
+  final bool dim;
+
+  double _px(double n) => math.max(unit * n, .004);
+
+  /// The idle life in the body: a small bob and a lean, both from the rig.
+  late final Offset seat = Offset(
+    (still ? 0 : math.sin(t * 2 * math.pi) * .010) + rig.lean,
+    still ? 0 : math.sin(t * 4 * math.pi) * rig.bob,
+  );
+
+  _Fit get fit => switch (body) {
+    CompiiBody.plush => const _Fit(Offset(0, -.15), 1),
+    CompiiBody.moth => const _Fit(Offset(0, -.235), .52),
+    CompiiBody.spark => const _Fit(Offset(0, .11), .80),
+    CompiiBody.shell => const _Fit(Offset(0, -.02), .92),
+    CompiiBody.drop => const _Fit(Offset(0, .10), .84),
+  };
+
+  void draw(Canvas canvas) {
+    for (final j in _jobLights(front: false)) {
+      _job(canvas, j);
+    }
+    canvas.save();
+    canvas.translate(seat.dx, seat.dy);
+    switch (body) {
+      case CompiiBody.plush:
+        _plush(canvas);
+      case CompiiBody.moth:
+        _moth(canvas);
+      case CompiiBody.spark:
+        _spark(canvas);
+      case CompiiBody.shell:
+        _shell(canvas);
+      case CompiiBody.drop:
+        _drop(canvas);
+    }
+    _face(canvas);
+    canvas.restore();
+    for (final j in _jobLights(front: true)) {
+      _job(canvas, j);
+    }
+    _signals(canvas);
+  }
+
+  void _job(Canvas canvas, _Job j) {
+    // A blurred halo, never a solid one: a translucent disc drawn over the dark
+    // room reads as a brown ring with a hole in it.
+    canvas.drawCircle(j.at, j.r * 2.4, _soft(color.withValues(alpha: j.alpha * .34), j.r * 1.15));
+    canvas.drawCircle(j.at, j.r, Paint()..color = EmberPalette.light.withValues(alpha: j.alpha));
+  }
+
+  /// Jobs rise on the right, half of them behind the body so three never stack
+  /// into one blob.
+  List<_Job> _jobLights({required bool front}) {
+    final n = math.min(jobs, 6);
+    final all = <_Job>[];
+    for (var i = 0; i < n; i++) {
+      final p = n == 1 ? .5 : i / (n - 1);
+      final rise = still ? .35 + p * .3 : (t + i * .17) % 1;
+      final at = Offset(.29 + p * .09, .18 - rise * .44);
+      all.add(_Job(at, math.max(_px(1.5), .017), .9 * (1 - rise * .55)));
+    }
+    return [for (var i = 0; i < all.length; i++) if (i.isEven == front) all[i]];
+  }
+
+  // -- bodies ---------------------------------------------------------------
+
+  /// The default: a big round head, a small soft body, two stubby feet. No ears,
+  /// no wings, no shell — nothing that names a species and can therefore be wrong.
+  void _plush(Canvas canvas) {
+    final shape = Path()
+      ..addOval(Rect.fromCenter(center: const Offset(0, .185), width: .40, height: .34))
+      ..addOval(Rect.fromCenter(center: const Offset(0, -.155), width: .56, height: .53));
+    for (final s in const [-1.0, 1.0]) {
+      shape.addOval(Rect.fromCenter(center: Offset(s * .115, .345), width: .15, height: .085));
+    }
+    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(0, -.28)));
+    if (dim || detail < 2) return;
+    // The crown catches the light and the jaw does not, so it reads as a volume
+    // rather than a cream-coloured disc.
+    canvas.save();
+    canvas.clipPath(shape);
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(0, -.36), width: .36, height: .16),
+      _soft(EmberPalette.light.withValues(alpha: .22), .055),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(0, .33), width: .38, height: .13),
+      _soft(EmberPalette.paperShade.withValues(alpha: .30), .05),
+    );
+    canvas.restore();
+  }
+
+  /// A moth as it actually sits: wings tented over the back like a roof, so from
+  /// the front they are one broad slope with the furry thorax breaking it in the
+  /// middle. Two flat lobes held out either side of a thin body is a butterfly,
+  /// and that is the read this has to avoid.
+  void _moth(Canvas canvas) {
+    final beat = still ? 0.0 : math.sin(t * 4 * math.pi) * .022;
+    final roof = Path()
+      ..moveTo(0, -.30)
+      ..cubicTo(.30 + beat, -.27, .40 + beat, -.02, .25, .23)
+      ..cubicTo(.13, .34, -.13, .34, -.25, .23)
+      ..cubicTo(-.40 - beat, -.02, -.30 - beat, -.27, 0, -.30)
+      ..close();
+    canvas.drawPath(roof, _skin(roof.getBounds(), const Offset(-.10, -.22)));
+    if (!dim) {
+      canvas.drawPath(
+        roof,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _px(1.4)
+          ..color = EmberPalette.paperShade.withValues(alpha: .26),
+      );
+      // The far side of the tent falls away from the light. This one shading is
+      // what turns a flat pair of wings into a roof.
+      canvas.save();
+      canvas.clipPath(roof);
+      canvas.drawPath(
+        Path()
+          ..moveTo(.02, -.32)
+          ..cubicTo(.26, -.26, .40, .0, .26, .26)
+          ..lineTo(.46, .30)
+          ..lineTo(.46, -.36)
+          ..close(),
+        _soft(EmberPalette.paperShade.withValues(alpha: .34), .045),
+      );
+      if (detail >= 2) {
+        final veins = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _px(.8)
+          ..color = EmberPalette.paperShade.withValues(alpha: .22);
+        for (var i = 0; i < 4; i++) {
+          final y = -.16 + i * .115;
+          canvas.drawLine(Offset(.03, y), Offset(.33, y + .07), veins);
+          canvas.drawLine(Offset(-.03, y), Offset(-.33, y + .07), veins);
+        }
+      }
+      canvas.restore();
+    }
+    // Abdomen, thorax, head: the thorax is the fattest thing about the creature.
+    final body = Path()
+      ..addOval(Rect.fromCenter(center: const Offset(0, .20), width: .175, height: .28))
+      ..addOval(Rect.fromCenter(center: const Offset(0, -.04), width: .26, height: .30))
+      ..addOval(Rect.fromCenter(center: const Offset(0, -.235), width: .19, height: .17));
+    canvas.drawPath(body, _skin(body.getBounds(), const Offset(0, -.30)));
+    if (!dim && detail >= 1) {
+      final ring = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(.9)
+        ..color = EmberPalette.paperShade.withValues(alpha: .32);
+      for (var i = 0; i < 3; i++) {
+        final y = .14 + i * .062;
+        canvas.drawLine(Offset(-.065, y), Offset(.065, y), ring);
+      }
+    }
+    _combs(canvas);
+  }
+
+  /// A small flame — the one body whose own material *is* the state colour.
+  /// Tall, licking to one side, and read through its value ramp more than its
+  /// hue: a pale state colour still has to look like something burning.
+  void _spark(Canvas canvas) {
+    final lick = still ? 0.0 : math.sin(t * 6 * math.pi) * .035;
+    final shape = Path()
+      ..moveTo(.10, -.47 - lick)
+      // Down into the notch, then out over the left shoulder.
+      ..cubicTo(.03, -.31, -.05, -.26, -.09, -.31)
+      ..cubicTo(-.17, -.15, -.30, -.05, -.30, .13)
+      ..cubicTo(-.30, .33, -.14, .43, .04, .41)
+      ..cubicTo(.24, .39, .33, .24, .30, .06)
+      ..cubicTo(.27, -.14, .18, -.31, .10, -.47 - lick)
+      ..close();
+    final b = shape.getBounds();
+    canvas.drawPath(
+      shape,
+      _radial(
+        b,
+        const Offset(0, .22),
+        [
+          Color.lerp(EmberPalette.light, color, .18)!.withValues(alpha: dim ? .32 : .96),
+          color.withValues(alpha: dim ? .24 : .88),
+          Color.lerp(color, EmberPalette.deep, .62)!.withValues(alpha: dim ? .20 : .70),
+        ],
+        const [0, .48, 1],
+      ),
+    );
+    if (dim) return;
+    canvas.drawPath(
+      shape,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(1.2)
+        ..color = EmberPalette.light.withValues(alpha: .26),
+    );
+    if (detail < 1) return;
+    // The hot core.
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(.01, .18), width: .19, height: .27),
+      _soft(Color.lerp(EmberPalette.light, color, .22)!.withValues(alpha: .62), .055),
+    );
+  }
+
+  /// A river stone: wider than it is tall with a settled base and one seam.
+  /// Quiet and steady, and nothing like the soft bodies around it.
+  void _shell(Canvas canvas) {
+    final shape = Path()
+      ..moveTo(-.31, .14)
+      ..cubicTo(-.35, -.11, -.19, -.30, .02, -.30)
+      ..cubicTo(.25, -.30, .37, -.11, .32, .13)
+      ..cubicTo(.29, .25, .22, .29, .0, .29)
+      ..cubicTo(-.22, .29, -.28, .25, -.31, .14)
+      ..close();
+    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(-.10, -.20)));
+    if (dim) return;
+    canvas.drawPath(
+      Path()
+        ..moveTo(-.26, -.06)
+        ..quadraticBezierTo(-.02, -.16, .24, -.02),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(1.3)
+        ..strokeCap = StrokeCap.round
+        ..color = EmberPalette.paperShade.withValues(alpha: .34),
+    );
+  }
+
+  /// A soft drop: plump and wider than it is tall, with a short neck at the top
+  /// and a wet highlight. It squashes as it settles, which is the whole point.
+  void _drop(Canvas canvas) {
+    final squash = still ? 0.0 : math.sin(t * 4 * math.pi) * .035;
+    final w = .30 * (1 + squash); // half-width at the belly
+    final bottom = .38 * (1 - squash);
+    final top = -.19 + squash * .5; // the neck shortens as the belly spreads
+    final shape = Path()
+      ..moveTo(-.02, top)
+      ..cubicTo(.13, top + .10, w, -.04, w, .08)
+      ..cubicTo(w, bottom - .09, .17, bottom, -.02, bottom)
+      ..cubicTo(-.21, bottom, -w - .01, bottom - .10, -w, .07)
+      ..cubicTo(-w + .01, -.05, -.14, top + .11, -.02, top)
+      ..close();
+    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(-.09, -.12)));
+    if (dim) return;
+    canvas.drawPath(
+      shape,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(1.1)
+        ..strokeCap = StrokeCap.round
+        ..color = EmberPalette.rim.withValues(alpha: .22),
+    );
+    if (detail < 2) return;
+    // A wet highlight: the one thing that says liquid rather than fur.
+    canvas.drawOval(
+      Rect.fromCenter(center: const Offset(-.14, -.06), width: .09, height: .16),
+      _soft(EmberPalette.light.withValues(alpha: .34), .035),
+    );
+  }
+
+  /// Combs, not clubs: a moth's antennae are feathers swept back off the head.
+  void _combs(Canvas canvas) {
+    final shaft = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = _px(1.4)
+      ..strokeCap = StrokeCap.round
+      ..color = Color.lerp(EmberPalette.furLight, color, dim ? 0 : .2)!.withValues(alpha: dim ? .3 : .8);
+    for (final s in const [-1.0, 1.0]) {
+      final start = Offset(s * .055, -.30);
+      final ctl = Offset(s * .19, -.42);
+      final tip = Offset(s * (.31 + (look?.dx ?? 0) * .03 * s), -.33 + (look?.dy ?? 0) * .02);
+      canvas.drawPath(
+        Path()
+          ..moveTo(start.dx, start.dy)
+          ..quadraticBezierTo(ctl.dx, ctl.dy, tip.dx, tip.dy),
+        shaft,
+      );
+      if (detail < 2 || dim) continue;
+      final teeth = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(.8)
+        ..strokeCap = StrokeCap.round
+        ..color = EmberPalette.furLight.withValues(alpha: .5);
+      for (var i = 1; i <= 5; i++) {
+        final u = i / 6;
+        final p = _quad(start, ctl, tip, u);
+        final q = _quad(start, ctl, tip, (u + .08).clamp(0.0, 1.0));
+        final n = Offset(-(q.dy - p.dy), q.dx - p.dx);
+        if (n.distance == 0) continue;
+        final out = (n / n.distance) * .020;
+        canvas.drawLine(p - out, p + out, teeth);
+      }
+    }
+  }
+
+  // -- the face, shared by every body ---------------------------------------
+
+  /// Face units are the figure's, moved and scaled by [fit], so one set of
+  /// numbers gives the right face on a wide moth head and a narrow drop.
+  void _face(Canvas canvas) {
+    final f = fit;
+    canvas.save();
+    canvas.translate(f.centre.dx, f.centre.dy);
+    canvas.scale(f.scale);
+
+    final open = _blink();
+    final lx = look?.dx ?? 0.0, ly = look?.dy ?? 0.0;
+    // A pupil near centre already reads as eye contact, so the gaze is allowed
+    // to be shy: it follows the mouse without rolling off the eye.
+    final gaze = Offset(lx, ly) * .022;
+
+    for (final s in const [-1.0, 1.0]) {
+      final at = Offset(s * .108, 0);
+      if (detail >= 2) _brow(canvas, s, at);
+      if (open < .12) {
+        // Shut: an arc. A big smile lifts the lids into upward arcs — the classic
+        // happy squint — while a resting lid curves the other way.
+        final happy = rig.mouth > .6;
+        canvas.drawPath(
+          Path()
+            ..moveTo(at.dx - .055, at.dy + (happy ? .012 : -.004))
+            ..quadraticBezierTo(
+              at.dx,
+              at.dy + (happy ? -.034 : .014),
+              at.dx + .055,
+              at.dy + (happy ? .012 : -.004),
+            ),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _px(1.9)
+            ..strokeCap = StrokeCap.round
+            ..color = dim ? EmberPalette.ash.withValues(alpha: .55) : EmberPalette.deep,
+        );
+        continue;
+      }
+      // The white is only ever a thin ring; the dark is the eye.
+      canvas.drawOval(
+        Rect.fromCenter(center: at, width: .118, height: .118 * open * 1.15),
+        Paint()..color = EmberPalette.light.withValues(alpha: dim ? .20 : .92),
+      );
+      canvas.drawOval(
+        Rect.fromCenter(center: at + gaze, width: .088, height: .094 * open * 1.15),
+        Paint()..color = dim ? const Color(0xFF332C38) : EmberPalette.deep,
+      );
+      if (detail >= 1) {
+        canvas.drawCircle(
+          at + gaze + Offset(-.016, -.020),
+          math.max(_px(1.1), .015),
+          Paint()..color = Colors.white.withValues(alpha: dim ? .12 : .92),
+        );
+      }
+    }
+
+    if (detail >= 2) _cheeks(canvas);
+    if (detail >= 1) _mouth(canvas);
+    canvas.restore();
+  }
+
+  void _brow(Canvas canvas, double s, Offset at) {
+    if (dim || rig.brow == 0 && rig.tilt == 0) return;
+    // `brow` lifts both ends; `tilt` lifts the inner one, which is the worried
+    // brow. Dropping it instead aims the brow at the nose — working, not sad.
+    final lift = rig.brow * .010;
+    final inner = at + Offset(-s * .055, -.082 - lift - rig.tilt * .028);
+    final outer = at + Offset(s * .062, -.080 - lift + rig.tilt * .012);
+    canvas.drawLine(
+      inner,
+      outer,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(1.6)
+        ..strokeCap = StrokeCap.round
+        ..color = Color.lerp(EmberPalette.furLight, EmberPalette.paperShade, .4)!.withValues(alpha: .9),
+    );
+  }
+
+  void _cheeks(Canvas canvas) {
+    if (dim) return;
+    for (final s in const [-1.0, 1.0]) {
+      canvas.drawOval(
+        Rect.fromCenter(center: Offset(s * .185, .052), width: .088, height: .052),
+        _soft(EmberPalette.blush.withValues(alpha: .32), .024),
+      );
+    }
+  }
+
+  void _mouth(Canvas canvas) {
+    final at = const Offset(0, .085);
+    final m = rig.mouth;
+    final ink = (dim ? EmberPalette.ash : EmberPalette.deep).withValues(alpha: .9);
+    if (m > 1.5) {
+      // Speaking: an open mouth sized by the voice, not a fixed shape.
+      final o = .026 + level * .050;
+      canvas.drawOval(
+        Rect.fromCenter(center: at, width: .062, height: o * 2),
+        Paint()..color = ink,
+      );
+      return;
+    }
+    if (m.abs() < .12) {
+      canvas.drawLine(
+        at - const Offset(.030, 0),
+        at + const Offset(.030, 0),
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _px(1.5)
+          ..strokeCap = StrokeCap.round
+          ..color = ink,
+      );
+      return;
+    }
+    canvas.drawPath(
+      Path()
+        ..moveTo(at.dx - .042, at.dy)
+        ..quadraticBezierTo(at.dx, at.dy + m * .048, at.dx + .042, at.dy),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(1.7)
+        ..strokeCap = StrokeCap.round
+        ..color = ink,
+    );
+  }
+
+  /// One blink per eight-second cycle.
+  double _blink() {
+    if (rig.eye <= .06) return 0;
+    if (still) return rig.eye;
+    final p = t % 1;
+    if (p < .855 || p > .885) return rig.eye;
+    // Ease the lids so a blink is a blink and not a flicker.
+    return rig.eye * (1 - math.sin((p - .855) / .030 * math.pi));
+  }
+
+  // -- gestures on top ------------------------------------------------------
+
+  void _signals(Canvas canvas) {
+    if (dim) return;
+    if (mood == Mood.waiting) {
+      // A signal light, not a ring: an outlined circle over the head reads as an
+      // antenna, and the creature already has a face to look at.
+      final pulse = still ? .6 : (math.sin(t * 8 * math.pi) + 1) / 2;
+      final at = Offset(0, fit.centre.dy - .31);
+      final r = math.max(_px(1.6), .021);
+      canvas.drawCircle(at, r * 2.4, _soft(color.withValues(alpha: .30 + .30 * pulse), r * 1.2));
+      canvas.drawCircle(at, r, Paint()..color = EmberPalette.light.withValues(alpha: .55 + .45 * pulse));
+    }
+    if (mood == Mood.happy && !still) {
+      final p = t % 1;
+      if (p < .22) {
+        final k = p / .22;
+        final rays = Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = _px(1.5)
+          ..strokeCap = StrokeCap.round
+          ..color = color.withValues(alpha: (1 - k) * .8);
+        for (var i = 0; i < 7; i++) {
+          final a = i / 7 * 2 * math.pi - 1.57;
+          final d = .30 + k * .16;
+          canvas.drawLine(
+            Offset(math.cos(a) * d, math.sin(a) * d - .05),
+            Offset(math.cos(a) * (d + .06), math.sin(a) * (d + .06) - .05),
+            rays,
+          );
+        }
+      }
+    }
+  }
+
+  // -- material -------------------------------------------------------------
+
+  /// The body's own skin: cream fur, lit from wherever the light falls on it.
+  Paint _skin(Rect b, Offset litAt) {
+    if (dim) {
+      return _radial(
+        b,
+        litAt,
+        [const Color(0xFF3E3646).withValues(alpha: .95), EmberPalette.ash.withValues(alpha: .85)],
+        const [0, 1],
+      );
+    }
+    final lit = Color.lerp(EmberPalette.paper, EmberPalette.light, .32)!;
+    final mid = Color.lerp(EmberPalette.paper, color, .16)!;
+    final edge = Color.lerp(mid, EmberPalette.paperShade, .44)!;
+    return _radial(
+      b,
+      litAt,
+      [lit.withValues(alpha: .98), mid.withValues(alpha: .98), edge.withValues(alpha: .92)],
+      const [0, .52, 1],
+    );
+  }
+}
+
+Offset _quad(Offset a, Offset c, Offset b, double t) {
+  final u = 1 - t;
+  return a * (u * u) + c * (2 * u * t) + b * (t * t);
+}
+
+/// A radial fill anchored at a point *inside* the shape. Flutter measures a
+/// gradient radius against the rect's shortest side, so the radius has to be
+/// worked out from the farthest corner — otherwise the outer third of a wide
+/// shape never gets past the first colour stop and the body reads as a band.
+Paint _radial(Rect b, Offset at, List<Color> colors, List<double> stops) {
+  if (b.isEmpty) return Paint()..color = colors.first;
+  final far = [
+    b.topLeft,
+    b.topRight,
+    b.bottomLeft,
+    b.bottomRight,
+  ].map((c) => (c - at).distance).reduce(math.max);
+  final side = math.min(b.width, b.height);
+  return Paint()
+    ..shader = RadialGradient(
+      center: Alignment(
+        ((at.dx - b.left) / b.width * 2 - 1).clamp(-1.0, 1.0),
+        ((at.dy - b.top) / b.height * 2 - 1).clamp(-1.0, 1.0),
+      ),
+      radius: side == 0 ? 1.0 : (far / side).clamp(1.0, 2.6),
+      colors: colors,
+      stops: stops,
+    ).createShader(b);
+}
+
+/// A blur that is never asked to blur a fraction of a pixel.
+Paint _soft(Color color, double sigma) => Paint()
+  ..color = color
+  ..maskFilter = sigma < .004 ? null : MaskFilter.blur(BlurStyle.normal, sigma);
+
+// ---------------------------------------------------------------------------
+// The two views. Both hand the same _Figure a transform and nothing else, so
+// the dock chip and the phone's full screen are the same creature.
+// ---------------------------------------------------------------------------
+
+/// Figure units per device pixel, and the detail level that falls out of it.
+({int detail, double unit}) _fitScale(double span) => (
+  detail: span >= 64 ? 2 : (span >= 30 ? 1 : 0),
+  unit: 1 / span,
+);
+
+class EmberPainter extends CustomPainter {
+  EmberPainter({
+    required this.body,
     required this.mood,
     required this.previous,
     required this.blend,
     required this.jobs,
     required this.t,
-    this.still = false,
+    required this.still,
+    required this.look,
+    required this.level,
     this.reach,
-    this.look,
-    this.level = 0,
   });
+
+  final CompiiBody body;
   final Mood mood;
   final Mood previous;
   final double blend;
   final int jobs;
   final double t;
   final bool still;
-  final Offset? reach;
   final Offset? look;
   final double level;
-
-  Offset _gaze(_Pose pose) => look != null && _canLook(mood) ? look! : pose.gaze;
-
-  double get _wave => math.sin(t * 2 * math.pi);
+  final Offset? reach;
 
   @override
   void paint(Canvas canvas, Size size) {
     final s = size.shortestSide;
-    canvas.translate((size.width - s) / 2, (size.height - s) / 2);
-    canvas.scale(s);
-    final pose = _Pose.lerp(_Pose.of(previous), _Pose.of(mood), blend);
-    final calm = mood == Mood.offline;
-    final hover = calm ? 0.0 : _wave * .012;
-    final breathe = calm ? math.sin(t * 2 * math.pi) * .01 : _wave * .015;
-
-    // Ground shadow shrinks as it floats up.
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.5, .88), width: .48 - hover * 2, height: .042),
-      Paint()..color = OrblingPalette.bodyDeep.withValues(alpha: .16),
-    );
-
-    final motes = _motes();
-    for (final m in motes.where((m) => m.behind)) {
-      _drawMote(canvas, m);
-    }
-
-    canvas.save();
-    canvas.translate(0, -hover);
-    // Squash and stretch around the base.
-    canvas.translate(.5, .84);
-    canvas.scale(1 + pose.squash + breathe * .5, 1 - pose.squash - breathe * .5);
-    canvas.translate(-.5, -.84);
-    _drawBody(canvas);
-    _drawFace(canvas, pose);
-    canvas.restore();
-
-    _drawMitten(canvas, pose.left + Offset(0, -hover + _handBob(left: true)), pose.leftTurn, mirror: false);
-    final target = reach;
-    if (target == null) {
-      _drawMitten(canvas, pose.right + Offset(0, -hover + _handBob(left: false)), pose.rightTurn, mirror: true);
-    } else {
-      // Free mitten flies out and points: fingers toward the target.
-      final from = const Offset(.62, .62);
-      final dir = target - from;
-      final tip = target - dir / dir.distance * .1;
-      canvas.save();
-      canvas.translate(tip.dx, tip.dy);
-      canvas.scale(1.5);
-      canvas.translate(-tip.dx, -tip.dy);
-      _drawMitten(canvas, tip, math.atan2(dir.dy, dir.dx) + math.pi / 2, mirror: true);
-      canvas.restore();
-    }
-
-    for (final m in motes.where((m) => !m.behind)) {
-      _drawMote(canvas, m);
-    }
-    _drawExtras(canvas);
-  }
-
-  double _handBob({required bool left}) => switch (mood) {
-    // Alternating taps, like typing.
-    Mood.acting => math.max(0, math.sin(t * 2 * math.pi * 6 + (left ? 0 : math.pi))) * .025,
-    Mood.waiting when !left => math.sin(t * 2 * math.pi * 3) * .015,
-    Mood.happy => -math.max(0, math.sin(t * 2 * math.pi * 2)) * .02,
-    Mood.offline => 0,
-    _ => math.sin(t * 2 * math.pi + (left ? 0 : 1.3)) * .008,
-  };
-
-  /// A soft, round mochi shape: a gentle dome on a wide, settled base.
-  Path _bodyPath() => Path()
-    ..moveTo(.27, .825)
-    ..quadraticBezierTo(.5, .87, .73, .825)
-    ..cubicTo(.83, .79, .835, .6, .77, .48)
-    ..cubicTo(.7, .35, .6, .29, .5, .29)
-    ..cubicTo(.4, .29, .3, .35, .23, .48)
-    ..cubicTo(.165, .6, .17, .79, .27, .825)
-    ..close();
-
-  void _drawBody(Canvas canvas) {
-    final body = _bodyPath();
     final dim = mood == Mood.offline;
-    final base = dim ? OrblingPalette.dim : OrblingPalette.body;
-    final deep = dim ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep;
-    // Little feet.
-    for (final x in [.405, .595]) {
-      canvas.drawOval(Rect.fromCenter(center: Offset(x, .848), width: .1, height: .055), Paint()..color = deep);
-    }
-    // Warm glow from within: light at the top left, deeper at the base.
-    canvas.drawPath(
-      body,
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-.35, -.55),
-          radius: 1.05,
-          colors: [dim ? const Color(0xFFAAA5DA) : OrblingPalette.bodyLight, base, deep],
-          stops: const [0, .5, 1],
-        ).createShader(const Rect.fromLTRB(.17, .29, .83, .87)),
-    );
-    canvas.save();
-    canvas.clipPath(body);
-    // Soft lavender belly.
+    final color = Color.lerp(EmberPalette.core(previous), EmberPalette.core(mood), blend)!;
+    final span = s * .86;
+    final centre = Offset(size.width / 2, size.height / 2 - s * .02);
+
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.5, .79), width: .4, height: .2),
-      Paint()..color = (dim ? const Color(0xFFB9B5DE) : OrblingPalette.belly).withValues(alpha: .5),
-    );
-    // Soft sheen.
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.38, .4), width: .15, height: .075),
-      Paint()..color = Colors.white.withValues(alpha: dim ? .2 : .38),
-    );
-    canvas.restore();
-    _drawSprout(canvas, dim);
-  }
-
-  /// Two rounded golden petals on a tiny stem: you can recognise Compii from this alone.
-  void _drawSprout(Canvas canvas, bool dim) {
-    final sway = still ? 0.0 : math.sin(t * 2 * math.pi) * .05;
-    canvas.save();
-    canvas.translate(.5, .3);
-    canvas.rotate(sway + (mood == Mood.offline ? .35 : 0));
-    final stem = Paint()
-      ..color = dim ? OrblingPalette.dimDeep : OrblingPalette.sproutDeep
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = .016
-      ..strokeCap = StrokeCap.round;
-    canvas.drawPath(Path()..moveTo(0, .005)..quadraticBezierTo(.004, -.03, 0, -.05), stem);
-    for (final side in [-1.0, 1.0]) {
-      final petal = Path()
-        ..moveTo(0, -.048)
-        ..cubicTo(side * .02, -.1, side * .085, -.105, side * .09, -.07)
-        ..cubicTo(side * .092, -.04, side * .04, -.035, 0, -.048)
-        ..close();
-      canvas.drawPath(petal, Paint()..color = dim ? OrblingPalette.dim : OrblingPalette.sprout);
-      canvas.drawPath(
-        Path()
-          ..moveTo(side * .012, -.055)
-          ..quadraticBezierTo(side * .045, -.075, side * .07, -.072),
-        Paint()
-          ..color = Colors.white.withValues(alpha: .45)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = .006
-          ..strokeCap = StrokeCap.round,
-      );
-    }
-    canvas.restore();
-  }
-
-  void _drawFace(Canvas canvas, _Pose pose) {
-    final ink = Paint()..color = OrblingPalette.ink;
-    final stroke = Paint()
-      ..color = OrblingPalette.ink
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = .015;
-
-    // Rosy cheeks with a tiny shine.
-    for (final x in [.345, .655]) {
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(x, .64), width: .085, height: .044),
-        Paint()..color = OrblingPalette.cheek.withValues(alpha: mood == Mood.happy ? .75 : .45),
-      );
-      canvas.drawCircle(Offset(x + .016, .632), .006, Paint()..color = Colors.white.withValues(alpha: .55));
-    }
-
-    final blink = mood == Mood.idle && !still && t > .62 && t < .645;
-    for (final (x, side) in [(.41, -1.0), (.59, 1.0)]) {
-      final c = Offset(x, .56);
-      if (mood == Mood.happy) {
-        canvas.drawPath(
-          Path()
-            ..moveTo(c.dx - .032, c.dy + .008)
-            ..quadraticBezierTo(c.dx, c.dy - .04, c.dx + .032, c.dy + .008),
-          stroke..strokeWidth = .018,
-        );
-      } else if (mood == Mood.offline || blink) {
-        canvas.drawPath(
-          Path()
-            ..moveTo(c.dx - .03, c.dy)
-            ..quadraticBezierTo(c.dx, c.dy + .02, c.dx + .03, c.dy),
-          stroke..strokeWidth = .015,
-        );
-      } else {
-        // Gentle dark eyes that look around; two soft highlights.
-        final w = .064, h = mood == Mood.acting ? .07 : (mood == Mood.problem ? .064 : .09);
-        final gz = _gaze(pose);
-        final pc = c + Offset(gz.dx * .012, gz.dy * .01);
-        canvas.drawOval(Rect.fromCenter(center: pc, width: w, height: h), ink);
-        canvas.drawOval(Rect.fromCenter(center: pc + Offset(-w * .18, -h * .2), width: w * .42, height: h * .36),
-            Paint()..color = Colors.white.withValues(alpha: .95));
-        canvas.drawCircle(pc + Offset(w * .2, h * .22), w * .1, Paint()..color = Colors.white.withValues(alpha: .8));
-        // A tiny lash flick at the outer corner.
-        canvas.drawPath(
-          Path()
-            ..moveTo(pc.dx + side * w * .42, pc.dy - h * .3)
-            ..quadraticBezierTo(pc.dx + side * w * .62, pc.dy - h * .42, pc.dx + side * w * .7, pc.dy - h * .58),
-          stroke..strokeWidth = .009,
-        );
-      }
-      // Soft brows: inner end rises when worried or eager, drops when focused.
-      if (mood != Mood.offline) {
-        final inner = Offset(c.dx - side * .022, .476 - pose.brow * .02);
-        final outer = Offset(c.dx + side * .03, .482 + pose.brow * .008);
-        final mid = Offset((inner.dx + outer.dx) / 2, math.min(inner.dy, outer.dy) - .008);
-        canvas.drawPath(
-          Path()
-            ..moveTo(inner.dx, inner.dy)
-            ..quadraticBezierTo(mid.dx, mid.dy, outer.dx, outer.dy),
-          Paint()
-            ..color = OrblingPalette.brow
-            ..style = PaintingStyle.stroke
-            ..strokeCap = StrokeCap.round
-            ..strokeWidth = .012,
-        );
-      }
-    }
-
-    // Mouth.
-    final m = const Offset(.5, .655);
-    final tongue = Paint()..color = OrblingPalette.cheek;
-    switch (mood) {
-      case Mood.happy:
-        final open = Path()
-          ..moveTo(m.dx - .042, m.dy - .008)
-          ..quadraticBezierTo(m.dx, m.dy + .065, m.dx + .042, m.dy - .008)
-          ..close();
-        canvas.drawPath(open, ink);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .024), width: .034, height: .017), tongue);
-      case Mood.waiting:
-        canvas.drawOval(Rect.fromCenter(center: m, width: .026, height: .03), ink);
-      case Mood.problem:
-        canvas.drawPath(
-          Path()
-            ..moveTo(m.dx - .028, m.dy + .008)
-            ..quadraticBezierTo(m.dx - .014, m.dy - .008, m.dx, m.dy + .004)
-            ..quadraticBezierTo(m.dx + .014, m.dy + .015, m.dx + .028, m.dy - .002),
-          stroke..strokeWidth = .012,
-        );
-      case Mood.acting:
-        canvas.drawLine(m + const Offset(-.02, 0), m + const Offset(.02, 0), stroke..strokeWidth = .012);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.014, .009), width: .016, height: .014), tongue);
-      case Mood.thinking:
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(.012, 0), width: .018, height: .011), ink);
-      case Mood.listening:
-        canvas.drawOval(Rect.fromCenter(center: m, width: .02, height: .022), ink);
-      case Mood.speaking:
-        // Mouth opens and closes while it talks.
-        final open = .35 + .65 * (math.sin(t * 2 * math.pi * 24) * .5 + .5);
-        canvas.drawOval(Rect.fromCenter(center: m + const Offset(0, .004), width: .046, height: .012 + .028 * open), ink);
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, .006 + .008 * open), width: .024, height: .008 + .008 * open), tongue);
-      case Mood.idle || Mood.offline:
-        // A small, warm smile.
-        canvas.drawPath(
-          Path()
-            ..moveTo(m.dx - .028, m.dy - .006)
-            ..quadraticBezierTo(m.dx, m.dy + .028, m.dx + .028, m.dy - .006),
-          stroke..strokeWidth = .013,
-        );
-    }
-  }
-
-  void _drawMitten(Canvas canvas, Offset at, double turn, {required bool mirror}) {
-    canvas.save();
-    canvas.translate(at.dx, at.dy);
-    canvas.rotate(turn);
-    if (mirror) canvas.scale(-1, 1);
-    canvas.scale(1.3);
-    final palm = RRect.fromRectAndRadius(
-      Rect.fromCenter(center: Offset.zero, width: .082, height: .09),
-      const Radius.circular(.041),
-    );
-    canvas.drawRRect(palm, Paint()..color = OrblingPalette.mitten);
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(.036, .004), width: .032, height: .044),
-      Paint()..color = OrblingPalette.mitten,
-    );
-    canvas.drawRRect(
-      palm,
-      Paint()
-        ..color = OrblingPalette.mittenShade
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = .006,
-    );
-    // Cuff band in the body colour ties hands to the body.
-    canvas.drawRRect(
-      RRect.fromRectAndRadius(
-        Rect.fromCenter(center: const Offset(0, .047), width: .07, height: .02),
-        const Radius.circular(.01),
+      Rect.fromCenter(
+        center: Offset(centre.dx, centre.dy + span * .44),
+        width: span * .46,
+        height: span * .08,
       ),
-      Paint()..color = mood == Mood.offline ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep,
+      _soft(EmberPalette.deep.withValues(alpha: dim ? .12 : .34), span * .018),
     );
+    if (reach != null) _reach(canvas, centre, s);
+
+    final f = _fitScale(span);
+    canvas.save();
+    canvas.translate(centre.dx, centre.dy);
+    canvas.scale(span);
+    _Figure(
+      body: body,
+      rig: _Rig.mix(_Rig.of(previous), _Rig.of(mood), blend),
+      mood: mood,
+      t: t,
+      still: still,
+      jobs: jobs,
+      level: level,
+      look: look,
+      detail: f.detail,
+      unit: f.unit,
+      color: color,
+      dim: dim,
+    ).draw(canvas);
     canvas.restore();
   }
 
-  List<_Mote> _motes() {
-    final color = OrblingPalette.mote(mood);
-    if (mood == Mood.offline) {
-      return [_Mote(const Offset(.8, .87), .02, color, behind: false, trail: false)];
-    }
-    if (mood == Mood.happy) return const [];
-    final count = switch (mood) {
-      Mood.thinking => math.max(3, jobs),
-      Mood.idle => 1,
-      Mood.listening => 3,
-      _ => math.max(1, jobs),
-    }.clamp(1, 6);
-    final speed = switch (mood) {
-      Mood.thinking => 2.0,
-      Mood.acting => 1.5,
-      Mood.idle => .5,
-      _ => 1.0,
-    };
-    final out = <_Mote>[];
-    for (var i = 0; i < count; i++) {
-      final a = t * 2 * math.pi * speed + i * 2 * math.pi / count;
-      // Tilted ellipse around the body.
-      final x = .5 + math.cos(a) * .4;
-      final y = .6 + math.sin(a) * .2;
-      final pulse = mood == Mood.waiting
-          ? 1 + .25 * math.sin(t * 2 * math.pi * 3)
-          : (mood == Mood.listening ? 1 + level * 1.2 : 1.0);
-      out.add(_Mote(Offset(x, y), .03 * pulse, color, behind: math.sin(a) < 0, trail: true, angle: a, speed: speed));
-    }
-    return out;
-  }
-
-  void _drawMote(Canvas canvas, _Mote m) {
-    if (m.trail) {
-      for (var k = 1; k <= 3; k++) {
-        final a = m.angle - k * .13 * m.speed.sign;
-        final p = Offset(.5 + math.cos(a) * .4, .6 + math.sin(a) * .2);
-        canvas.drawCircle(p, m.r * (1 - k * .22), Paint()..color = m.color.withValues(alpha: .35 - k * .09));
-      }
-    }
-    // A soft halo, like a firefly.
-    canvas.drawCircle(m.at, m.r * 2.1, Paint()
-      ..color = m.color.withValues(alpha: .22)
-      ..maskFilter = MaskFilter.blur(BlurStyle.normal, m.r * .9));
-    canvas.drawCircle(m.at, m.r, Paint()..color = m.color);
-    // Four-point glint.
-    final g = m.r * .55;
-    canvas.drawPath(
-      Path()
-        ..moveTo(m.at.dx, m.at.dy - g)
-        ..quadraticBezierTo(m.at.dx, m.at.dy, m.at.dx + g, m.at.dy)
-        ..quadraticBezierTo(m.at.dx, m.at.dy, m.at.dx, m.at.dy + g)
-        ..quadraticBezierTo(m.at.dx, m.at.dy, m.at.dx - g, m.at.dy)
-        ..quadraticBezierTo(m.at.dx, m.at.dy, m.at.dx, m.at.dy - g),
-      Paint()..color = Colors.white.withValues(alpha: .85),
+  /// A thread of light to the thing being pointed at, drawn in the widget's own
+  /// space so it can fall outside the figure's square.
+  void _reach(Canvas canvas, Offset centre, double s) {
+    final to = reach! * s;
+    final d = to - centre;
+    if (d.distance < s * .04) return;
+    final end = centre + d * .92;
+    canvas.drawLine(
+      centre + d * .18,
+      end,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = math.max(1.4, s * .012)
+        ..strokeCap = StrokeCap.round
+        ..color = EmberPalette.light.withValues(alpha: .34),
     );
-  }
-
-  void _drawExtras(Canvas canvas) {
-    switch (mood) {
-      case Mood.happy:
-        // Its motes burst into sparkles when a job is done.
-        for (final (x, y, r) in const [(.14, .24, .03), (.86, .22, .026), (.5, .13, .022), (.27, .12, .016), (.74, .1, .018)]) {
-          final k = r * (1 + .25 * _wave);
-          final paint = Paint()..color = OrblingPalette.gold;
-          canvas.drawPath(
-            Path()
-              ..moveTo(x, y - k * 2)
-              ..quadraticBezierTo(x, y, x + k * 2, y)
-              ..quadraticBezierTo(x, y, x, y + k * 2)
-              ..quadraticBezierTo(x, y, x - k * 2, y)
-              ..quadraticBezierTo(x, y, x, y - k * 2),
-            paint,
-          );
-        }
-      case Mood.thinking:
-        for (var i = 0; i < 3; i++) {
-          final lit = ((t * 6).floor() % 4) > i;
-          canvas.drawCircle(Offset(.73 + i * .045, .2 - i * .03), .012 + i * .004,
-              Paint()..color = (lit ? OrblingPalette.bodyDeep : OrblingPalette.bodyLight).withValues(alpha: lit ? 1 : .5));
-        }
-      case Mood.waiting:
-        // A small speech card: it has a question for you.
-        final card = RRect.fromRectAndRadius(
-          Rect.fromCenter(center: const Offset(.84, .3), width: .1, height: .08),
-          const Radius.circular(.02),
-        );
-        canvas.drawRRect(card, Paint()..color = Colors.white);
-        canvas.drawRRect(card, Paint()
-          ..color = OrblingPalette.mote(Mood.waiting)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = .008);
-        canvas.drawCircle(const Offset(.84, .3), .012, Paint()..color = OrblingPalette.mote(Mood.waiting));
-      case Mood.problem:
-        canvas.drawPath(
-          Path()
-            ..moveTo(.78, .36)
-            ..quadraticBezierTo(.81, .42, .78, .43)
-            ..quadraticBezierTo(.75, .42, .78, .36),
-          Paint()..color = const Color(0xFF7CC8FF),
-        );
-      case Mood.offline:
-        final z = Paint()
-          ..color = OrblingPalette.dimDeep.withValues(alpha: .8)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = .011
-          ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round;
-        for (final (x, y, k) in const [(.66, .22, .035), (.73, .13, .048)]) {
-          final dy = .01 * _wave;
-          canvas.drawPath(
-            Path()
-              ..moveTo(x, y + dy)
-              ..lineTo(x + k, y + dy)
-              ..lineTo(x, y + k + dy)
-              ..lineTo(x + k, y + k + dy),
-            z,
-          );
-        }
-      case Mood.listening:
-        // Sound waves arriving, bigger when you speak louder.
-        final wave = Paint()
-          ..color = OrblingPalette.mote(Mood.listening).withValues(alpha: .8)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = .012
-          ..strokeCap = StrokeCap.round;
-        for (final side in [-1.0, 1.0]) {
-          for (var i = 0; i < 3; i++) {
-            final r = .05 + i * .035 + level * .03;
-            final c = Offset(.5 + side * .42, .5);
-            canvas.drawArc(Rect.fromCircle(center: c, radius: r), side < 0 ? math.pi - .6 : -.6, 1.2, false,
-                wave..color = wave.color.withValues(alpha: (.85 - i * .25) * (.4 + level * .6)));
-          }
-        }
-      case Mood.speaking:
-        final wave = Paint()
-          ..color = OrblingPalette.bodyDeep.withValues(alpha: .55)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = .01
-          ..strokeCap = StrokeCap.round;
-        for (var i = 0; i < 2; i++) {
-          final r = .04 + i * .03 + .01 * math.sin(t * 2 * math.pi * 12 + i);
-          canvas.drawArc(Rect.fromCircle(center: const Offset(.6, .66), radius: r), -.7, 1.4, false, wave);
-        }
-      case Mood.idle || Mood.acting:
-        break;
-    }
+    canvas.drawCircle(end, math.max(2.4, s * .022), Paint()..color = EmberPalette.light);
   }
 
   @override
-  bool shouldRepaint(covariant OrblingPainter old) =>
-      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous ||
-      old.look != look || old.level != level;
+  bool shouldRepaint(covariant EmberPainter old) =>
+      old.body != body ||
+      old.mood != mood ||
+      old.previous != previous ||
+      old.blend != blend ||
+      old.jobs != jobs ||
+      old.t != t ||
+      old.still != still ||
+      old.look != look ||
+      old.level != level ||
+      old.reach != reach;
 }
 
-class _Mote {
-  const _Mote(this.at, this.r, this.color, {required this.behind, required this.trail, this.angle = 0, this.speed = 1});
-  final Offset at;
-  final double r;
-  final Color color;
-  final bool behind;
-  final bool trail;
-  final double angle;
-  final double speed;
-}
-
-/// The phone's Face View: the screen is Compii's head. Its sprout peeks in at
-/// the top, its eyes fill the middle, its hands rise from the bottom edge
-/// and its fireflies drift across the front.
-class OrblingFacePainter extends CustomPainter {
-  OrblingFacePainter({
+class EmberFacePainter extends CustomPainter {
+  EmberFacePainter({
+    required this.body,
     required this.mood,
     required this.previous,
     required this.blend,
     required this.jobs,
     required this.t,
-    this.still = false,
-    this.look,
-    this.level = 0,
+    required this.still,
+    required this.look,
+    required this.level,
   });
+
+  final CompiiBody body;
   final Mood mood;
   final Mood previous;
   final double blend;
@@ -735,260 +1020,89 @@ class OrblingFacePainter extends CustomPainter {
   final Offset? look;
   final double level;
 
-  Offset _gaze(_Pose pose) => look != null && _canLook(mood) ? look! : pose.gaze;
-
-  double get _wave => math.sin(t * 2 * math.pi);
-
   @override
   void paint(Canvas canvas, Size size) {
-    final w = size.width, h = size.height;
-    final pose = _Pose.lerp(_Pose.of(previous), _Pose.of(mood), blend);
     final dim = mood == Mood.offline;
-    final body = dim ? OrblingPalette.dim : OrblingPalette.body;
+    final color = Color.lerp(EmberPalette.core(previous), EmberPalette.core(mood), blend)!;
+    final u = size.shortestSide;
 
-    // Night sky behind the head.
-    canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF1B1550));
-
-    // The head: a huge dome whose top sits just below the screen edge.
-    final breathe = dim ? 0.0 : _wave * h * .006;
-    final top = h * .1 - breathe;
-    final head = Path()
-      ..moveTo(-w * .1, h * 1.1)
-      ..lineTo(-w * .1, h * .62)
-      ..cubicTo(-w * .02, top + h * .12, w * .3, top, w * .5, top)
-      ..cubicTo(w * .7, top, w * 1.02, top + h * .12, w * 1.1, h * .62)
-      ..lineTo(w * 1.1, h * 1.1)
-      ..close();
-    canvas.drawPath(
-      head,
+    // The room, warmed by whatever Compii is doing.
+    canvas.drawRect(
+      Offset.zero & size,
       Paint()
         ..shader = RadialGradient(
-          center: const Alignment(-.4, -.7),
-          radius: 1.2,
-          colors: [dim ? const Color(0xFFAAA5DA) : OrblingPalette.bodyLight, body,
-            dim ? OrblingPalette.dimDeep : OrblingPalette.bodyDeep],
-          stops: const [0, .45, 1],
+          center: const Alignment(0, -.15),
+          radius: 1.25,
+          colors: [
+            Color.lerp(EmberPalette.room, color, dim ? .02 : .12)!,
+            const Color(0xFF0A0710),
+            const Color(0xFF050308),
+          ],
+          stops: const [0, .62, 1],
         ).createShader(Offset.zero & size),
     );
-    canvas.save();
-    canvas.clipPath(head);
+    _dust(canvas, size, color, dim);
+
+    final span = u * .58;
+    final centre = Offset(size.width / 2, size.height * .47);
     canvas.drawOval(
-      Rect.fromCenter(center: Offset(w * .3, top + h * .14), width: w * .3, height: h * .1),
-      Paint()..color = Colors.white.withValues(alpha: dim ? .15 : .3),
+      Rect.fromCenter(
+        center: Offset(centre.dx, centre.dy + span * .46),
+        width: span * .5,
+        height: span * .09,
+      ),
+      _soft(EmberPalette.deep.withValues(alpha: dim ? .18 : .42), span * .020),
     );
-    canvas.restore();
 
-    // The golden sprout peeking in at the top.
-    final u = math.min(w, h);
-    final cx = w * .5;
+    final f = _fitScale(span);
     canvas.save();
-    canvas.translate(cx, top + u * .01);
-    canvas.rotate(still ? 0 : _wave * .05);
-    canvas.drawLine(Offset.zero, Offset(0, -u * .07), Paint()
-      ..color = dim ? OrblingPalette.dimDeep : OrblingPalette.sproutDeep
-      ..strokeWidth = u * .022
-      ..strokeCap = StrokeCap.round);
-    for (final side in [-1.0, 1.0]) {
-      canvas.drawPath(
-        Path()
-          ..moveTo(0, -u * .065)
-          ..cubicTo(side * u * .03, -u * .14, side * u * .12, -u * .15, side * u * .13, -u * .1)
-          ..cubicTo(side * u * .13, -u * .055, side * u * .055, -u * .05, 0, -u * .065)
-          ..close(),
-        Paint()..color = dim ? OrblingPalette.dim : OrblingPalette.sprout,
-      );
-    }
+    canvas.translate(centre.dx, centre.dy);
+    canvas.scale(span);
+    _Figure(
+      body: body,
+      rig: _Rig.mix(_Rig.of(previous), _Rig.of(mood), blend),
+      mood: mood,
+      t: t,
+      still: still,
+      jobs: jobs,
+      level: level,
+      look: look,
+      detail: f.detail,
+      unit: f.unit,
+      color: color,
+      dim: dim,
+    ).draw(canvas);
     canvas.restore();
-
-    // Face geometry scales with the shorter side so portrait and landscape both work.
-    final eyeH = math.min(h * .36, w * .3);
-    final eyeW = eyeH * .72;
-    final eyeY = h * .5;
-    final gap = eyeW * .95;
-    final ink = Paint()..color = OrblingPalette.ink;
-    final stroke = Paint()
-      ..color = OrblingPalette.ink
-      ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = eyeH * .07;
-
-    for (final side in [-1.0, 1.0]) {
-      canvas.drawOval(
-        Rect.fromCenter(center: Offset(cx + side * gap * 1.45, eyeY + eyeH * .62), width: eyeW * .7, height: eyeH * .2),
-        Paint()..color = OrblingPalette.cheek.withValues(alpha: mood == Mood.happy ? .8 : .45),
-      );
-    }
-
-    final blink = mood == Mood.idle && !still && t > .62 && t < .645;
-    for (final side in [-1.0, 1.0]) {
-      final c = Offset(cx + side * gap, eyeY);
-      if (mood == Mood.happy) {
-        canvas.drawPath(
-          Path()
-            ..moveTo(c.dx - eyeW * .42, c.dy + eyeH * .08)
-            ..quadraticBezierTo(c.dx, c.dy - eyeH * .45, c.dx + eyeW * .42, c.dy + eyeH * .08),
-          stroke,
-        );
-      } else if (dim || blink) {
-        canvas.drawPath(
-          Path()
-            ..moveTo(c.dx - eyeW * .4, c.dy)
-            ..quadraticBezierTo(c.dx, c.dy + eyeH * .2, c.dx + eyeW * .4, c.dy),
-          stroke,
-        );
-      } else {
-        final eh = (mood == Mood.acting ? .5 : mood == Mood.problem ? .46 : .62) * eyeH;
-        final ew = eyeW * .62;
-        final gz = _gaze(pose);
-        final pc = c + Offset(gz.dx * eyeW * .18, gz.dy * eyeH * .12);
-        canvas.drawOval(Rect.fromCenter(center: pc, width: ew, height: eh), ink);
-        canvas.drawOval(Rect.fromCenter(center: pc + Offset(-ew * .18, -eh * .2), width: ew * .42, height: eh * .36),
-            Paint()..color = Colors.white.withValues(alpha: .95));
-        canvas.drawCircle(pc + Offset(ew * .2, eh * .22), ew * .1, Paint()..color = Colors.white.withValues(alpha: .8));
-      }
-      if (!dim) {
-        final browY = eyeY - eyeH * .6;
-        final inner = Offset(c.dx - side * eyeW * .26, browY - pose.brow * eyeH * .14);
-        final outer = Offset(c.dx + side * eyeW * .36, browY + pose.brow * eyeH * .05);
-        canvas.drawPath(
-          Path()
-            ..moveTo(inner.dx, inner.dy)
-            ..quadraticBezierTo((inner.dx + outer.dx) / 2, math.min(inner.dy, outer.dy) - eyeH * .06, outer.dx, outer.dy),
-          Paint()
-            ..color = OrblingPalette.brow
-            ..style = PaintingStyle.stroke
-            ..strokeCap = StrokeCap.round
-            ..strokeWidth = eyeH * .055,
-        );
-      }
-    }
-
-    // Mouth.
-    final m = Offset(cx, eyeY + eyeH * .7);
-    final k = eyeH * .2;
-    switch (mood) {
-      case Mood.happy:
-        canvas.drawPath(
-          Path()
-            ..moveTo(m.dx - k * 1.3, m.dy - k * .2)
-            ..quadraticBezierTo(m.dx, m.dy + k * 1.8, m.dx + k * 1.3, m.dy - k * .2)
-            ..close(),
-          ink,
-        );
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, k * .65), width: k, height: k * .5), Paint()..color = OrblingPalette.cheek);
-      case Mood.waiting:
-        canvas.drawOval(Rect.fromCenter(center: m, width: k * .8, height: k), ink);
-      case Mood.problem:
-        canvas.drawPath(
-          Path()
-            ..moveTo(m.dx - k, m.dy + k * .2)
-            ..quadraticBezierTo(m.dx - k * .5, m.dy - k * .35, m.dx, m.dy + k * .1)
-            ..quadraticBezierTo(m.dx + k * .5, m.dy + k * .5, m.dx + k, m.dy - k * .1),
-          stroke,
-        );
-      case Mood.acting:
-        canvas.drawLine(m - Offset(k * .7, 0), m + Offset(k * .7, 0), stroke);
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .45, k * .3), width: k * .55, height: k * .45), Paint()..color = OrblingPalette.cheek);
-      case Mood.thinking:
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(k * .35, 0), width: k * .6, height: k * .36), ink);
-      case Mood.listening:
-        canvas.drawOval(Rect.fromCenter(center: m, width: k * .7, height: k * .8), ink);
-      case Mood.speaking:
-        final open = .35 + .65 * (math.sin(t * 2 * math.pi * 24) * .5 + .5);
-        canvas.drawOval(Rect.fromCenter(center: m, width: k * 1.6, height: k * (.3 + 1.1 * open)), ink);
-        canvas.drawOval(Rect.fromCenter(center: m + Offset(0, k * .35 * open), width: k * .8, height: k * .35 * open + 1), Paint()..color = OrblingPalette.cheek);
-      case Mood.idle || Mood.offline:
-        canvas.drawPath(
-          Path()
-            ..moveTo(m.dx - k * .9, m.dy - k * .1)
-            ..quadraticBezierTo(m.dx, m.dy + k * .8, m.dx + k * .9, m.dy - k * .1),
-          stroke,
-        );
-    }
-
-    _hands(canvas, size, pose, u);
-    _motes(canvas, size, u);
   }
 
-  void _hands(Canvas canvas, Size size, _Pose pose, double u) {
-    final w = size.width, h = size.height;
-    final tap = math.sin(t * 2 * math.pi * 6);
-    // Hands come into view from the bottom edge only when they say something.
-    final (double, double) raise = switch (mood) {
-      Mood.happy => (.62, .62),
-      Mood.waiting => (1.2, .72 + math.sin(t * 2 * math.pi * 3) * .02),
-      Mood.problem => (1.2, .55),
-      Mood.thinking => (1.2, .86),
-      Mood.acting => (.9 + math.max(0, tap) * .02, .9 + math.max(0, -tap) * .02),
-      _ => (1.2, 1.2),
-    };
-    final (double, double) xs = switch (mood) {
-      Mood.acting => (.4, .6),
-      Mood.problem => (.12, .78),
-      _ => (.12, .88),
-    };
-    for (final (i, y) in [(0, raise.$1), (1, raise.$2)]) {
-      if (y > 1.1) continue;
-      // Stay clear of the controls along the bottom edge.
-      final at = Offset(w * (i == 0 ? xs.$1 : xs.$2), math.min(h * y, h - 100));
-      canvas.save();
-      canvas.translate(at.dx, at.dy);
-      canvas.rotate(i == 0 ? pose.leftTurn : pose.rightTurn);
-      if (i == 1) canvas.scale(-1, 1);
-      final r = u * .11;
-      final palm = RRect.fromRectAndRadius(Rect.fromCenter(center: Offset.zero, width: r, height: r * 1.12), Radius.circular(r * .5));
-      canvas.drawRRect(palm, Paint()..color = OrblingPalette.mitten);
-      canvas.drawOval(Rect.fromCenter(center: Offset(r * .45, r * .07), width: r * .42, height: r * .6), Paint()..color = OrblingPalette.mitten);
-      canvas.drawRRect(
-        RRect.fromRectAndRadius(Rect.fromCenter(center: Offset(0, r * .56), width: r * .82, height: r * .24), Radius.circular(r * .12)),
-        Paint()..color = OrblingPalette.bodyDeep,
+  /// Dust in the light, so the close-up is a place and not an icon on a page.
+  void _dust(Canvas canvas, Size size, Color color, bool dim) {
+    if (dim) return;
+    for (var i = 0; i < 26; i++) {
+      final seed = (i * 97 % 89) / 89;
+      final rise = still ? seed : (t * (.10 + seed * .16) + seed) % 1;
+      final x = (i.isEven ? seed : 1 - seed) * size.width;
+      final y = size.height * (1.05 - rise * 1.1);
+      final r = size.shortestSide * (.0016 + .0022 * ((i * 31) % 7 / 7));
+      canvas.drawCircle(
+        Offset(x + math.sin(rise * 6 + i) * size.shortestSide * .012, y),
+        r,
+        Paint()
+          ..color = Color.lerp(color, EmberPalette.light, .5)!
+              .withValues(alpha: .10 + .10 * (1 - rise)),
       );
-      canvas.restore();
-    }
-  }
-
-
-  void _motes(Canvas canvas, Size size, double u) {
-    if (mood == Mood.happy) {
-      for (final (x, y, r) in const [(.18, .2, .035), (.84, .18, .03), (.08, .55, .02), (.93, .5, .025)]) {
-        final k = u * r * (1 + .2 * _wave);
-        final c = Offset(size.width * x, size.height * y);
-        canvas.drawPath(
-          Path()
-            ..moveTo(c.dx, c.dy - k * 2)
-            ..quadraticBezierTo(c.dx, c.dy, c.dx + k * 2, c.dy)
-            ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy + k * 2)
-            ..quadraticBezierTo(c.dx, c.dy, c.dx - k * 2, c.dy)
-            ..quadraticBezierTo(c.dx, c.dy, c.dx, c.dy - k * 2),
-          Paint()..color = OrblingPalette.gold,
-        );
-      }
-      return;
-    }
-    if (mood == Mood.offline) return;
-    final count = switch (mood) {
-      Mood.thinking => math.max(3, jobs),
-      Mood.idle => 1,
-      Mood.listening => 3,
-      _ => math.max(1, jobs),
-    }.clamp(1, 6);
-    final speed = mood == Mood.thinking ? 2.0 : mood == Mood.idle ? .5 : 1.0;
-    final color = OrblingPalette.mote(mood);
-    for (var i = 0; i < count; i++) {
-      // A wide flat ring around the head; only the front (lower) arc shows on the face.
-      final a = t * 2 * math.pi * speed + i * 2 * math.pi / count;
-      final front = math.sin(a);
-      if (front < -.15) continue;
-      final ringY = math.min(size.height * .8, size.height - 96);
-      final c = Offset(size.width * (.5 + math.cos(a) * .46), ringY + size.height * front * .05);
-      final r = u * .028 * (mood == Mood.waiting ? 1 + .25 * math.sin(t * 2 * math.pi * 3) : 1);
-      canvas.drawCircle(c, r, Paint()..color = color);
-      canvas.drawCircle(c + Offset(-r * .3, -r * .3), r * .3, Paint()..color = Colors.white.withValues(alpha: .85));
     }
   }
 
   @override
-  bool shouldRepaint(covariant OrblingFacePainter old) =>
-      old.mood != mood || old.t != t || old.blend != blend || old.jobs != jobs || old.previous != previous ||
-      old.look != look || old.level != level;
+  bool shouldRepaint(covariant EmberFacePainter old) =>
+      old.body != body ||
+      old.mood != mood ||
+      old.previous != previous ||
+      old.blend != blend ||
+      old.jobs != jobs ||
+      old.t != t ||
+      old.still != still ||
+      old.look != look ||
+      old.level != level;
 }

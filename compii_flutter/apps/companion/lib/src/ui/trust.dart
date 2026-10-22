@@ -9,6 +9,7 @@ import 'thread.dart' show Run;
 import 'tokens.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
+import 'teach.dart' show showTeachDialog;
 
 /// Calls to Compii Core on this PC for the brain, safety and skills screens.
 /// Uses this PC's token, so key changes, "Always allow" and lifting the kill
@@ -54,6 +55,79 @@ class TrustApi {
   static Future<Map<String, dynamic>> saveSkill(String taskId, [String name = '', String about = '']) =>
       map('POST', '/tasks/$taskId/skill', {'name': name, 'about': about});
   static Future<Map<String, dynamic>> draftSkill(String taskId) => map('POST', '/tasks/$taskId/skill/draft');
+
+  // Library: imported skills and connectors, reviewed before anything goes live.
+  static Future<Map<String, dynamic>> library() => map('GET', '/library');
+
+  /// Public catalogues: the official MCP registry and the skills index.
+  static Future<Map<String, dynamic>> catalogSearch(String query, {String kind = ''}) => map(
+      'GET',
+      '/library/catalog?q=${Uri.encodeQueryComponent(query)}${kind.isEmpty ? '' : '&kind=$kind'}');
+  static Future<Map<String, dynamic>> catalogAdd(Map<String, dynamic> entry) =>
+      map('POST', '/library/catalog/add', {'entry': entry});
+  static Future<Map<String, dynamic>> libraryImport({String path = '', String url = '', bool allowPrivate = false}) =>
+      map('POST', '/library/import', {'path': path, 'url': url, 'allow_private': allowPrivate});
+  static Future<Map<String, dynamic>> libraryApprove(String id,
+          {bool acknowledge = false, bool allowPrivate = false, String name = ''}) =>
+      map('POST', '/library/$id/approve',
+          {'acknowledge': acknowledge, 'allow_private': allowPrivate, 'name': name});
+  static Future<Map<String, dynamic>> libraryReject(String id) => map('POST', '/library/$id/reject');
+  static Future<Map<String, dynamic>> libraryEnable(String id) => map('POST', '/library/$id/enable');
+  static Future<Map<String, dynamic>> libraryDisable(String id) => map('POST', '/library/$id/disable');
+  static Future<Map<String, dynamic>> libraryRemove(String id) => map('DELETE', '/library/$id');
+  static Future<Map<String, dynamic>> librarySetKey(String id, String value) =>
+      map('POST', '/library/$id/secret', {'value': value});
+  static Future<Map<String, dynamic>> libraryClearKey(String id) => map('DELETE', '/library/$id/secret');
+
+  /// Open a link Compii showed the user in their own browser.
+  static Future<void> openUrl(String url) => call('POST', '/open_url', {'path': url});
+
+  // Knowledge: the user's own folders, indexed and searched on this PC.
+  static Future<Map<String, dynamic>> knowledge() => map('GET', '/knowledge');
+  static Future<Map<String, dynamic>> knowledgeAddFolder(String path) =>
+      map('POST', '/knowledge/folders', {'path': path});
+  static Future<Map<String, dynamic>> knowledgeRemoveFolder(String path) =>
+      map('DELETE', '/knowledge/folders?path=${Uri.encodeQueryComponent(path)}');
+  static Future<Map<String, dynamic>> knowledgeRefresh([String folder = '']) => map(
+      'POST', '/knowledge/refresh${folder.isEmpty ? '' : '?folder=${Uri.encodeQueryComponent(folder)}'}');
+  static Future<List<Map<String, dynamic>>> knowledgeSearch(String query) async {
+    final v = await map('GET', '/knowledge/search?q=${Uri.encodeQueryComponent(query)}');
+    return [for (final r in v['results'] as List) Map<String, dynamic>.from(r as Map)];
+  }
+
+  // Research: what this PC can look up outside, and the two switches that guard it.
+  static Future<Map<String, dynamic>> research({bool probe = false}) =>
+      map('GET', '/research${probe ? '?probe=true' : ''}');
+  static Future<Map<String, dynamic>> researchSet({bool? enabled, bool? browserSession}) =>
+      map('PUT', '/research', {'enabled': ?enabled, 'browser_session': ?browserSession});
+
+  // Usage: what answering has cost on this PC, counted from what each provider reported.
+  static Future<Map<String, dynamic>> usage({int days = 7}) => map('GET', '/usage?days=$days');
+
+  // Teaching by demonstration. Local only: it reads this PC's screen.
+  static Future<Map<String, dynamic>> teachStatus() => map('GET', '/teach');
+  static Future<Map<String, dynamic>> teachStart([String goal = '']) =>
+      map('POST', '/teach/start', {'goal': goal});
+  static Future<Map<String, dynamic>> teachStop() => map('POST', '/teach/stop');
+  static Future<void> teachCancel() => call('POST', '/teach/cancel');
+  static Future<Map<String, dynamic>> teachCheck({List<int>? keep}) =>
+      map('POST', '/teach/check', {'keep': ?keep});
+  static Future<Map<String, dynamic>> teachSave({
+    required String name,
+    String about = '',
+    Map<String, Object?>? schedule,
+    String? botId,
+    List<int>? keep,
+    List<String>? steps,
+  }) =>
+      map('POST', '/teach/save', {
+        'name': name,
+        'about': about,
+        'schedule': ?schedule,
+        'bot_id': ?botId,
+        'keep': ?keep,
+        'steps': ?steps,
+      });
 }
 
 // ---- shared bits ----------------------------------------------------------------
@@ -81,26 +155,14 @@ class TrustCard extends StatelessWidget {
   Widget build(BuildContext context) => Panel(padding: padding, child: child);
 }
 
-Widget _heading(BuildContext context, String title, String sub) => Padding(
-  padding: const EdgeInsets.only(top: 8, bottom: 12),
-  child: Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(title, style: context.type.titleLarge),
-      const SizedBox(height: 4),
-      Text(sub, style: context.type.bodySmall),
-    ],
-  ),
-);
-
 Widget _chip(BuildContext context, String text, Color fg, Color bg, {GlyphData? icon}) => Container(
   padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-  decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(20)),
-  child: Row(
+  decoration: BoxDecoration(color: bg, borderRadius: Shapes.pill),
+  child: AdaptiveRow(
     mainAxisSize: MainAxisSize.min,
     children: [
       if (icon != null) ...[Glyph(icon, size: 14, color: fg), const SizedBox(width: 4)],
-      Text(text, style: TextStyle(color: fg, fontSize: 12, fontWeight: FontWeight.w600)),
+      Text(text, style: context.type.labelMedium?.copyWith(color: fg, fontWeight: FontWeight.w600)),
     ],
   ),
 );
@@ -135,6 +197,8 @@ class _BrainCardState extends State<BrainCard> {
   String _fallbackProvider = 'claude';
   List<String> _local = [];
   bool? _localRunning;
+  bool _loadFailed = false;
+  bool _modelsFailed = false;
   bool _testing = false;
   bool _dirty = false;
 
@@ -153,10 +217,16 @@ class _BrainCardState extends State<BrainCard> {
   }
 
   Future<void> _load() => widget.run(() async {
-    final v = await TrustApi.map('GET', '/brain');
-    if (!mounted) return;
-    _apply(v);
-    await _findLocal();
+    if (mounted) setState(() => _loadFailed = false);
+    try {
+      final v = await TrustApi.map('GET', '/brain');
+      if (!mounted) return;
+      _apply(v);
+      await _findLocal();
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+      rethrow;
+    }
   });
 
   void _apply(Map<String, dynamic> v) {
@@ -172,6 +242,7 @@ class _BrainCardState extends State<BrainCard> {
       _fallback = s['fallback_enabled'] == true;
       final fb = s['fallback'] as Map?;
       if (fb != null) _fallbackProvider = fb['provider'] as String? ?? 'claude';
+      _loadFailed = false;
       _dirty = false;
     });
   }
@@ -184,6 +255,7 @@ class _BrainCardState extends State<BrainCard> {
 
   /// Models to pick from: installed ones on this PC, or the provider's list once a key is saved.
   Future<void> _findLocal() async {
+    if (mounted) setState(() => _modelsFailed = false);
     if (!_isLocal && !_hasKey) return;
     final url = _url.text.isEmpty ? '${_preset(_provider)['base_url']}' : _url.text;
     try {
@@ -194,7 +266,11 @@ class _BrainCardState extends State<BrainCard> {
         _localRunning = r['running'] == true;
       });
     } catch (_) {
-      if (mounted) setState(() => _localRunning = false);
+      if (!mounted) return;
+      setState(() {
+        _localRunning = null;
+        _modelsFailed = true;
+      });
     }
   }
 
@@ -240,7 +316,9 @@ class _BrainCardState extends State<BrainCard> {
     final c = context.c;
     final v = _v;
     if (v == null) {
-      return const TrustCard(child: Center(child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator())));
+      return _loadFailed
+          ? LoadFailure(onRetry: _load)
+          : const TrustCard(child: Center(child: Padding(padding: EdgeInsets.all(12), child: CircularProgressIndicator())));
     }
     final probe = v['probe'] as Map?;
     final problem = v['problem'] as String?;
@@ -251,6 +329,8 @@ class _BrainCardState extends State<BrainCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          if (_loadFailed) LoadFailure(onRetry: _load),
+          if (_modelsFailed) LoadFailure(onRetry: _findLocal),
           if (fixed)
             Padding(
               padding: const EdgeInsets.only(bottom: 12),
@@ -403,7 +483,12 @@ class _BrainCardState extends State<BrainCard> {
             if (_hasKey)
               Row(
                 children: [
-                  _chip(context, 'Key saved in Windows Credential Manager', c.success, c.sunken, icon: G.lock),
+                  // A stored key is not a working one: Core has just tried it, so say which it is.
+                  _chip(context,
+                      probe?['ok'] == false ? 'Key saved · it did not answer' : 'Key saved in Windows Credential Manager',
+                      probe?['ok'] == false ? c.warning : c.success,
+                      probe?['ok'] == false ? c.warningSoft : c.sunken,
+                      icon: G.lock),
                   const Spacer(),
                   TextButton(onPressed: _removeKey, child: const Text('Remove key')),
                 ],
@@ -464,7 +549,7 @@ class _BrainCardState extends State<BrainCard> {
           if (probe != null)
             Padding(
               padding: const EdgeInsets.only(bottom: 10),
-              child: Row(
+              child: AdaptiveRow(
                 children: [
                   if (probe['ok'] != true)
                     _chip(context, 'Didn’t answer', c.danger, c.dangerSoft, icon: G.alert)
@@ -514,6 +599,247 @@ void _openLink(String url) {
   }
 }
 
+// ---- Usage: what answering has cost on this PC ----------------------------------------
+
+/// The books Compii keeps on itself: tokens in and out, seconds waited, which model
+/// answered and how much ran on this PC. Every number comes from what the provider
+/// reported; the ones Compii had to guess are labelled as guessed. There are no prices.
+class UsageCard extends StatefulWidget {
+  const UsageCard({super.key, required this.run});
+  final Run run;
+
+  @override
+  State<UsageCard> createState() => _UsageCardState();
+}
+
+class _UsageCardState extends State<UsageCard> {
+  static const _windows = <int, String>{1: 'Today', 7: 'Week', 30: 'Month'};
+
+  Map<String, dynamic>? _v;
+  int _days = 7;
+  bool _busy = false;
+  bool _loadFailed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.run(_load);
+  }
+
+  Future<void> _load() async {
+    setState(() {
+      _busy = true;
+      _loadFailed = false;
+    });
+    try {
+      final v = await TrustApi.usage(days: _days);
+      if (mounted) setState(() => _v = v);
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+      rethrow;
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  void _pick(int days) {
+    if (days == _days) return;
+    setState(() => _days = days);
+    widget.run(_load);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final v = _v;
+
+    return TrustCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          AdaptiveRow(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    GlyphTile(glyph: G.coin, size: 30, color: c.accent),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('What answering has cost', style: context.type.titleSmall),
+                          const SizedBox(height: 3),
+                          Text(
+                            'Counted on this PC from what each provider reported. Compii doesn’t guess prices: '
+                            'what your key costs is your own billing.',
+                            style: context.type.bodySmall,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              AdaptiveRow(
+                children: [
+                  if (_busy) const Glyph(G.sync, size: 15),
+                  SegmentedButton<int>(
+                    showSelectedIcon: false,
+                    style: SegmentedButton.styleFrom(visualDensity: VisualDensity.compact),
+                    segments: [for (final e in _windows.entries) ButtonSegment(value: e.key, label: Text(e.value))],
+                    selected: {_days},
+                    onSelectionChanged: _busy ? null : (s) => _pick(s.first),
+                  ),
+                ],
+              ),
+            ],
+          ),
+          if (_loadFailed) LoadFailure(onRetry: () => widget.run(_load)),
+          if (v == null)
+            _loadFailed
+                ? const SizedBox.shrink()
+                : const Padding(padding: EdgeInsets.only(top: 16), child: SkeletonCards(rows: 2))
+          else
+            UsageSummary(report: v),
+        ],
+      ),
+    );
+  }
+}
+
+/// The numbers themselves, on their own so they can be shown anywhere: the totals, which
+/// model did the work, and the plain note about what Compii had to estimate.
+class UsageSummary extends StatelessWidget {
+  const UsageSummary({super.key, required this.report});
+  final Map<String, dynamic> report;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final total = (report['total'] as Map?) ?? const {};
+    final steps = (total['steps'] as num?)?.toInt() ?? 0;
+    if (steps == 0) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 14),
+        child: Text(
+          'Nothing counted in this window yet. Compii writes down one line per answer from now on, '
+          'in usage.jsonl in its own folder.',
+          style: context.type.bodySmall,
+        ),
+      );
+    }
+    final models = [for (final m in report['by_model'] as List? ?? const []) Map<String, dynamic>.from(m)];
+    final top = models.isEmpty ? 1.0 : ((models.first['tokens'] as num?)?.toDouble() ?? 1).clamp(1.0, 1e18);
+    final heard = ((total['heard_ms'] as num?) ?? 0).toInt();
+    final failed = (total['failed'] as num?)?.toInt() ?? 0;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 14),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _figure(context, _count(total['tokens']),
+                '${_count(total['prompt'])} in · ${_count(total['completion'])} out',
+                title: '$steps answers'),
+            _figure(context, _minutes(total['ms']), 'spent waiting'),
+            _figure(context, '${(((report['local_share'] as num?) ?? 0).toDouble() * 100).round()}%',
+                'ran on this PC'),
+            _figure(context, _count(report['last_minute_tokens']), 'in the last minute',
+                title: 'check your free limit'),
+          ],
+        ),
+        const SizedBox(height: 14),
+        for (final m in models)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 9),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AdaptiveRow(
+                  children: [
+                    Expanded(child: Text('${m['model']}', style: context.type.bodySmall)),
+                    Text('${_count(m['tokens'])} tokens · ${m['steps']} steps',
+                        style: context.type.bodySmall?.copyWith(color: c.muted)),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                LayoutBuilder(
+                  builder: (context, box) => Container(
+                    height: 5,
+                    decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.pill),
+                    child: Align(
+                      alignment: Alignment.centerLeft,
+                      child: Container(
+                        width: box.maxWidth * ((m['tokens'] as num?)?.toDouble() ?? 0) / top,
+                        decoration: BoxDecoration(color: c.accent, borderRadius: Shapes.pill),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        if (heard > 0 || failed > 0)
+          AdaptiveRow(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (heard > 0)
+                Pill('${(heard / 1000).round()} s of speech heard', color: c.muted, glyph: G.mic),
+              if (failed > 0)
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: Pill('$failed steps failed', color: c.warning, glyph: G.alert),
+                ),
+            ],
+          ),
+        const SizedBox(height: 10),
+        Text('${report['note'] ?? ''}', style: context.type.bodySmall?.copyWith(color: c.faint)),
+      ],
+    );
+  }
+}
+
+Widget _figure(BuildContext context, String value, String label, {String? title}) {
+  final c = context.c;
+  return Container(
+    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+    decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r10),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(value, style: context.type.titleMedium),
+        const SizedBox(height: 2),
+        Text(title ?? label, style: context.type.bodySmall?.copyWith(color: c.muted)),
+        if (title != null) Text(label, style: context.type.bodySmall?.copyWith(color: c.faint)),
+      ],
+    ),
+  );
+}
+
+String _count(num? n) {
+  final v = (n ?? 0).toInt();
+  final digits = v.abs().toString();
+  final out = StringBuffer();
+  for (var i = 0; i < digits.length; i++) {
+    if (i > 0 && (digits.length - i) % 3 == 0) out.write(',');
+    out.write(digits[i]);
+  }
+  return (v < 0 ? '-' : '') + out.toString();
+}
+
+String _minutes(num? ms) {
+  final m = ((ms ?? 0).toDouble() / 60000);
+  if (m < 1) return '${((ms ?? 0).toDouble() / 1000).round()} s';
+  return '${m.toStringAsFixed(m < 10 ? 1 : 0)} min';
+}
+
 // ---- Safety: kill switch, rules, audit log ------------------------------------------------
 
 class SafetyPage extends StatefulWidget {
@@ -524,6 +850,7 @@ class SafetyPage extends StatefulWidget {
 }
 
 class _SafetyPageState extends State<SafetyPage> {
+  bool _loadFailed = false;
   Map<String, dynamic>? _s;
   Map<String, dynamic>? _audit;
   Timer? _poll;
@@ -548,14 +875,19 @@ class _SafetyPageState extends State<SafetyPage> {
       final a = await TrustApi.map('GET', '/audit?limit=150');
       if (mounted) {
         setState(() {
+          _loadFailed = false;
           _s = s;
           _audit = a;
         });
       }
-    } catch (_) {}
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+    }
   }
 
   Future<void> _load() => widget.run(() async {
+    if (mounted) setState(() => _loadFailed = false);
+    try {
     final s = await TrustApi.map('GET', '/safety');
     final a = await TrustApi.map('GET', '/audit?limit=150');
     if (mounted) {
@@ -563,6 +895,10 @@ class _SafetyPageState extends State<SafetyPage> {
         _s = s;
         _audit = a;
       });
+    }
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+      rethrow;
     }
   });
 
@@ -591,8 +927,10 @@ class _SafetyPageState extends State<SafetyPage> {
       title: 'Safety',
       subtitle: 'What Compii may never do, what you’ve always allowed, and a tamper-evident record of everything it did.',
       children: [
+        if (_loadFailed) LoadFailure(onRetry: _load),
+        if (s == null) const Padding(padding: EdgeInsets.only(bottom: 12), child: Text('Safety status is not yet verified. Emergency stop is available.')),
         TrustCard(
-          child: Row(
+          child: AdaptiveRow(
             children: [
               GlyphTile(glyph: lockdown ? G.shieldAlert : G.power, size: 44, color: lockdown ? c.danger : c.muted),
               const SizedBox(width: 14),
@@ -600,7 +938,7 @@ class _SafetyPageState extends State<SafetyPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(lockdown ? 'Lockdown is on' : 'Kill switch', style: context.type.titleMedium),
+                    Text(s == null ? 'Safety status unknown' : lockdown ? 'Lockdown is on' : 'Kill switch', style: context.type.titleMedium),
                     const SizedBox(height: 2),
                     Text(
                       lockdown
@@ -623,10 +961,11 @@ class _SafetyPageState extends State<SafetyPage> {
           ),
         ),
         const SizedBox(height: 20),
-        _heading(context, 'Always allowed', 'Actions you approved with “Always allow”. Each covers one tool on one folder, site, window or set of recipients.'),
+        SectionHeader('Always allowed',
+            subtitle: 'Actions you approved with “Always allow”. Each covers one tool on one folder, site, window or set of recipients.'),
         TrustCard(
           padding: EdgeInsets.zero,
-          child: rules.isEmpty
+          child: s == null ? const Padding(padding: EdgeInsets.all(16), child: Text('Rules have not been loaded.')) : rules.isEmpty
               ? Padding(
                   padding: const EdgeInsets.all(16),
                   child: Text('Nothing yet. When Compii asks for approval, “Always allow” adds a rule here.', style: context.type.bodySmall),
@@ -654,14 +993,15 @@ class _SafetyPageState extends State<SafetyPage> {
                 ),
         ),
         const SizedBox(height: 20),
-        _heading(context, 'Never, whatever anyone says', 'These are enforced by Compii’s code, not by the AI, so no web page, file or prompt can unlock them.'),
+        SectionHeader('Never, whatever anyone says',
+            subtitle: 'These are enforced by Compii’s code, not by the AI, so no web page, file or prompt can unlock them.'),
         TrustCard(
           child: Column(
             children: [
               for (final (icon, text) in _blocked)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: Row(children: [
+                  child: AdaptiveRow(children: [
                     GlyphTile(glyph: icon, size: 28, color: c.danger),
                     const SizedBox(width: 10),
                     Expanded(child: Text(text, style: context.type.bodyMedium)),
@@ -678,22 +1018,18 @@ class _SafetyPageState extends State<SafetyPage> {
           ),
         ),
         const SizedBox(height: 20),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(child: _heading(context, 'Activity record', 'Append-only and hash-chained: if any line is changed or removed, the check below fails.')),
-            if (verify.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 14),
-                child: verify['ok'] == true
-                    ? _chip(context, 'Intact · ${verify['count']} entries', c.success, c.sunken, icon: G.shieldCheck)
-                    : _chip(context, 'Tampered at line ${verify['broken_at']}', c.danger, c.dangerSoft, icon: G.flag),
-              ),
-          ],
+        SectionHeader(
+          'Activity record',
+          subtitle: 'Append-only and hash-chained: if any line is changed or removed, the check below fails.',
+          trailing: verify.isEmpty
+              ? null
+              : verify['ok'] == true
+                  ? _chip(context, 'Intact · ${verify['count']} entries', c.success, c.sunken, icon: G.shieldCheck)
+                  : _chip(context, 'Tampered at line ${verify['broken_at']}', c.danger, c.dangerSoft, icon: G.flag),
         ),
         TrustCard(
           padding: EdgeInsets.zero,
-          child: entries.isEmpty
+          child: _audit == null ? const Padding(padding: EdgeInsets.all(16), child: Text('Activity has not been loaded.')) : entries.isEmpty
               ? Padding(padding: const EdgeInsets.all(16), child: Text('Nothing recorded yet.', style: context.type.bodySmall))
               : Column(
                   children: [
@@ -701,7 +1037,7 @@ class _SafetyPageState extends State<SafetyPage> {
                       if (i > 0) Divider(height: 1, color: c.border),
                       Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
-                        child: Row(
+                        child: AdaptiveRow(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             SizedBox(width: 92, child: Text(_ago(e['at'] as num?), style: context.type.labelMedium?.copyWith(color: c.faint))),
@@ -746,6 +1082,17 @@ String _eventName(String e) => switch (e) {
   'brain_fallback' => 'Used backup AI',
   'dial_changed' => 'Autonomy set',
   'skill_saved' => 'Skill saved',
+  'library_imported' => 'Library import',
+  'library_approved' => 'Library approved',
+  'library_rejected' => 'Library turned down',
+  'library_enabled' => 'Library on',
+  'library_disabled' => 'Library off',
+  'library_removed' => 'Library removed',
+  'library_key_set' => 'Connector key saved',
+  'library_key_removed' => 'Connector key removed',
+  'knowledge_folder_added' => 'Knowledge folder added',
+  'knowledge_folder_removed' => 'Knowledge folder removed',
+  'knowledge_refreshed' => 'Knowledge index refreshed',
   _ => e,
 };
 
@@ -789,7 +1136,7 @@ class _LockdownBannerState extends State<LockdownBanner> {
       color: c.dangerSoft,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        child: Row(
+        child: AdaptiveRow(
           children: [
             Glyph(G.shieldAlert, color: c.danger, size: 20),
             const SizedBox(width: 10),
@@ -852,7 +1199,7 @@ class _WalkthroughBarState extends State<WalkthroughBar> {
       color: c.accentSoft,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-        child: Row(
+        child: AdaptiveRow(
           children: [
             Glyph(G.skill, color: c.accent, size: 20),
             const SizedBox(width: 10),
@@ -864,7 +1211,10 @@ class _WalkthroughBarState extends State<WalkthroughBar> {
             ),
             SizedBox(
               width: 120,
-              child: LinearProgressIndicator(value: steps.isEmpty ? 0 : i / steps.length, color: c.accent),
+              child: ClipRRect(
+                borderRadius: Shapes.pill,
+                child: LinearProgressIndicator(value: steps.isEmpty ? 0 : i / steps.length, color: c.accent),
+              ),
             ),
           ],
         ),
@@ -885,6 +1235,7 @@ class SkillsPage extends StatefulWidget {
 
 class _SkillsPageState extends State<SkillsPage> {
   List<Map<String, dynamic>>? _skills;
+  bool _loadFailed = false;
 
   @override
   void initState() {
@@ -893,8 +1244,14 @@ class _SkillsPageState extends State<SkillsPage> {
   }
 
   Future<void> _load() => widget.run(() async {
-    final s = await TrustApi.call('GET', '/skills') as List;
-    if (mounted) setState(() => _skills = [for (final x in s) Map<String, dynamic>.from(x as Map)]);
+    if (mounted) setState(() => _loadFailed = false);
+    try {
+      final s = await TrustApi.call('GET', '/skills') as List;
+      if (mounted) setState(() => _skills = [for (final x in s) Map<String, dynamic>.from(x as Map)]);
+    } catch (_) {
+      if (mounted) setState(() => _loadFailed = true);
+      rethrow;
+    }
   });
 
   Future<void> _routine(Map<String, dynamic> skill) async {
@@ -953,11 +1310,50 @@ class _SkillsPageState extends State<SkillsPage> {
       title: 'Skills',
       subtitle: 'Things you’ve taught Compii. Do something once, save it, and next time just say its name.',
       children: [
+        TrustCard(
+          child: AdaptiveRow(
+            children: [
+              GlyphTile(glyph: G.eye, size: 44, color: c.accent),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Teach a task by showing it', style: context.type.titleSmall),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Demonstrate it once in any app. Compii writes down the clicks, shortcuts and window switches — '
+                      'never what you type — then you review it and can put it on a schedule.',
+                      style: context.type.bodySmall?.copyWith(color: c.muted),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 10),
+              FilledButton.icon(
+                onPressed: () async {
+                  final name = await showTeachDialog(context);
+                  if (name == null || !context.mounted) return;
+                  await _load();
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Saved “$name”. Try it with Do it now, or find it in Routines.')),
+                    );
+                  }
+                },
+                icon: const Glyph(G.play, size: 18),
+                label: const Text('Teach a task'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        if (_loadFailed) LoadFailure(onRetry: _load),
         if (skills == null)
-          const Center(child: CircularProgressIndicator())
+          _loadFailed ? const SizedBox.shrink() : const SkeletonCards(rows: 3)
         else if (skills.isEmpty)
           TrustCard(
-            child: Row(
+            child: AdaptiveRow(
               children: [
                 GlyphTile(glyph: G.skill, size: 48, color: c.accent),
                 const SizedBox(width: 14),
@@ -990,6 +1386,13 @@ class _SkillsPageState extends State<SkillsPage> {
                   ),
                   const SizedBox(height: 6),
                   Text('${s['instruction']}', maxLines: 3, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
+                  if (s['library_id'] != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 6),
+                      child: Text('Imported from Library. Turning it off in Library keeps it out of Compii; '
+                          'deleting here turns the Library entry off.',
+                          style: context.type.bodySmall?.copyWith(color: c.muted)),
+                    ),
                   if ((s['steps'] as List).isNotEmpty) ...[
                     const SizedBox(height: 8),
                     for (final (i, step) in (s['steps'] as List).take(8).indexed)
@@ -1088,6 +1491,7 @@ class _SaveSkillDialogState extends State<SaveSkillDialog> {
   late final _name = TextEditingController(text: SaveSkillButton.suggest(widget.request));
   final _about = TextEditingController();
   bool _thinking = true;
+  bool _draftFailed = false;
   bool _typed = false;
   List<String> _steps = const [];
   List<String> _names = const [];
@@ -1096,6 +1500,14 @@ class _SaveSkillDialogState extends State<SaveSkillDialog> {
   void initState() {
     super.initState();
     _name.addListener(() => setState(() {}));
+    _ask();
+  }
+
+  void _ask() {
+    setState(() {
+      _thinking = true;
+      _draftFailed = false;
+    });
     widget.draft().then((d) {
       if (!mounted) return;
       setState(() {
@@ -1106,7 +1518,11 @@ class _SaveSkillDialogState extends State<SaveSkillDialog> {
         _names = [for (final s in d['names'] as List? ?? const []) '$s'];
       });
     }, onError: (_) {
-      if (mounted) setState(() => _thinking = false);
+      if (!mounted) return;
+      setState(() {
+        _thinking = false;
+        _draftFailed = true;
+      });
     });
   }
 
@@ -1155,6 +1571,17 @@ class _SaveSkillDialogState extends State<SaveSkillDialog> {
                     : null,
               ),
             ),
+            if (_draftFailed)
+              Padding(
+                padding: const EdgeInsets.only(top: 2, bottom: 6),
+                child: AdaptiveRow(children: [
+                  Expanded(
+                    child: Text('No suggestion, and its steps aren’t listed yet: Compii couldn’t answer just now.',
+                        style: context.type.bodySmall?.copyWith(color: c.danger)),
+                  ),
+                  TextButton(onPressed: _ask, child: const Text('Try again')),
+                ]),
+              ),
             if (taken != null)
               Padding(
                 padding: const EdgeInsets.only(top: 2, bottom: 6),
@@ -1203,7 +1630,7 @@ class SafetyNotes extends StatelessWidget {
         for (final e in events)
           Padding(
             padding: const EdgeInsets.only(top: 6),
-            child: Row(
+            child: AdaptiveRow(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Glyph(switch (e['type']) {

@@ -74,7 +74,12 @@ def _gap(seconds: float) -> np.ndarray:
 
 
 def _run(clips_from, seconds: float, until=None):
-    """Play the clips, then wait up to `seconds` (or until `until(commands, events)` is true)."""
+    """Play the clips, then wait for the command (`until`) or for a generous timeout.
+
+    `seconds` is only the floor: Whisper's read of a spoken command happens after the last clip
+    has played and shares the CPU with everything else in the suite, so a run only pays for the
+    extra patience when the machine really is slow at that moment.
+    """
     events: list[dict] = []
     commands: list[str] = []
     builder = Voice(MODELS, events.append, speaker=Silent())
@@ -84,7 +89,7 @@ def _run(clips_from, seconds: float, until=None):
     voice.on_command = commands.append
     voice.set_wake(True)
     played = sum(len(c) for c in clips) / RATE
-    deadline = time.monotonic() + max(seconds, played + 15)
+    deadline = time.monotonic() + max(seconds, played + 45)
     time.sleep(played)
     while time.monotonic() < deadline and not (until and until(commands, events)):
         time.sleep(0.2)
@@ -115,3 +120,52 @@ def test_other_speech_and_noise_do_nothing():
     assert commands == [] and not any(e["type"] == "voice_wake" for e in events)
     _, _, idle_checks = _run(lambda v: [_gap(4)], 5)
     assert idle_checks == 0, "background noise alone never runs speech recognition"
+
+
+# ---- the follow-up window, without waiting on the real voice model --------------------
+
+
+def test_words_spoken_while_compii_is_still_deciding_are_still_heard():
+    """Whisper needs a second or two to confirm "Hey Compii", and a person who answers at once
+    is already talking during it. That audio sits in the microphone queue: dropping it meant
+    Compii said "Yes?" and then ignored the request the user had just made."""
+    from compii_core.wake import WakeListener
+
+    loud = np.full(RATE // 10, 0.2, np.float32)
+    quiet = np.zeros(RATE // 10, np.float32)
+    requests: list[str] = []
+
+    class Room:
+        """A microphone that keeps feeding the room's silence, and never runs dry."""
+
+        def __init__(self) -> None:
+            self.on = True
+
+        def start(self, on_audio) -> None:
+            def run() -> None:
+                while self.on:
+                    on_audio(quiet)
+                    time.sleep(0.1)
+
+            threading.Thread(target=run, daemon=True).start()
+
+        def stop(self) -> None:
+            self.on = False
+
+    def transcribe(audio: np.ndarray, prompt: str) -> str:
+        if prompt:  # the wake read: the user answers while Compii is still thinking
+            for _ in range(14):
+                listener._feed(loud)
+            return "Hey Compii."
+        return "what is on my calendar today"
+
+    listener = WakeListener(transcribe, on_wake=lambda: None, on_command=requests.append, mic_factory=Room)
+    listener.start()
+    for _ in range(10):  # "Hey Compii"
+        listener._feed(loud)
+        time.sleep(0.01)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline and not requests:
+        time.sleep(0.05)
+    listener.stop()
+    assert requests == ["what is on my calendar today"]

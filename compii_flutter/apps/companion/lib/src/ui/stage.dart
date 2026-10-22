@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
+import 'bots.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 import 'reply_text.dart';
@@ -14,8 +15,10 @@ import 'voice_dock.dart';
 
 /// The default conversation view: the character is the main figure and
 /// answers in a speech bubble, the way you'd talk to someone. What you said
-/// sits quietly above; anything that needs you (an approval, files) appears
-/// under the bubble. The full chat history is one tap away.
+/// sits quietly above; anything that needs you (files, a note) appears under
+/// the bubble. A decision you owe leads the screen, so it is the first thing
+/// you see rather than something below the character. The full chat history is
+/// one tap away.
 class Stage extends StatelessWidget {
   const Stage({super.key, required this.task, required this.core, required this.state, required this.run});
   final TaskView task;
@@ -32,14 +35,18 @@ class Stage extends StatelessWidget {
     final pending = turn?.pending;
     final asked = turn?.pendingQuestion;
     final mood = state.moodWith(core);
-    final hero = (MediaQuery.sizeOf(context).height * .24).clamp(120.0, 220.0);
+    final bot = core.botFor(task.botId);
+    final role = bot != null && !bot.primary ? bot : null;
+    final tint = role == null ? c.accent : botColor(role, c.accent);
+    final hero = pending != null || asked != null ? 64.0 : (MediaQuery.sizeOf(context).height * .24).clamp(120.0, 220.0);
     final speakingCaption = voice != null && voice.showCaption ? voice.caption : null;
     final (String bubble, bool working) = switch (turn) {
       null => ('', true),
       _ when speakingCaption != null => (speakingCaption, false),
-      _ when pending != null => ('I need your okay first: ${pending['label']}', false),
+      _ when pending != null => ('', false),
       _ when asked != null => ('${asked['question']}', false),
-      final t when t.reply != null => (plainMarkdown(t.reply!), false),
+      final t when t.reply != null => (t.reply!, false),
+      final t when t.draft != null => (t.draft!, true),
       final t when t.current != null => ('${t.current!['label']}…', true),
       final t when t.notes.isNotEmpty && t.active => (t.notes.last, true),
       final t when t.active => ('Thinking…', true),
@@ -48,16 +55,18 @@ class Stage extends StatelessWidget {
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(28, 0, 20, 0),
-          child: Row(
+          padding: const EdgeInsets.fromLTRB(28, 6, 20, 0),
+          child: AdaptiveRow(
             children: [
+              if (task.isTeam) ...[TeamStrip(task: task, core: core), const Spacer()]
+              else if (role != null) ...[BotChip(bot: role), const Spacer()]
+              else const Spacer(),
               if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
-              const Spacer(),
               if (task.active)
                 TextButton.icon(
                   onPressed: () => run(() => core.stop(task.id)),
                   icon: Glyph(G.stop, size: 15, color: c.danger),
-                  label: Text('Stop', style: TextStyle(color: c.danger)),
+                  label: Text('Stop', style: context.type.labelLarge?.copyWith(color: c.danger)),
                 ),
               TextButton.icon(
                 onPressed: () => state.setChatView(true),
@@ -76,29 +85,35 @@ class Stage extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: [
+                    if (pending != null) ...[
+                      const SizedBox(height: 18),
+                      ApprovalCard(approval: pending, core: core, run: run, compact: true),
+                      const SizedBox(height: 18),
+                    ],
                     if (turn != null)
                       Padding(
                         padding: const EdgeInsets.only(bottom: 14),
                         child: Text('“${turn.ask}”', textAlign: TextAlign.center, maxLines: 3, overflow: TextOverflow.ellipsis,
                             style: context.type.bodyLarge?.copyWith(color: c.muted, fontStyle: FontStyle.italic)),
                       ),
-                    Aura(
-                      size: hero * 1.55,
-                      color: switch (mood) {
-                        Mood.waiting => c.warning,
-                        Mood.problem => c.danger,
-                        Mood.listening => c.listen,
-                        _ => c.accent,
-                      },
-                      child: voice != null
-                          ? TalkableOrbling(voice: voice, mood: mood, jobs: task.active ? 1 : 0, size: hero)
-                          : SizedBox.square(dimension: hero, child: Orbling(mood: mood, jobs: task.active ? 1 : 0)),
+                    TweenAnimationBuilder<double>(
+                      tween: Tween<double>(begin: hero, end: hero),
+                      duration: context.motion(Motion.slow),
+                      curve: Motion.inOut,
+                      builder: (context, size, _) => Aura(
+                        size: size * 1.55,
+                        color: switch (mood) {
+                          Mood.waiting => c.warning,
+                          Mood.problem => c.danger,
+                          Mood.listening => c.listen,
+                          _ => tint,
+                        },
+                        child: voice != null
+                            ? TalkableCompii(voice: voice, mood: mood, jobs: task.active ? 1 : 0, size: size)
+                            : SizedBox.square(dimension: size, child: Ember(mood: mood, jobs: task.active ? 1 : 0)),
+                      ),
                     ),
-                    if (bubble.isNotEmpty) _SpeechBubble(text: bubble, working: working, failed: turn?.status == 'failed'),
-                    if (pending != null) ...[
-                      const SizedBox(height: 18),
-                      ApprovalCard(approval: pending, core: core, run: run),
-                    ],
+                    if (bubble.isNotEmpty && pending == null && asked == null) _SpeechBubble(text: bubble, working: working, failed: turn?.status == 'failed'),
                     if (asked != null) ...[
                       const SizedBox(height: 18),
                       QuestionCard(question: asked, core: core, run: run),
@@ -109,7 +124,7 @@ class Stage extends StatelessWidget {
                         spacing: 8,
                         runSpacing: 8,
                         alignment: WrapAlignment.center,
-                        children: [for (final f in turn.files) SizedBox(width: 300, child: FileChip(file: f, core: core, run: run))],
+                        children: [for (final f in turn.files) ConstrainedBox(constraints: const BoxConstraints(maxWidth: 300), child: FileChip(file: f, core: core, run: run))],
                       ),
                     ],
                     if (turn != null && turn.safety.isNotEmpty) ...[
@@ -135,6 +150,7 @@ class Stage extends StatelessWidget {
               showCharacter: false,
               showCaptions: false,
               onSend: (text) => run(() => core.reply(task.id, text)),
+              onSendFiles: (text, files) => run(() => core.reply(task.id, text, attachments: files)),
             ),
           ),
         ),
@@ -158,13 +174,14 @@ class _SpeechBubble extends StatelessWidget {
       children: [
         CustomPaint(size: const Size(22, 11), painter: _Tail(c.raised, edge)),
         AnimatedSize(
-          duration: const Duration(milliseconds: 220),
+          duration: context.motion(Motion.base),
+          curve: Motion.out,
           child: Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 18),
             decoration: BoxDecoration(
               color: c.raised,
-              borderRadius: BorderRadius.circular(22),
+              borderRadius: Shapes.r24,
               border: Border.all(color: edge, width: 1.3),
               boxShadow: Shapes.float(c),
             ),
@@ -177,8 +194,10 @@ class _SpeechBubble extends StatelessWidget {
                     child: SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, color: c.accent)),
                   ),
                 Expanded(
-                  child: SelectableText(
-                    text,
+                  child: text.length > 220 || text.contains('\n')
+                      ? ReplyText(text, style: context.type.bodyLarge)
+                      : SelectableText(
+                    plainMarkdown(text),
                     textAlign: working ? TextAlign.start : TextAlign.center,
                     style: (working ? context.type.bodyLarge?.copyWith(color: c.muted) : context.type.titleLarge?.copyWith(
                           fontWeight: FontWeight.w500, height: 1.45, color: failed ? c.danger : c.text)),

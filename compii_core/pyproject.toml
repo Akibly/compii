@@ -17,6 +17,17 @@ dependencies = [
   "numpy>=2.4.6",
   "playwright>=1.64.0",
   "cryptography>=50.0.2",
+  "pycaw>=20260927",
+  "winrt-runtime>=3.2.1",
+  "winrt-windows-foundation>=3.2.1",
+  "winrt-windows-foundation-collections>=3.2.1",
+  "winrt-windows-graphics-imaging>=3.2.1",
+  "winrt-windows-media-ocr>=3.2.1",
+  "winrt-windows-storage-streams>=3.2.1",
+  "winrt-windows-storage>=3.2.1",
+  "winrt-windows-globalization>=3.2.1",
+  "python-pptx>=1.0.2",
+  "piper-tts>=1.8.0",
 ]
 
 [dependency-groups]
@@ -28,6 +39,13 @@ compii-core = "compii_core.server:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
+import 'chrome.dart';
 import 'tokens.dart';
 import 'glyphs.dart';
 
@@ -27,6 +28,11 @@ class VoiceController extends ChangeNotifier {
   /// What Compii is saying right now (live caption).
   String caption = '';
 
+  /// The last full answer, kept after the caption fades so it can still be
+  /// opened and read in full.
+  String lastAnswer = '';
+  DateTime? lastAnswerAt;
+
   /// When that caption arrived. Only speech tells us when it ended, so in
   /// "sound" and "caption" mode the line has to fade out on its own.
   DateTime? captionAt;
@@ -41,10 +47,18 @@ class VoiceController extends ChangeNotifier {
   bool get showIntent => intent != null && intentAt != null && DateTime.now().difference(intentAt!) < const Duration(seconds: 4);
   String? error;
   Map<String, dynamic>? status;
+
+  /// The last status fetch failed. A page that shows `status` has to say this,
+  /// or it is claiming "not ready" from an answer it never got.
+  bool statusFailed = false;
   CoreStatus _last = CoreStatus.connecting;
 
   bool get canListen => status?['listen_ready'] == true;
   bool get naturalVoice => status?['natural_voice'] == true;
+  bool get fastVoice => status?['fast_voice'] == true;
+
+  /// Which speech engine is doing the talking: Kokoro, Piper, or Windows.
+  String get engine => '${(status?['settings'] as Map?)?['engine'] ?? 'natural'}';
 
   /// How Compii answers: "voice", "sound", "caption" or "off".
   String get outputMode => '${(status?['settings'] as Map?)?['output_mode'] ?? 'voice'}';
@@ -64,8 +78,11 @@ class VoiceController extends ChangeNotifier {
   Future<void> refresh() async {
     try {
       status = await core.voiceStatus();
-      notifyListeners();
-    } catch (_) {}
+      statusFailed = false;
+    } catch (_) {
+      statusFailed = true;
+    }
+    notifyListeners();
   }
 
   void _onEvent(Map<String, dynamic> e) {
@@ -84,8 +101,11 @@ class VoiceController extends ChangeNotifier {
         speaking = e['on'] == true;
         if (!speaking) caption = '';
       case 'voice_caption':
-        caption = '${e['text']}';
+        final text = '${e['text']}';
+        caption = text;
         captionAt = DateTime.now();
+        lastAnswer = text;
+        lastAnswerAt = DateTime.now();
         Future<void>.delayed(const Duration(seconds: 12), notifyListeners);
       case 'voice_intent':
         intent = e;
@@ -171,6 +191,10 @@ class VoiceController extends ChangeNotifier {
       await Future<void>.delayed(const Duration(milliseconds: 700));
       await refresh();
     }
+    // A downloaded fast voice is why it was downloaded: use it at once.
+    if (what == 'speak_fast' && status?['fast_voice'] == true && engine != 'fast') {
+      await set({'engine': 'fast'});
+    }
   }
 
   /// The character's mood, with voice taking priority over task state.
@@ -188,10 +212,10 @@ class VoiceController extends ChangeNotifier {
   }
 }
 
-/// The Orbling you can click: tap to talk, tap again to send; tap while it
+/// The Ember you can click: tap to talk, tap again to send; tap while it
 /// speaks to interrupt. Eyes follow the mouse.
-class TalkableOrbling extends StatelessWidget {
-  const TalkableOrbling({super.key, required this.voice, required this.mood, this.jobs = 0, this.size = 150});
+class TalkableCompii extends StatelessWidget {
+  const TalkableCompii({super.key, required this.voice, required this.mood, this.jobs = 0, this.size = 150});
   final VoiceController voice;
   final Mood mood;
   final int jobs;
@@ -207,15 +231,25 @@ class TalkableOrbling extends StatelessWidget {
           : voice.listening
               ? 'Tap to send'
               : (voice.canListen ? 'Tap to talk · or hold Ctrl + Alt in any app' : 'Turn on listening in Settings → Voice');
+      final state = voice.speaking
+          ? 'Interrupt Compii'
+          : voice.listening
+              ? 'Send what you said'
+              : (voice.canListen ? 'Talk to Compii' : 'Listening is turned off');
       return Tooltip(
         message: hint,
-        child: MouseRegion(
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            onTap: () => voice.speaking ? voice.quiet() : voice.toggle(),
-            child: SizedBox.square(
-              dimension: size,
-              child: Orbling(mood: m, jobs: jobs, level: voice.level),
+        child: Keyable(
+          label: voice.listening || voice.speaking ? '$state · ${moodLabel(m)}' : state,
+          onTap: () => voice.speaking ? voice.quiet() : voice.toggle(),
+          child: MouseRegion(
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => voice.speaking ? voice.quiet() : voice.toggle(),
+              child: SizedBox.square(
+                dimension: size,
+                child: Ember(mood: m, jobs: jobs, level: voice.level),
+              ),
             ),
           ),
         ),
@@ -253,36 +287,42 @@ class _MicButtonState extends State<MicButton> {
       }
       return Tooltip(
         message: v.listening ? 'Release or tap to send' : 'Hold or tap to talk',
-        child: GestureDetector(
-          onTapDown: (_) {
-            _down = DateTime.now();
-            _startedHere = !v.listening;
-            if (_startedHere) v.start();
-          },
-          onTapUp: (_) {
-            final held = _down != null && DateTime.now().difference(_down!) > const Duration(milliseconds: 400);
-            // Hold and release sends; a quick tap keeps listening until the next tap.
-            if (!_startedHere || held) v.finish();
-          },
-          onTapCancel: () {
-            if (v.listening) v.finish();
-          },
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 150),
-            width: 40,
-            height: 40,
-            alignment: Alignment.center,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: v.listening ? c.listen : Colors.transparent,
-              boxShadow: v.listening ? [BoxShadow(color: c.listen.withValues(alpha: .4), blurRadius: 12)] : null,
-            ),
-            child: Glyph(
-              v.listening ? G.mic : G.mic,
-              size: 19,
-              duo: v.listening,
-              duoColor: Colors.white,
-              color: v.listening ? Colors.white : c.muted,
+        child: Keyable(
+          label: v.listening ? 'Send what you said' : 'Start talking',
+          onTap: () => v.listening ? v.finish() : v.start(),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTapDown: (_) {
+              _down = DateTime.now();
+              _startedHere = !v.listening;
+              if (_startedHere) v.start();
+            },
+            onTapUp: (_) {
+              final held = _down != null && DateTime.now().difference(_down!) > const Duration(milliseconds: 400);
+              // Hold and release sends; a quick tap keeps listening until the next tap.
+              if (!_startedHere || held) v.finish();
+            },
+            onTapCancel: () {
+              if (v.listening) v.finish();
+            },
+            child: AnimatedContainer(
+              duration: context.motion(Motion.quick),
+              curve: Motion.standard,
+              width: 44,
+              height: 44,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: v.listening ? c.listen : Colors.transparent,
+                boxShadow: v.listening ? [BoxShadow(color: c.listen.withValues(alpha: .4), blurRadius: 12)] : null,
+              ),
+              child: Glyph(
+                v.listening ? G.mic : G.mic,
+                size: 19,
+                duo: v.listening,
+                duoColor: Colors.white,
+                color: v.listening ? Colors.white : c.muted,
+              ),
             ),
           ),
         ),
@@ -342,11 +382,12 @@ class _Level extends StatelessWidget {
       children: [
         for (final k in const [.5, .85, 1.0, .7, .45])
           AnimatedContainer(
-            duration: const Duration(milliseconds: 90),
+            duration: context.motion(Motion.tap),
+            curve: Motion.standard,
             margin: const EdgeInsets.symmetric(horizontal: 1.5),
             width: 3.5,
             height: 6 + (active ? 20 * (level * k).clamp(.08, 1.0) : 2),
-            decoration: BoxDecoration(color: teal, borderRadius: BorderRadius.circular(2)),
+            decoration: BoxDecoration(color: teal, borderRadius: Shapes.pill),
           ),
       ],
     );

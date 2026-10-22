@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="compii_accessibility_label">Compii on this phone</string>
+    <string name="compii_accessibility_description">Lets Compii read what is on this phone’s screen and tap, type, scroll or open an app for you when you ask. Password fields are skipped, and it never acts on its own.</string>
+    <string name="compii_notification_listener_label">Compii notifications</string>
+    <string name="compii_notification_listener_description">Lets Compii see notifications as they arrive so your rules can send them to your PC, and so you can ask what you missed. Nothing leaves the phone unless you made a rule for it.</string>
+</resources>

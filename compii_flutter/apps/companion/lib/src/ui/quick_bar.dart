@@ -126,9 +126,9 @@ class QuickBar extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
                       if (voice != null)
-                        TalkableOrbling(voice: voice, mood: mood, jobs: task?.active == true ? 1 : 0, size: 58)
+                        TalkableCompii(voice: voice, mood: mood, jobs: task?.active == true ? 1 : 0, size: 58)
                       else
-                        SizedBox.square(dimension: 58, child: Orbling(mood: mood, jobs: task?.active == true ? 1 : 0)),
+                        SizedBox.square(dimension: 58, child: Ember(mood: mood, jobs: task?.active == true ? 1 : 0)),
                       const SizedBox(width: 10),
                       Expanded(
                         child: Composer(

@@ -12,3 +12,8 @@ Secrets.xcconfig
 # Compii build output
 /dist/
 /.build-check/
+
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/

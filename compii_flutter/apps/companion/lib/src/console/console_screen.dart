@@ -1,5 +1,8 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
+import '../ui/chrome.dart';
 import '../ui/shell.dart';
 import '../ui/thread.dart';
 import '../ui/tokens.dart';
@@ -7,8 +10,8 @@ import 'character.dart';
 import 'core_client.dart';
 import '../ui/glyphs.dart';
 
-/// Root screen: phones get the Face View, desktops the workspace (which can
-/// preview the Face View).
+/// Root screen: phones get the Presence View, desktops the workspace (which can
+/// preview the Presence View).
 class ConsoleScreen extends StatefulWidget {
   const ConsoleScreen({super.key, required this.core, required this.state});
   final CoreClient core;
@@ -23,7 +26,9 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
-      final phone = box.biggest.shortestSide < 600;
+      // Phones always get the Presence View; a desktop window squeezed small
+      // gets it too, because the workspace needs more room than that.
+      final phone = Platform.isAndroid || Platform.isIOS || box.biggest.shortestSide < 600;
       if (phone || _faceView) {
         return ListenableBuilder(
           listenable: Listenable.merge([widget.core, widget.state, ?widget.state.voice]),
@@ -39,7 +44,7 @@ class _ConsoleScreenState extends State<ConsoleScreen> {
   );
 }
 
-/// What the character says in Face View.
+/// What the character says in the Presence View.
 String bubbleOf(CoreClient core) {
   if (core.status == CoreStatus.connecting) return 'Waking up…';
   if (core.unauthorized) return '${core.remote?.pc ?? 'Your PC'} doesn’t know this phone any more. Pair it again.';
@@ -64,17 +69,23 @@ String bubbleOf(CoreClient core) {
   return latest.finalText ?? 'What next?';
 }
 
-/// Phone Face View (Bluey-style): the screen is Compii's face. Status,
+/// Phone Presence View: the screen becomes the inside of the lens. Status,
 /// speech, approvals and the composer float over it; the conversation opens
 /// in a sheet.
 class FaceStage extends StatelessWidget {
-  const FaceStage({super.key, required this.core, required this.state, required this.onExit, this.menu});
+  const FaceStage({super.key, required this.core, required this.state, required this.onExit, this.menu, this.onSend, this.allowOffline = false});
   final CoreClient core;
   final AppState state;
   final VoidCallback? onExit;
 
   /// Top-right controls on a paired phone (connection, voice, forget this PC).
   final Widget? menu;
+
+  /// What typing does; on a phone it goes through the waiting-when-away queue.
+  final Future<void> Function(String text)? onSend;
+
+  /// Keep what was typed when the PC is out of reach, to send later.
+  final bool allowOffline;
 
   Future<void> _run(Future<void> Function() action) async {
     try {
@@ -94,20 +105,23 @@ class FaceStage extends StatelessWidget {
     final active = core.ordered.where((t) => t.active).length;
     final waiting = core.ordered.where((t) => t.pendingApproval != null).toList();
     final latest = core.ordered.firstOrNull;
+    // Tap the face to talk; tap again to send, or to interrupt it.
+    final VoidCallback? talkToFace =
+        voice == null ? null : () => voice.speaking ? voice.quiet() : voice.toggle();
     const glass = Color(0xF2FFFFFF);
     return Scaffold(
       backgroundColor: const Color(0xFF1B1550),
       body: Stack(
         children: [
           Positioned.fill(
-            child: Semantics(
+            child: Keyable(
               label: 'Compii, ${moodLabel(mood)}',
-              image: true,
-              // Tap the face to talk; tap again to send, or to interrupt it.
+              radius: Shapes.r24,
+              onTap: talkToFace,
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: voice == null ? null : () => voice.speaking ? voice.quiet() : voice.toggle(),
-                child: Orbling(mood: mood, jobs: active, face: true, level: voice?.level ?? 0, followPointer: false),
+                onTap: talkToFace,
+                child: Ember(mood: mood, jobs: active, face: true, level: voice?.level ?? 0, followPointer: false),
               ),
             ),
           ),
@@ -213,16 +227,18 @@ class FaceStage extends StatelessWidget {
                         core: core,
                         state: state,
                         autofocus: false,
+                        allowOffline: allowOffline,
                         hint: 'Tell Compii…',
                         busyTask: latest?.active == true ? latest : null,
                         run: _run,
-                        onSend: (text) => _run(() async {
-                          if (latest != null && !latest.active) {
-                            await core.reply(latest.id, text);
-                          } else {
-                            await core.startConversation(text);
-                          }
-                        }),
+                        onSend: onSend ??
+                            (text) => _run(() async {
+                                  if (latest != null && !latest.active) {
+                                    await core.reply(latest.id, text);
+                                  } else {
+                                    await core.startConversation(text);
+                                  }
+                                }),
                       ),
                     ),
                   ],

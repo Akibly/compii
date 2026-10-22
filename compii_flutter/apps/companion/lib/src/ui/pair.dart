@@ -182,7 +182,7 @@ class _PairScreenState extends State<PairScreen> {
               children: [
                 SizedBox(
                   height: 190,
-                  child: Orbling(mood: _busy ? Mood.thinking : (_error != null ? Mood.problem : Mood.happy), followPointer: false),
+                  child: Ember(mood: _busy ? Mood.thinking : (_error != null ? Mood.problem : Mood.happy), followPointer: false),
                 ),
                 const SizedBox(height: 8),
                 Text('Pair with your PC',
@@ -198,7 +198,7 @@ class _PairScreenState extends State<PairScreen> {
                 const SizedBox(height: 20),
                 if (_scanning)
                   ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
+                    borderRadius: Shapes.r20,
                     child: SizedBox(
                       height: 300,
                       child: MobileScanner(

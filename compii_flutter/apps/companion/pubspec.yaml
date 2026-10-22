@@ -42,6 +42,8 @@ dependencies:
   mobile_scanner: ^7.4.2
   speech_to_text: ^7.4.0
   crypto: ^3.0.7
+  velopack_flutter: ^0.3.3
+  file_picker: ^13.1.0
 
 dev_dependencies:
   shared_preferences_platform_interface: ^2.4.2

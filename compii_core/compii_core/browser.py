@@ -112,6 +112,15 @@ class Browser:
         except Exception:  # noqa: BLE001
             return ""
 
+    def focus(self) -> bool:
+        """Bring Compii's browser window to the front, if it is already open. Never opens one."""
+        if self._thread is None or not self._thread.is_alive():
+            return False
+        try:
+            return bool(self._run(lambda: self._page().bring_to_front() or True))
+        except Exception:  # noqa: BLE001
+            return False
+
     def click(self, text: str) -> str:
         def press() -> str:
             page = self._page()

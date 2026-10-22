@@ -10,10 +10,12 @@ Models download only when the user asks for them in Settings.
 from __future__ import annotations
 
 import queue
+import re
 import sys
 import threading
 import time
 import urllib.request
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,7 +35,18 @@ KOKORO_FILES = {
     "kokoro-v1.0.int8.onnx": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.int8.onnx",
     "voices-v1.0.bin": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin",
 }
-DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465, "speak_hq": 170}
+# Piper: a compact voice model that runs faster than real time on a normal CPU, so
+# speech keeps up with the text instead of trailing behind it.
+PIPER_FILES = {
+    "piper-en_US-lessac-medium.onnx":
+        "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx",
+    "piper-en_US-lessac-medium.onnx.json":
+        "https://huggingface.co/rhasspy/piper-voices/resolve/main/en/en_US/lessac/medium/en_US-lessac-medium.onnx.json",
+}
+DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465, "speak_hq": 170, "speak_fast": 64}
+# How much of a reply is worth saying out loud, and how it is cut while it is still being written.
+SPOKEN_SENTENCES = 2
+SPOKEN_CHARS = 280
 # Capitalised words that aren't names; anything else capitalised gets a second, sharper listen.
 COMMON_CAPS = {"downloads", "documents", "desktop", "pictures", "monday", "tuesday", "wednesday", "thursday",
                "friday", "saturday", "sunday", "january", "february", "march", "april", "june", "july", "august",
@@ -71,7 +84,16 @@ def kokoro_lang(voice: str) -> str:
 Emit = Callable[[dict[str, Any]], None]
 
 _CHIME = object()  # a queued sound effect instead of words
+_WAKE = object()  # wakes a synthesis thread that is waiting for the next sentence
 _CHIME_AUDIO: tuple[np.ndarray, int] | None = None
+
+
+@dataclass
+class _SpokenStream:
+    """How much of a reply that is still being written has been said."""
+    draft: str = ""  # the last draft seen, to tell a continuation from a new step
+    spoken: str = ""  # what has already been handed to the speaker for this step
+    said_any: bool = False
 
 
 @dataclass
@@ -82,7 +104,8 @@ class VoiceSettings:
     output_mode: str = "voice"
     voice: str = "compii_warm"
     speed: float = 1.05
-    # "natural" uses Kokoro when downloaded; "windows" is the instant built-in voice.
+    # "natural" uses Kokoro when downloaded, "fast" uses Piper (real-time on a CPU),
+    # "windows" is the instant built-in voice.
     engine: str = "natural"
     # "Hey Compii": off until the user turns it on (the mic stays open while it's on).
     wake_word: bool = False
@@ -107,13 +130,18 @@ class Voice:
         self.emit = emit
         self.settings = VoiceSettings()
         self.cloud_key: Callable[[], str | None] | None = None  # set by the server: the Groq key, if stored
+        self.ledger: Any = None  # set by the server: heard requests are counted in audio seconds
         self._recorder_factory = recorder_factory or _MicStream
         self._stt = None
         self._stt_lock = threading.Lock()
         self._stopped = threading.Event()
         self._load_lock = threading.Lock()
         self._tts = None
+        self._piper_voice = None
         self._lock = threading.Lock()
+        self._streams: dict[str, _SpokenStream] = {}
+        self._stream_lock = threading.Lock()
+        self._quiet_streams: deque[str] = deque(maxlen=32)  # stopped by the user: don't start again
         self._chunks: list[np.ndarray] = []
         self._stream = None
         self._listening = False
@@ -147,8 +175,14 @@ class Voice:
     def has_natural_voice(self) -> bool:
         return all((self.models / f).exists() for f in KOKORO_FILES)
 
+    def has_fast_voice(self) -> bool:
+        return all((self.models / f).exists() for f in PIPER_FILES)
+
     def uses_natural_voice(self) -> bool:
         return self.settings.engine == "natural" and self.has_natural_voice()
+
+    def uses_fast_voice(self) -> bool:
+        return self.settings.engine == "fast" and self.has_fast_voice()
 
     @property
     def announces(self) -> bool:
@@ -157,7 +191,15 @@ class Voice:
 
     def warm_up(self) -> None:
         """Load the voice model in the background so the first reply isn't slow."""
-        if self.has_natural_voice():
+        if self.uses_fast_voice():
+            def run_fast() -> None:
+                try:
+                    for _ in self._piper().synthesize("Ready."):
+                        pass
+                except Exception:  # noqa: BLE001 - warm-up is best effort
+                    pass
+            threading.Thread(target=run_fast, daemon=True).start()
+        elif self.has_natural_voice():
             def run() -> None:
                 try:
                     self._kokoro().create("Ready.", voice=self.kokoro_voice(), lang=kokoro_lang(self.settings.voice))
@@ -179,7 +221,9 @@ class Voice:
             "listen_hq": self.has_hq(),
             "speak_hq": (self.models / KOKORO_HQ[0]).exists(),
             "natural_voice": self.has_natural_voice(),
-            "engine": "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none"),
+            "fast_voice": self.has_fast_voice(),
+            "engine": "piper" if self.uses_fast_voice() else ("kokoro" if self.uses_natural_voice() else
+                                                               ("windows" if sys.platform == "win32" else "none")),
             "listening": self._listening,
             "wake_listening": bool(self._wake and self._wake.running),
             "speaking": self._speaker.speaking,
@@ -221,6 +265,22 @@ class Voice:
                 part.replace(target)
                 with self._lock:
                     self._tts = None  # reload with the better model
+            elif what == "speak_fast":
+                files = list(PIPER_FILES.items())
+                for i, (name, url) in enumerate(files):
+                    target = self.models / name
+                    if target.exists():
+                        continue
+                    part = target.with_suffix(target.suffix + ".part")
+
+                    def hook_fast(blocks: int, size: int, total: int, i: int = i) -> None:
+                        if total > 0:
+                            self.downloading[what] = (i + min(1.0, blocks * size / total)) / len(files)
+
+                    urllib.request.urlretrieve(url, part, hook_fast)  # noqa: S310 - fixed https URLs
+                    part.replace(target)
+                with self._lock:
+                    self._piper_voice = None
             else:
                 files = list(KOKORO_FILES.items())
                 for i, (name, url) in enumerate(files):
@@ -436,12 +496,17 @@ class Voice:
             w.setsampwidth(2)
             w.setframerate(RATE)
             w.writeframes((np.clip(audio, -1, 1) * 32767).astype("<i2").tobytes())
+        started = time.monotonic()
         r = httpx.post("https://api.groq.com/openai/v1/audio/transcriptions",
                        headers={"Authorization": f"Bearer {key}"},
                        data={"model": CLOUD_WHISPER, "language": "en", "prompt": prompt[:200], "temperature": "0",
                              "response_format": "json"},
                        files={"file": ("speech.wav", buf.getvalue(), "audio/wav")}, timeout=8)
         r.raise_for_status()
+        if self.ledger is not None:  # Whisper is sold by audio time, not tokens: count the seconds it heard
+            self.ledger.record(provider="groq", model=CLOUD_WHISPER, kind="listening",
+                               ms=int((time.monotonic() - started) * 1000),
+                               audio_ms=int(audio.size / RATE * 1000))
         return (r.json().get("text") or "").strip()
 
     def annotate(self, text: str) -> str:
@@ -604,7 +669,70 @@ class Voice:
         if text:
             self._speaker.say(text)
 
+    def say_stream(self, task_id: str, draft: str) -> None:
+        """Say a reply while it is still being written: whole sentences only, and
+        only the first couple, so speech starts long before the answer is finished."""
+        draft = draft.strip()
+        if not draft or self.settings.output_mode != "voice":
+            return
+        with self._stream_lock:
+            if task_id in self._quiet_streams:
+                return
+            state = self._streams.get(task_id)
+            if state is None:
+                if len(self._streams) >= 8:
+                    self._streams.pop(next(iter(self._streams)))
+                for other in [k for k in self._streams if k != task_id]:
+                    del self._streams[other]  # one answer speaks at a time
+                state = self._streams[task_id] = _SpokenStream()
+                self._speaker.stop()  # a new answer takes the floor
+            if state.draft and not draft.startswith(state.draft):
+                state.spoken = ""  # a new step after a tool call: fresh words to say
+            state.draft = draft
+            want = spoken_reply(_complete_sentences(draft), sentences=SPOKEN_SENTENCES, longest=SPOKEN_CHARS)
+            if not want.startswith(state.spoken):
+                return  # the wording is still settling; finishing will say what is left
+            new = want[len(state.spoken):].strip()
+            if not new:
+                return
+            state.spoken = want
+            state.said_any = True
+        self._speaker.feed(new)
+        self.emit({"type": "voice_caption", "text": want})
+
+    def finish_stream(self, task_id: str, text: str) -> None:
+        """The reply is complete: say whatever streaming did not reach yet."""
+        text = text.strip()
+        with self._stream_lock:
+            state = self._streams.pop(task_id, None)
+            muted = task_id in self._quiet_streams
+            if muted:
+                self._quiet_streams.remove(task_id)
+        if not text or self.settings.output_mode == "off":
+            return
+        if self.settings.output_mode == "voice" and not muted:
+            want = spoken_reply(text, sentences=SPOKEN_SENTENCES, longest=SPOKEN_CHARS)
+            if state is None or not state.said_any:
+                self.say_now(want)
+            elif want.startswith(state.spoken):
+                new = want[len(state.spoken):].strip()
+                if new:
+                    self._speaker.feed(new)
+            elif state.spoken not in want:
+                self._speaker.feed(want)  # a different step; none of it has been said
+        elif self.settings.output_mode == "sound" and not muted:
+            self._speaker.chime()
+        self.emit({"type": "voice_caption", "text": text})
+
+    def drop_stream(self, task_id: str) -> None:
+        """Forget a reply being streamed (an approval or question interrupts it)."""
+        with self._stream_lock:
+            self._streams.pop(task_id, None)
+
     def stop_speaking(self) -> None:
+        with self._stream_lock:
+            self._quiet_streams.extend(self._streams)  # what was just silenced stays silent
+            self._streams.clear()
         self._speaker.stop()
 
     def _kokoro(self):
@@ -619,6 +747,15 @@ class Voice:
             model = hq if hq.exists() else self.models / "kokoro-v1.0.int8.onnx"
             self._tts = Kokoro(str(model), str(self.models / "voices-v1.0.bin"))
         return self._tts
+
+    def _piper(self):
+        with self._lock:
+            if self._piper_voice is None:
+                from piper import PiperVoice
+
+                model = self.models / "piper-en_US-lessac-medium.onnx"
+                self._piper_voice = PiperVoice.load(str(model), config_path=str(model) + ".json")
+            return self._piper_voice
 
 
 class _MicStream:
@@ -658,6 +795,12 @@ class _Speaker:
         self.stop()
         self._jobs.put(text)
 
+    def feed(self, text: str) -> None:
+        """Add to what is already being said, without cutting it off."""
+        text = text.strip()
+        if text:
+            self._jobs.put(text)
+
     def chime(self) -> None:
         """Two rising notes instead of words. Queued like speech: only this
         thread may touch the audio device."""
@@ -671,6 +814,7 @@ class _Speaker:
                 self._jobs.get_nowait()
             except queue.Empty:
                 break
+        self._jobs.put(_WAKE)  # let a synthesis thread waiting for the next sentence notice
         # Playback notices the new generation within a few milliseconds and stops itself.
         # Never touch the audio device from here: stopping it from another thread
         # crashed Core (PortAudio isn't thread-safe). The Windows voice is purged by its
@@ -690,6 +834,8 @@ class _Speaker:
             job = self._jobs.get()
             if job is None:
                 return
+            if job is _WAKE:
+                continue
             if job is _CHIME:
                 try:
                     self._chime()
@@ -699,8 +845,8 @@ class _Speaker:
             generation = self._generation
             try:
                 self._set(True)
-                if self.voice.uses_natural_voice():
-                    self._speak_kokoro(job, generation)
+                if self.voice.uses_fast_voice() or self.voice.uses_natural_voice():
+                    self._speak_chain(job, generation)
                 elif sys.platform == "win32":
                     self._speak_windows(job, generation)
             except Exception as e:  # noqa: BLE001
@@ -716,31 +862,78 @@ class _Speaker:
         samples, rate = _CHIME_AUDIO
         self._play(samples.copy(), rate, self._generation)
 
-    def _speak_kokoro(self, text: str, generation: int) -> None:
-        """Pipelined: the next phrase is generated while the current one plays,
-        so speech flows even when generation is close to real time."""
-        s = self.voice.settings
-        ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=2)
+    def _speak_chain(self, first: str, generation: int) -> None:
+        """Synthesize ahead: the next phrase is made ready while the current one plays.
+        Words for the same answer that arrive mid-sentence join the same chain, so a
+        streamed reply sounds continuous instead of restarting at every sentence."""
+        make = self._piper_phrase if self.voice.uses_fast_voice() else self._kokoro_phrase
+        ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=3)
 
         def produce() -> None:
+            text: str | None = first
             try:
-                for phrase in _phrases(text):
-                    if generation != self._generation:
-                        break
-                    ready.put(self.voice._kokoro().create(phrase, voice=self.voice.kokoro_voice(), speed=s.speed,
-                                                          lang=kokoro_lang(s.voice)))
+                while text and generation == self._generation:
+                    for phrase in _phrases(text):
+                        if generation != self._generation:
+                            return
+                        audio = make(phrase)
+                        if audio is not None and not self._offer(ready, audio, generation):
+                            return
+                    text = self._next_text(generation)
             finally:
-                ready.put(None)
+                self._offer(ready, None, generation)
 
         threading.Thread(target=produce, daemon=True).start()
-        while True:
-            item = ready.get()
+        while generation == self._generation:
+            try:
+                item = ready.get(timeout=0.2)
+            except queue.Empty:
+                continue
             if item is None or generation != self._generation:
                 return
             samples, rate = item
             samples = _trim(samples)
-            pause = np.zeros(int(rate * 0.12), dtype=samples.dtype)  # a breath between sentences
+            pause = np.zeros(int(rate * 0.10), dtype=samples.dtype)  # a breath between sentences
             self._play(np.concatenate([samples, pause]), rate, generation)
+
+    def _offer(self, ready: queue.Queue, item: Any, generation: int) -> bool:
+        """Put a phrase on the playback queue without hanging when speech is stopped."""
+        while generation == self._generation:
+            try:
+                ready.put(item, timeout=0.15)
+                return True
+            except queue.Full:
+                continue
+        return False
+
+    def _next_text(self, generation: int) -> str | None:
+        """Take words for the same answer that arrived while the last phrase played.
+        A moment of quiet ends the chain; playback of what is ready carries on."""
+        try:
+            job = self._jobs.get(timeout=1.2)
+        except queue.Empty:
+            return None
+        if generation != self._generation or job is _WAKE:
+            if job is not _WAKE:
+                self._jobs.put(job)  # stopped while waiting: the next utterance still gets said
+            return None
+        if job is _CHIME:
+            self._jobs.put(job)
+            return None
+        return job
+
+    def _kokoro_phrase(self, phrase: str) -> tuple[np.ndarray, int]:
+        s = self.voice.settings
+        return self.voice._kokoro().create(phrase, voice=self.voice.kokoro_voice(), speed=s.speed,
+                                           lang=kokoro_lang(s.voice))
+
+    def _piper_phrase(self, phrase: str) -> tuple[np.ndarray, int] | None:
+        from piper.config import SynthesisConfig
+
+        voice = self.voice._piper()
+        config = SynthesisConfig(length_scale=1.0 / max(.7, min(1.4, self.voice.settings.speed)))
+        parts = [chunk.audio_float_array for chunk in voice.synthesize(phrase, config)]
+        return (np.concatenate(parts), voice.config.sample_rate) if parts else None
 
     def _play(self, audio: np.ndarray, rate: int, generation: int) -> None:
         """Play on this (the speaker) thread only; stops early when interrupted."""
@@ -814,6 +1007,15 @@ def _sentences(text: str) -> list[str]:
     return parts or [text]
 
 
+def _complete_sentences(text: str) -> str:
+    """The draft up to its last finished sentence: a half-written sentence is
+    never said, because the rest of it may change."""
+    end = 0
+    for match in re.finditer(r"""[.!?]["')\]*_`]*(?=\s)""", text):
+        end = match.end()
+    return text[:end]
+
+
 FILE_KINDS = {"pdf": "PDF", "xlsx": "spreadsheet", "xls": "spreadsheet", "csv": "spreadsheet", "docx": "document",
               "doc": "document", "pptx": "slides", "png": "picture", "jpg": "picture", "jpeg": "picture",
               "mp4": "video", "mp3": "audio", "zip": "zip file"}
@@ -880,7 +1082,6 @@ def _phrases(text: str, longest: int = 220) -> list[str]:
                 chunk = f"{chunk} {part}".strip()
         if chunk:
             out.append(chunk)
-    # A long first sentence: start with its opening clause.
     # A long first sentence: start with its opening clause (whole sentences sound most natural).
     if out and len(out[0]) > 110 and "," in out[0][:90]:
         head, _, rest = out[0].partition(",")

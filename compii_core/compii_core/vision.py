@@ -23,6 +23,10 @@ import numpy as np
 VISION_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
 VISION_MODEL = "nvidia/nemotron-3.5-super-vl-120b-a12b"  # free; points within ~15 px in tests
 MAX_WIDTH = 1600
+# Windows OCR cannot read small UI text once a picture is scaled down: at 1600 px wide a
+# 1936 px window came back with zero lines, and 66 lines at its real size. OCR gets its own,
+# much larger cap; the vision model keeps the small one for a fast, readable payload.
+OCR_MAX_WIDTH = 4096
 # A window that lists fewer readable items than this is mostly drawn pixels: look at it.
 THIN = 15
 # Apps known to draw their own interface.
@@ -62,17 +66,10 @@ def private_foreground() -> bool:
     """A password manager or similar is what Compii would be looking at."""
     if sys.platform != "win32":
         return False
-    import ctypes
-
-    from .screen import BLOCKED_APPS, _process_name, user_foreground
+    from .screen import private_window, user_foreground
 
     hwnd, title = user_foreground()
-    if not hwnd:
-        return False
-    pid = ctypes.c_ulong()
-    ctypes.windll.user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
-    name = f"{_process_name(pid.value)} {title}".lower()
-    return any(b in name for b in BLOCKED_APPS)
+    return bool(hwnd) and private_window(hwnd, title)
 
 
 def _ask(png: bytes, prompt: str, key: str, transport: Any = None, max_tokens: int = 900, timeout: float = 8) -> str:
@@ -154,11 +151,12 @@ def locate_precise(pixels: np.ndarray, window: tuple[int, int, int, int], target
     return second or first
 
 
-def read(png: bytes, question: str, key: str, transport: Any = None) -> dict[str, Any]:
+def read(png: bytes, question: str, key: str, transport: Any = None, window: str = "") -> dict[str, Any]:
     """Read the picture closely: an answer to the question, the important text exactly as
     shown, and up to 8 items with positions (0-1000 grid) to point at."""
+    where = f" The picture is of the window “{window}”." if window else ""
     data = _json(_ask(png, (
-        f"The user asks about this screen: \"{question}\"\n"
+        f"The user asks about this screen:{where} \"{question}\"\n"
         "Look carefully. Reply only with JSON: {\"answer\": \"a direct answer in one to four sentences, based only on "
         "what is visible\", \"text\": \"the important visible text copied exactly (headings, error messages, numbers, "
         "names, field values), one item per line, at most 40 lines\", \"items\": [{\"label\": \"...\", \"x\": 0, \"y\": 0, "
@@ -178,6 +176,17 @@ def check(png: bytes, done_when: str, key: str, transport: Any = None) -> tuple[
     return bool(data.get("done")), str(data.get("why", ""))[:160]
 
 
+def png_of(pixels: np.ndarray, max_width: int = MAX_WIDTH) -> bytes:
+    """Pixels as a PNG no wider than `max_width` — small enough to OCR or send quickly."""
+    step = max(1, -(-pixels.shape[1] // max_width))
+    return encode_png(np.ascontiguousarray(pixels[::step, ::step]))
+
+
+def ocr_png(pixels: np.ndarray) -> bytes:
+    """A picture for local OCR: as close to the real pixels as the engine can take."""
+    return png_of(pixels, OCR_MAX_WIDTH)
+
+
 def capture_foreground(hwnd: int | None = None) -> tuple[bytes, tuple[int, int, int, int]] | None:
     """A PNG of the foreground window (or `hwnd`), scaled to at most MAX_WIDTH wide, and the
     window's rectangle in screen pixels. Only that window is drawn, not what overlaps it."""
@@ -185,8 +194,7 @@ def capture_foreground(hwnd: int | None = None) -> tuple[bytes, tuple[int, int, 
     if shot is None:
         return None
     pixels, window = shot
-    step = max(1, -(-pixels.shape[1] // MAX_WIDTH))
-    return encode_png(np.ascontiguousarray(pixels[::step, ::step])), window
+    return png_of(pixels), window
 
 
 def _gated(fn):
@@ -228,11 +236,14 @@ def grab_foreground(hwnd: int | None = None) -> tuple[np.ndarray, tuple[int, int
     user32, _ = _win_gdi()
     hwnd = hwnd or user_foreground()[0]
     rect = wintypes.RECT()
-    if not hwnd or not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+    if not hwnd or not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd) \
+            or not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
         return None
     left, top = rect.left, rect.top
     w, h = rect.right - left, rect.bottom - top
-    if w < 40 or h < 40:
+    # A minimized window sits at -32000 with a stub rect; photographing it would hand the
+    # vision model a black or blank white frame and it would describe the wrong thing.
+    if left <= -30000 or top <= -30000 or w < 80 or h < 60:
         return None
     pixels = _grab_rect(left, top, w, h, hwnd)
     return None if pixels is None else (pixels, (left, top, w, h))
@@ -269,9 +280,12 @@ def _win_gdi() -> tuple[Any, Any]:
         for fn, restype, args in (
             (user32.GetSystemMetrics, INT, [INT]),
             (user32.GetWindowRect, INT, [HWND, ctypes.c_void_p]),
+            (user32.IsWindowVisible, INT, [HWND]),
+            (user32.IsIconic, INT, [HWND]),
             (user32.GetDC, HDC, [HWND]),
             (user32.ReleaseDC, INT, [HWND, HDC]),
             (user32.PrintWindow, INT, [HWND, HDC, UINT]),
+            (gdi32.CreateDCW, HDC, [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p]),
             (gdi32.CreateCompatibleDC, HDC, [HDC]),
             (gdi32.CreateCompatibleBitmap, HBMP, [HDC, INT, INT]),
             (gdi32.SelectObject, wintypes.HGDIOBJ, [HDC, wintypes.HGDIOBJ]),
@@ -300,7 +314,20 @@ def _grab_rect(left: int, top: int, w: int, h: int, hwnd: int | None = None) -> 
                     ("biYPelsPerMeter", wintypes.LONG), ("biClrUsed", wintypes.DWORD),
                     ("biClrImportant", wintypes.DWORD)]
 
-    screen = user32.GetDC(None)
+    def bits() -> np.ndarray | None:
+        info = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
+        buf = (ctypes.c_ubyte * (w * h * 4))()
+        if not gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(info), 0):
+            return None
+        return np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)[:, :, 2::-1].copy()  # BGRA -> RGB
+
+    # The desktop DC covers every monitor at its real coordinates, including monitors left of
+    # or above the main one. GetDC(NULL) only reaches the primary display, so a window on a
+    # second monitor used to come out blank or show a wrapped-around piece of the first.
+    screen = gdi32.CreateDCW("DISPLAY", None, None, None)
+    borrowed = not screen
+    if borrowed:
+        screen = user32.GetDC(None)
     mem = gdi32.CreateCompatibleDC(screen)
     bmp = gdi32.CreateCompatibleBitmap(screen, w, h)
     drawn = None
@@ -309,15 +336,26 @@ def _grab_rect(left: int, top: int, w: int, h: int, hwnd: int | None = None) -> 
             return None
         drawn = gdi32.SelectObject(mem, bmp)
         # The window draws itself (works for modern GPU-drawn apps too); else copy the screen.
-        if hwnd and user32.PrintWindow(hwnd, mem, 2):  # PW_RENDERFULLCONTENT
-            pass
-        else:
-            gdi32.BitBlt(mem, 0, 0, w, h, screen, left, top, 0x00CC0020)  # SRCCOPY
-        info = BITMAPINFOHEADER(ctypes.sizeof(BITMAPINFOHEADER), w, -h, 1, 32, 0, 0, 0, 0, 0, 0)
-        buf = (ctypes.c_ubyte * (w * h * 4))()
-        if not gdi32.GetDIBits(mem, bmp, 0, h, buf, ctypes.byref(info), 0):
+        from_window = bool(hwnd and user32.PrintWindow(hwnd, mem, 2))  # PW_RENDERFULLCONTENT
+        if not from_window:
+            if not gdi32.BitBlt(mem, 0, 0, w, h, screen, left, top, 0x00CC0020):  # SRCCOPY
+                return None
+        pixels = bits()
+        if pixels is None:
             return None
-        return np.frombuffer(buf, dtype=np.uint8).reshape(h, w, 4)[:, :, 2::-1].copy()  # BGRA -> RGB
+        # Some GPU-drawn and suspended windows answer PrintWindow with a solid black or white
+        # frame. Sending that to the vision model makes it describe another app or invent one.
+        if from_window and _blank(pixels):
+            # Copying the screen is only a picture of this window while nothing covers it;
+            # behind another window it would be a picture of that other window.
+            if not _on_top_at(user32, hwnd, left, top, w, h):
+                return None
+            if not gdi32.BitBlt(mem, 0, 0, w, h, screen, left, top, 0x00CC0020):
+                return None
+            pixels = bits()
+            if pixels is None or _blank(pixels):
+                return None
+        return pixels
     finally:
         # Windows refuses to free a bitmap that is still selected into a DC, so putting the plain
         # one back is what stops every peek from leaking a screen-sized object.
@@ -328,7 +366,30 @@ def _grab_rect(left: int, top: int, w: int, h: int, hwnd: int | None = None) -> 
         if mem:
             gdi32.DeleteDC(mem)
         if screen:
-            user32.ReleaseDC(None, screen)
+            if borrowed:
+                user32.ReleaseDC(None, screen)
+            else:
+                gdi32.DeleteDC(screen)
+
+
+def _blank(rgb: np.ndarray) -> bool:
+    """A frame with no picture in it: all black, all white, or one flat colour."""
+    step = max(1, max(rgb.shape[:2]) // 64)
+    sample = rgb[::step, ::step]
+    return int(sample.max()) - int(sample.min()) < 6
+
+
+def _on_top_at(user32: Any, hwnd: int, left: int, top: int, w: int, h: int) -> bool:
+    """True when `hwnd` is what the user can see at the middle of its rectangle."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32.WindowFromPoint.argtypes = [wintypes.POINT]
+    user32.WindowFromPoint.restype = wintypes.HWND
+    user32.GetAncestor.argtypes = [wintypes.HWND, wintypes.UINT]
+    user32.GetAncestor.restype = wintypes.HWND
+    at = user32.WindowFromPoint(wintypes.POINT(left + w // 2, top + h // 2))
+    return bool(at) and int(user32.GetAncestor(at, 2)) == int(hwnd)  # GA_ROOT
 
 
 def encode_png(rgb: np.ndarray) -> bytes:
@@ -343,12 +404,13 @@ def encode_png(rgb: np.ndarray) -> bytes:
             + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
 
 
-def look(png: bytes, question: str, key: str, transport: Any = None) -> dict[str, Any]:
+def look(png: bytes, question: str, key: str, transport: Any = None, window: str = "") -> dict[str, Any]:
     """Ask the vision model what's relevant to the question and where it is (0-1000 grid)."""
     import httpx
 
+    called = f" “{window}”" if window else ""
     prompt = (
-        f"The user is looking at this app window and asks: \"{question}\"\n"
+        f"The user is looking at this app window{called} and asks: \"{question}\"\n"
         "1) In one or two sentences, say what app and what state this is, focusing on what matters for the question.\n"
         "2) List up to 8 visible items the user may need, starting with the exact item that answers the question "
         "(the button, menu, panel, tool or object to look at or click), with each item's "
@@ -409,3 +471,89 @@ def merge(snap: dict[str, Any], seen: dict[str, Any], window: tuple[int, int, in
                       "x": round(cx - iw / 2), "y": round(cy - ih / 2), "w": round(iw), "h": round(ih)})
     out["elements"] = items
     return out
+
+
+def _norm_line(text: Any) -> str:
+    return re.sub(r"\s+", " ", str(text or "")).strip().lower()
+
+
+def merge_ocr(snap: dict[str, Any], boxes: dict[str, Any] | None,
+              window: tuple[int, int, int, int], max_items: int = 120) -> dict[str, Any]:
+    """Add the words Windows OCR read from a picture of the window.
+
+    Lines arrive as t1, t2… items in screen pixels, so Compii can point at text it
+    can read but the app never exposed through its controls (Electron, canvas apps,
+    games, remote desktops). The raw text is kept too, for reading and summarising.
+    """
+    if not boxes or not boxes.get("lines"):
+        return snap
+    left, top, w, h = window
+    iw, ih = float(boxes.get("width") or 0), float(boxes.get("height") or 0)
+    if iw <= 0 or ih <= 0 or w <= 0 or h <= 0:
+        return snap
+    sx, sy = w / iw, h / ih
+    out = dict(snap)
+    items = list(snap.get("elements", []))
+    known = {_norm_line(e.get("name")) for e in items if e.get("name")}
+    known |= {_norm_line(e.get("value")) for e in items if e.get("value")}
+    added = 0
+    texts: list[str] = []
+    for line in boxes["lines"]:
+        text = " ".join(str(line.get("text") or "").split())
+        if len(text) < 2:
+            continue
+        texts.append(text)
+        norm = _norm_line(text)
+        if added >= max_items or norm in known:
+            continue
+        known.add(norm)
+        added += 1
+        items.append({
+            "id": f"t{added}", "role": "Text", "src": "ocr", "name": text[:180],
+            "x": round(left + float(line.get("x", 0)) * sx),
+            "y": round(top + float(line.get("y", 0)) * sy),
+            "w": max(8, round(float(line.get("w", 0)) * sx)),
+            "h": max(8, round(float(line.get("h", 0)) * sy)),
+        })
+    out["elements"] = items
+    out["ocr_text"] = "\n".join(texts)[:12000]
+    out["ocr_lines"] = len(texts)
+    return out
+
+
+def locate_text(boxes: dict[str, Any] | None, window: tuple[int, int, int, int],
+                target: str) -> dict[str, Any] | None:
+    """The best OCR match for `target`, in screen pixels: exact word first, then line."""
+    if not boxes or not boxes.get("lines"):
+        return None
+    left, top, w, h = window
+    iw, ih = float(boxes.get("width") or 0), float(boxes.get("height") or 0)
+    if iw <= 0 or ih <= 0 or w <= 0 or h <= 0:
+        return None
+    sx, sy = w / iw, h / ih
+    wanted = _norm_line(target)
+    if not wanted:
+        return None
+    best: tuple[float, dict[str, Any]] | None = None
+    for line in boxes["lines"]:
+        for word in line.get("words") or []:
+            text = _norm_line(word.get("text"))
+            if not text:
+                continue
+            score = 4.0 if text == wanted else (2.0 if wanted in text or text in wanted else 0.0)
+            if not score:
+                continue
+            if best is None or score > best[0]:
+                best = (score, word)
+        text = _norm_line(line.get("text"))
+        if text and (text == wanted or wanted in text):
+            score = 3.0 if text == wanted else 1.0
+            if best is None or score > best[0]:
+                best = (score, line)
+    if best is None:
+        return None
+    box = best[1]
+    x, y = left + float(box.get("x", 0)) * sx, top + float(box.get("y", 0)) * sy
+    bw, bh = max(8.0, float(box.get("w", 0)) * sx), max(8.0, float(box.get("h", 0)) * sy)
+    return {"name": str(box.get("text") or target)[:120], "x": round(x), "y": round(y),
+            "w": round(bw), "h": round(bh)}

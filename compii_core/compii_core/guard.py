@@ -9,12 +9,14 @@
 
 from __future__ import annotations
 
+import ast
 import re
 from typing import Any
 
 # Tools whose output is text from the outside world (files, windows, web pages).
-UNTRUSTED_TOOLS = {"read_file", "search_in_files", "read_window", "browse", "read_page", "recall", "clipboard",
-                   "search_web", "read_web_page", "look_at_screen"}
+UNTRUSTED_TOOLS = {"read_file", "search_in_files", "compare_documents", "ask_my_files", "read_window", "browse",
+                   "read_page", "recall", "clipboard", "search_web", "read_web_page", "look_at_screen",
+                   "reach_platform", "reach_research", "second_opinion", "read_selection"}
 
 # The one rule for "this is a secret": never typed, never stored in the profile, never filled into a form.
 SECRET_FIELD = re.compile(
@@ -57,6 +59,84 @@ _HARD_DELETE = re.compile(
 )
 
 
+def _dotted(node: ast.AST) -> list[str]:
+    """`os.path.rmdir` -> ["os", "path", "rmdir"]; anything computed comes back empty."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
+    if isinstance(node, ast.Name):
+        parts.append(node.id)
+        return list(reversed(parts))
+    return []
+
+
+def _aliases(tree: ast.AST) -> dict[str, str]:
+    """Local names bound to a module: `import os as o` -> {"o": "os"}, so renaming is not an escape."""
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                out[a.asname or a.name.split(".")[0]] = a.name.split(".")[0]
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            for a in node.names:
+                out[a.asname or a.name] = node.module.split(".")[0]
+    return out
+
+
+# Verbs no data-processing script has a use for, matched on the verb alone so that
+# `Path(p).unlink()` and `things[0].unlink()` are caught the same way as `os.unlink(p)`.
+_PY_DELETE = {"unlink", "rmtree", "rmdir", "removedirs"}
+_PY_EXEC = {"system", "popen", "startfile", "spawnv", "spawnl", "execv", "execve", "execvl", "execvp",
+            "kill", "killpg", "terminate"}
+_PY_NEVER_MODULES = {"subprocess", "ctypes", "winreg"}
+_PY_META = {"eval", "exec", "compile", "__import__"}
+
+
+def python_refusal(code: str) -> str | None:
+    """Why this script must not run, or None.
+
+    `run_python` is the one tool a text blocklist cannot police: subprocess.run(["pip","install","x"])
+    never matches `pip\\s+install`, and `getattr(os, "sys" + "tem")` hides from any regex. So this reads
+    the script as syntax and refuses the dangerous verbs themselves instead of their spellings.
+    """
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        return None  # let the interpreter report its own problem
+    names = _aliases(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                root = a.name.split(".")[0]
+                if root in _PY_NEVER_MODULES:
+                    return f"Compii never runs a script that imports {root}."
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in _PY_NEVER_MODULES:
+                return f"Compii never runs a script that imports {node.module.split('.')[0]}."
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id in _PY_META:
+                return "Compii never runs a script that builds code while it runs."
+            if isinstance(node.func, ast.Name) and node.func.id == "getattr":
+                # getattr(os, "sys" + "tem") is how a blocked verb comes back dressed up as allowed.
+                verb = node.args[1] if len(node.args) > 1 else None
+                if not (isinstance(verb, ast.Constant) and isinstance(verb.value, str)):
+                    return "Compii never picks a function to call out of a computed name."
+            parts = _dotted(node.func)
+            if not parts:
+                continue  # a call on something computed, e.g. handlers[k](); the verb is unreadable
+            verb = parts[-1]
+            base = names.get(parts[0], parts[0])
+            if base in _PY_NEVER_MODULES:
+                return f"Compii never runs a script that uses {base}."
+            if verb in _PY_DELETE or (verb == "remove" and base in {"os", "shutil", "pathlib"}):
+                return ("Compii never deletes files from a script. Use move_to_trash so the user can still "
+                        "restore them from the Recycle Bin.")
+            if verb in _PY_EXEC:
+                return "Compii never starts other programs or stops them from a script."
+    return None
+
+
 def blocked_reason(tool: str, args: dict[str, Any]) -> str | None:
     """Why this action is never allowed, or None. Cannot be unlocked by the model."""
     if tool == "press_keys":
@@ -64,11 +144,16 @@ def blocked_reason(tool: str, args: dict[str, Any]) -> str | None:
         for keys, what in _BLOCKED_KEYS.items():
             if combo == keys:
                 return f"Compii never presses {keys} ({what})."
-    if tool == "run_python" and _INSTALL.search(str(args.get("code", ""))):
-        return "Compii never installs software, edits the registry or changes system security or power settings."
-    if tool == "run_python" and _HARD_DELETE.search(str(args.get("code", ""))):
-        return ("Compii never deletes files for good, not even from a script. Use move_to_trash so the user "
-                "can still restore them from the Recycle Bin.")
+    if tool == "run_python":
+        code = str(args.get("code", ""))
+        if _INSTALL.search(code):
+            return "Compii never installs software, edits the registry or changes system security or power settings."
+        if _HARD_DELETE.search(code):
+            return ("Compii never deletes files for good, not even from a script. Use move_to_trash so the user "
+                    "can still restore them from the Recycle Bin.")
+        why = python_refusal(code)
+        if why:
+            return why
     if tool == "open_item":
         target = str(args.get("target", args.get("path", "")))
         if _SECURITY_TARGETS.search(target):

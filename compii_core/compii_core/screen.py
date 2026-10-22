@@ -23,6 +23,7 @@ MAX_WINDOWS = 4
 MAX_READ_LINES = 250
 VALUE_CHARS = 200
 TEXT_CHARS = 600
+SELECTION_CHARS = 3000
 HANDLES_SECONDS = 90.0
 
 # UI Automation pattern ids: the fixed numbers Windows assigns to each thing a control can do.
@@ -102,6 +103,8 @@ class Found:
 
 def how_found(found: Found) -> str:
     """The honest line about where an item came from, for Compii to say out loud."""
+    if found.src == "ocr":
+        return "read from a picture of the window with local OCR, so Compii aimed at the text"
     if found.src == "picture":
         return "spotted in a picture of the screen, so Compii aimed by position"
     if found.value == "hidden":
@@ -116,6 +119,13 @@ def how_found(found: Found) -> str:
 # can crash Python outright (Core vanished with exit code 139).
 _uia_jobs: Any = None
 _uia_lock = threading.Lock()
+# ...but one thread is also one queue: a hung app can block a call for as long as it likes and
+# every read behind it waits on the same stuck thread. So a call gets this long, then Compii says
+# so and moves the queue on. The abandoned thread stays where it is; it never takes new work.
+UIA_TIMEOUT = 20.0
+UIA_RESTARTS = 3
+_uia_stalls = 0
+_uia_stuck = ""
 
 
 def _uia_worker(jobs: Any) -> None:
@@ -130,22 +140,49 @@ def _uia_worker(jobs: Any) -> None:
             done.set_exception(e)
 
 
+def _start_uia_worker() -> Any:
+    """A fresh queue and the thread that works it. Only ever called with `_uia_lock` held."""
+    import queue
+
+    jobs: Any = queue.SimpleQueue()
+    threading.Thread(target=_uia_worker, args=(jobs,), name="compii-uia", daemon=True).start()
+    return jobs
+
+
 def _on_uia_thread(fn: Callable) -> Callable:
     @functools.wraps(fn)
     def run(*args: Any, **kw: Any) -> Any:
-        global _uia_jobs
+        global _uia_jobs, _uia_stalls, _uia_stuck
         if sys.platform != "win32" or threading.current_thread().name == "compii-uia":
             return fn(*args, **kw)
         from concurrent.futures import Future
-        import queue
+        from concurrent.futures import TimeoutError as WaitTimeout
 
+        if _uia_stuck:
+            raise ScreenError(_uia_stuck)
         with _uia_lock:
             if _uia_jobs is None:
-                _uia_jobs = queue.SimpleQueue()
-                threading.Thread(target=_uia_worker, args=(_uia_jobs,), name="compii-uia", daemon=True).start()
+                _uia_jobs = _start_uia_worker()
         done: Future = Future()
         _uia_jobs.put((fn, args, kw, done))
-        return done.result()
+        try:
+            out = done.result(UIA_TIMEOUT)
+        except WaitTimeout:
+            with _uia_lock:
+                _uia_stalls += 1
+                if _uia_stalls <= UIA_RESTARTS:
+                    _uia_jobs = _start_uia_worker()
+                else:
+                    _uia_stuck = (f"Compii has given up reading the screen: {UIA_RESTARTS} apps in a row "
+                                  "stopped answering it. Restart Compii Core to look again.")
+            raise ScreenError(
+                f"Nothing answered from the screen in {int(UIA_TIMEOUT)}s, so the app is probably hung. "
+                "Compii stopped waiting — anything it had just asked that app to do may or may not have "
+                "happened, so check before doing it again."
+            ) from None
+        with _uia_lock:
+            _uia_stalls = 0
+        return out
 
     return run
 
@@ -702,7 +739,7 @@ def what_changed(before: Found | None, after: Found | None, *, typed: str = "",
         return f"the caret is now in “{after.name or after.role}”"
     if after is None:
         return f"“{before.name}” is no longer in the window, so the screen changed"
-    if after.src == "picture":
+    if after.src in ("picture", "ocr"):
         return "it was aimed at by position from a picture, so Compii can't read the result back"
     if typed:
         want = " ".join(typed.split()).lower()
@@ -845,23 +882,42 @@ def describe_snapshot(snap: dict[str, Any]) -> str:
     """The snapshot as compact text for the AI (one line per item)."""
     if snap.get("blocked"):
         return f"The user is in “{snap['title']}”, a password manager or similar; Compii doesn't read it."
-    lines = [f"Window: “{snap['title']}” ({snap.get('app', '')}). Mouse at {snap['cursor'][0]},{snap['cursor'][1]}"
+    # A context can be made of the selection alone when the window itself gave nothing away.
+    cx, cy = (snap.get("cursor") or [0, 0])[:2]
+    lines = [f"Window: “{snap.get('title') or 'the app the user is in'}” ({snap.get('app', '')}). "
+             f"Mouse at {cx},{cy}"
              + (f", over “{snap['under_cursor']}”." if snap.get("under_cursor") else ".")]
+    picked = snap.get("selection") or {}
+    if str(picked.get("text") or "").strip():
+        words = picked.get("words") or len(str(picked["text"]).split())
+        body = str(picked["text"])[:2000] + ("…" if len(str(picked["text"])) > 2000 else "")
+        lines.append(f"The user has {words} {'word' if words == 1 else 'words'} selected in "
+                     f"“{picked.get('window') or snap.get('title') or 'the app the user is in'}”. "
+                     f"When they say “this”, they mean these exact "
+                     f"words — work on them, and quote from them rather than describing them:\n{body}")
     if snap.get("seen"):
         lines.append("What the window shows (from a picture of it): " + snap["seen"]
                      + " Items with ids v1, v2… were found in that picture; point at them by id.")
+    if any(e.get("src") == "ocr" for e in snap.get("elements", [])):
+        lines.append("Items with ids t1, t2… are lines of text read from a picture of the window with local OCR. "
+                     "They are accurate to a few pixels; point at them by id.")
+    elif snap.get("ocr_text"):
+        lines.append("Words read from a picture of the window (local OCR; may contain small mistakes):")
+        lines.append(snap["ocr_text"][:2500] + ("…" if len(snap["ocr_text"]) > 2500 else ""))
     if snap.get("focus"):
         by_id = {e["id"]: e for e in snap["elements"]}
         shown = [f"{i} · {by_id[i]['role']} · {by_id[i]['name']}" for i in snap["focus"] if i in by_id]
         if shown:
             lines.append("While talking, the user circled or moved the mouse over (most likely first; "
                          "\"this\"/\"here\" means these): " + "; ".join(shown))
-    exact = [e for e in snap["elements"] if not e.get("src") == "picture"]
+    items = snap.get("elements") or []
+    exact = [e for e in items if e.get("src") not in ("picture", "ocr")]
     if exact:
         lines.append(f"{len(exact)} item(s) below are read from the app's own controls: labels and values are "
                      "exact, and 'can' is what Compii can really do to them. Use the id (e12) to act on one.")
-    lines.append("Items (id · type · label [= what it holds] [can …]):")
-    for e in snap["elements"]:
+    if items:  # a context can be only the selected words, and then there are no items to list
+        lines.append("Items (id · type · label [= what it holds] [can …]):")
+    for e in items:
         line = f"{e['id']} · {e['role']} · {e['name']}"
         if e.get("value"):
             line += f" = {e['value']}"
@@ -871,6 +927,8 @@ def describe_snapshot(snap: dict[str, Any]) -> str:
             line += f" [can {', '.join(e['can'])}]"
         if e.get("src") == "picture":
             line += " [from the picture, not the control]"
+        elif e.get("src") == "ocr":
+            line += " [read from a picture of the window]"
         lines.append(line)
     if snap.get("truncated"):
         lines.append("… more items not listed.")
@@ -939,6 +997,47 @@ def focused_item() -> dict[str, Any] | None:
             return None
 
 
+@_sighted("screen", then=None)
+@_on_uia_thread
+def selection(limit: int = SELECTION_CHARS) -> dict[str, Any] | None:
+    """What the user has highlighted right now, lifted from the app's own text control.
+
+    Nothing is copied, no keystroke is sent and the clipboard is left alone: UIA is simply
+    asked what its selection holds, which is a read. A password field, a password manager, or
+    an app that keeps its selection to itself answers None.
+    """
+    _need_windows()
+    import uiautomation as auto
+
+    with auto.UIAutomationInitializerInThread():
+        try:
+            control = auto.GetFocusedControl()
+            if control is None:
+                return None
+            top = control.GetTopLevelControl()
+            title = _clean(top.Name) if top else ""
+            try:
+                app = _process_name(control.ProcessId) or (control.ClassName or "").lower()
+            except Exception:  # noqa: BLE001 - the window went away while we asked
+                app = ""
+            if getattr(control, "IsPassword", False) or any(b in app or b in title.lower() for b in BLOCKED_APPS):
+                return None
+            pattern = control.GetPattern(PATTERN_TEXT)
+            if pattern is None:
+                return None
+            parts = []
+            for found in pattern.GetSelection():
+                text = _clean_block(found.GetText(limit))
+                if text and text not in parts:
+                    parts.append(text)
+        except Exception:  # noqa: BLE001 - the app changed its mind about having a selection
+            return None
+    text = "\n\n".join(parts)[:limit].strip()
+    if not text:
+        return None
+    return {"text": text, "words": len(text.split()), "chars": len(text), "window": title, "app": app}
+
+
 @_sighted("screen", then="")
 def foreground_title() -> str:
     import ctypes
@@ -951,8 +1050,51 @@ def foreground_title() -> str:
     return buf.value
 
 
+def _window_visible_now(user32, hwnd: int) -> bool:
+    """True for a window the user can actually see on this desktop right now.
+
+    Minimized windows keep their old place in the z-order (and report a -32000 rect), and
+    windows on another virtual desktop or a suspended UWP app stay "visible" to Windows while
+    being invisible to the person. Either one used to become "the window in front", so Compii
+    read or photographed the wrong app.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32.IsWindowVisible.argtypes = [wintypes.HWND]
+    user32.IsWindowVisible.restype = wintypes.BOOL
+    user32.IsIconic.argtypes = [wintypes.HWND]
+    user32.IsIconic.restype = wintypes.BOOL
+    user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
+    user32.GetWindowRect.restype = wintypes.BOOL
+    user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+    user32.GetSystemMetrics.restype = ctypes.c_int
+    if not user32.IsWindowVisible(hwnd) or user32.IsIconic(hwnd):
+        return False
+    try:
+        dwm = ctypes.windll.dwmapi
+        dwm.DwmGetWindowAttribute.argtypes = [wintypes.HWND, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD]
+        cloaked = wintypes.DWORD()
+        if dwm.DwmGetWindowAttribute(hwnd, 14, ctypes.byref(cloaked), ctypes.sizeof(cloaked)) == 0 and cloaked.value:
+            return False  # another virtual desktop, or a suspended app: not on this screen
+    except (AttributeError, OSError):
+        pass
+    rect = wintypes.RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+        return False
+    w, h = rect.right - rect.left, rect.bottom - rect.top
+    if rect.left <= -30000 or rect.top <= -30000 or w < 80 or h < 60:
+        return False
+    vl, vt = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+    vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+    return rect.right > vl and rect.bottom > vt and rect.left < vl + vw and rect.top < vt + vh
+
+
 def _top_windows(limit: int = 30) -> list[tuple[int, str]]:
-    """Visible top-level windows with titles, front to back. Cheap: no UI Automation."""
+    """Windows the user can see right now, front to back, with their titles.
+
+    Cheap: no UI Automation. Minimized, cloaked and off-screen windows are left out.
+    """
     if sys.platform != "win32":
         return []
     import ctypes
@@ -961,20 +1103,42 @@ def _top_windows(limit: int = 30) -> list[tuple[int, str]]:
     user32 = ctypes.windll.user32
     GW_HWNDNEXT, GWL_EXSTYLE, WS_EX_TOOLWINDOW = 2, -20, 0x80
     user32.GetWindow.restype = wintypes.HWND
+    user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
     user32.GetTopWindow.restype = wintypes.HWND
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+    user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     out: list[tuple[int, str]] = []
     h = user32.GetTopWindow(None)
-    while h and len(out) < limit:
-        if user32.IsWindowVisible(h) and not user32.GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW:
-            n = user32.GetWindowTextLengthW(h)
-            if n:
-                buf = ctypes.create_unicode_buffer(n + 1)
-                user32.GetWindowTextW(h, buf, n + 1)
-                t = buf.value.strip()
-                if t and t not in ("Program Manager", "Windows Input Experience"):
-                    out.append((int(h), t[:120]))
+    for _ in range(500):
+        if not h:
+            break
+        title = ""
+        n = user32.GetWindowTextLengthW(h)
+        if n:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(h, buf, n + 1)
+            title = buf.value.strip()
+        if (title and title not in ("Program Manager", "Windows Input Experience", "Default IME", "MSCTFIME UI")
+                and not user32.GetWindowLongW(h, GWL_EXSTYLE) & WS_EX_TOOLWINDOW
+                and _window_visible_now(user32, h)):
+            out.append((int(h), title[:120]))
+            if len(out) >= limit:
+                break
         h = user32.GetWindow(h, GW_HWNDNEXT)
     return out
+
+
+def find_window(title: str) -> tuple[int, str]:
+    """The visible window whose title contains `title`, front-most first, or (0, "")."""
+    want = title.strip().lower()
+    if not want:
+        return 0, ""
+    for hwnd, shown in _top_windows(60):
+        if want in shown.lower():
+            return hwnd, shown
+    return 0, ""
 
 
 @_sighted("screen", then=(0, ""))
@@ -988,6 +1152,17 @@ def user_foreground() -> tuple[int, str]:
         if "compii" not in title.lower():
             return hwnd, title
     return 0, ""
+
+
+def private_window(hwnd: int, title: str = "") -> bool:
+    """A password manager or similar: never captured, never read, never named."""
+    if sys.platform != "win32":
+        return False
+    import ctypes
+
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(ctypes.c_void_p(hwnd), ctypes.byref(pid))
+    return any(b in f"{_process_name(pid.value)} {title}".lower() for b in BLOCKED_APPS)
 
 
 @_sighted("screen", then=[])

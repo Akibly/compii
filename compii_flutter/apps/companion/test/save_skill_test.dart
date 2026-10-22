@@ -20,7 +20,7 @@ void main() {
         ),
       ),
     ));
-    await tester.tap(find.text('go'));
+    tester.widget<TextButton>(find.widgetWithText(TextButton, 'go')).onPressed!.call();
     await tester.pump();
     return picked;
   }

@@ -99,6 +99,53 @@ void main() {
     await tester.pump(const Duration(seconds: 13));
   });
 
+  testWidgets('a secret step: “Done — carry on” beside the cursor, and Compii never sees what is typed', (tester) async {
+    const size = Size(900, 520);
+    tester.view.physicalSize = size;
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final events = StreamController<Map<String, dynamic>>.broadcast();
+    var mouse = const Offset(300, 200);
+    final finished = <(String, String)>[];
+    final through = <bool>[];
+    await tester.pumpWidget(MediaQuery(
+      data: const MediaQueryData(size: size, disableAnimations: true),
+      child: Directionality(
+        textDirection: TextDirection.ltr,
+        child: BuddyLayer(
+          events: events.stream,
+          cursor: () async => mouse,
+          onTakeover: (id, outcome) async => finished.add((id, outcome)),
+          setClickThrough: (t) async => through.add(t),
+        ),
+      ),
+    ));
+    await tester.pump(const Duration(milliseconds: 50));
+    events.add({
+      'type': 'voice_buddy', 'state': 'needs_you', 'takeover_id': 'k1',
+      'text': 'Type your password in Microsoft Edge.',
+    });
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(find.text('Type your password in Microsoft Edge.'), findsOneWidget);
+    expect(find.text('Done — carry on'), findsOneWidget);
+    expect(find.text('Skip'), findsOneWidget);
+    expect(find.text('Only you type it — Compii never sees or keeps it.'), findsOneWidget);
+    expect(through, isEmpty);
+
+    mouse = tester.getCenter(find.text('Done — carry on'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
+    expect(through, [false]);
+
+    await tester.tap(find.text('Done — carry on'));
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(finished, [('k1', 'done')]);
+    expect(through.last, true);
+    expect(find.text('Done — carry on'), findsNothing);
+    await tester.pump(const Duration(seconds: 13));
+  });
+
   testWidgets('hold Ctrl+Alt and drag to draw: the overlay takes the mouse only while you talk', (tester) async {
     const size = Size(900, 520);
     tester.view.physicalSize = size;

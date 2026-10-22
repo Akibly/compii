@@ -66,4 +66,15 @@ void main() {
     expect(find.byType(TextField), findsOneWidget);
     expect(find.text('Set up free voice'), findsOneWidget);
   });
+
+  testWidgets('the paperclip only appears where files can be sent', (tester) async {
+    final (core, state) = _setup(canListen: false);
+    await tester.pumpWidget(_app(VoiceDock(core: core, state: state, onSend: (_) async {})));
+    expect(find.byTooltip('Attach files'), findsNothing);
+
+    await tester.pumpWidget(_app(VoiceDock(core: core, state: state, onSend: (_) async {},
+        onSendFiles: (_, _) async {})));
+    await tester.pump();
+    expect(find.byTooltip('Attach files'), findsOneWidget);
+  });
 }

@@ -81,17 +81,16 @@ class _PhonesSettingsState extends State<PhonesSettings> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Phones', style: context.type.titleLarge),
-        const SizedBox(height: 4),
-        Text(
-          _info?['anywhere'] == true
+        SectionHeader(
+          'Phones',
+          top: 0,
+          subtitle: _info?['anywhere'] == true
               ? 'Talk to Compii, see your screen, follow its work and approve actions from your phone, at home or away '
                   '(Tailscale is on). The connection is encrypted and only phones you pair here can use it.'
               : 'Talk to Compii, see your screen, follow its work and approve actions from your phone, on the same Wi-Fi. '
                   'Install Tailscale on this PC and the phone to use it from anywhere. Only phones you pair here can use it.',
-          style: context.type.bodySmall,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Container(
           decoration: Shapes.panel(c),
           clipBehavior: Clip.antiAlias,
@@ -209,7 +208,7 @@ class _PairDialogState extends State<PairDialog> {
                     opacity: expired ? .25 : 1,
                     child: Container(
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(16)),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: Shapes.r16),
                       child: QrImageView(
                         data: '${widget.invite['link']}',
                         size: 220,

@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../console/core_client.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
+import 'reader.dart';
 import 'shell.dart';
 import 'thread.dart' show Run;
 import 'tokens.dart';
@@ -16,15 +17,18 @@ import 'voice.dart';
 /// Start typing anywhere (or press the keyboard button) and a slim text box
 /// appears; Esc goes back to voice.
 class VoiceDock extends StatefulWidget {
-  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true, this.showCaptions = true});
+  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.onSendFiles, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true, this.showCaptions = true});
   final CoreClient core;
   final AppState state;
   final Future<void> Function(String text) onSend;
+
+  /// When set, the text box gains a paperclip and picked files travel with the message.
+  final Future<void> Function(String text, List<String> files)? onSendFiles;
   final TaskView? task;
   final Run? run;
   final String hint;
 
-  /// Show the Orbling as the talk button here (off when it's already on screen, like on Home).
+  /// Show the Ember as the talk button here (off when it's already on screen, like on Home).
   final bool showCharacter;
 
   /// Show what Compii is saying (off where a speech bubble already shows it).
@@ -94,6 +98,7 @@ class _VoiceDockState extends State<VoiceDock> {
               busyTask: widget.task,
               run: widget.run,
               seed: _seed,
+              onSendFiles: widget.onSendFiles,
               onSend: (t) async {
                 await widget.onSend(t);
                 if (canTalk && mounted) setState(() => _typing = false);
@@ -140,22 +145,37 @@ class _VoiceBar extends StatelessWidget {
     final pending = task?.pendingApproval ?? core.ordered.map((t) => t.pendingApproval).whereType<Map<String, dynamic>>().firstOrNull;
     final asked = task?.pendingQuestion ?? core.ordered.map((t) => t.pendingQuestion).whereType<Map<String, dynamic>>().firstOrNull;
     final working = task?.active == true && pending == null && asked == null;
+    final stage = _Stage(voice: voice, pending: pending, asked: asked, showCaptions: showCaptions);
+    // Reduced motion: a zero-duration AnimatedSize re-dirties itself while laying
+    // out (a Flutter assertion); draw the stage directly instead.
+    final grow = context.motion(Motion.base);
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        AnimatedSize(
-          duration: const Duration(milliseconds: 200),
-          alignment: Alignment.bottomCenter,
-          child: _Stage(voice: voice, pending: pending, asked: asked, showCaptions: showCaptions),
-        ),
+        if (grow == Duration.zero)
+          stage
+        else
+          AnimatedSize(
+            duration: grow,
+            alignment: Alignment.bottomCenter,
+            child: stage,
+          ),
         const SizedBox(height: 12),
         Row(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             _SideButton(glyph: G.keyboard, tooltip: 'Type instead (or just start typing)', onTap: onType),
+            if (voice.lastAnswer.isNotEmpty) ...[
+              const SizedBox(width: 8),
+              _SideButton(
+                glyph: G.doc,
+                tooltip: 'Read the last answer in full',
+                onTap: () => showAnswerReader(context, text: voice.lastAnswer, title: 'Last answer'),
+              ),
+            ],
             const SizedBox(width: 16),
             if (showCharacter)
-              TalkableOrbling(voice: voice, mood: state.moodWith(core), jobs: working ? 1 : 0, size: 76)
+              TalkableCompii(voice: voice, mood: state.moodWith(core), jobs: working ? 1 : 0, size: 76)
             else
               Flexible(child: _Hint(voice: voice)),
             const SizedBox(width: 16),
@@ -215,7 +235,21 @@ class _Stage extends StatelessWidget {
       return line(text, color, glyph: glyph, big: false);
     }
     if (showCaptions && voice.showCaption) {
-      return line(voice.caption, c.text, glyph: G.speakingHead, big: false);
+      final long = voice.caption.length > 180 || voice.caption.contains('\n');
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          line(voice.caption, c.text, glyph: G.speakingHead, big: false),
+          if (long) ...[
+            const SizedBox(height: 2),
+            TextButton.icon(
+              onPressed: () => showAnswerReader(context, text: voice.caption),
+              icon: const Glyph(G.doc, size: 15),
+              label: const Text('Read all'),
+            ),
+          ],
+        ],
+      );
     }
     if (asked != null) {
       return Column(
@@ -238,7 +272,7 @@ class _Stage extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
         decoration: BoxDecoration(
           color: c.warning.withValues(alpha: c.dark ? .14 : .10),
-          borderRadius: BorderRadius.circular(30),
+          borderRadius: Shapes.pill,
           border: Border.all(color: c.warning.withValues(alpha: .35)),
         ),
         child: Row(
@@ -258,25 +292,49 @@ class _Stage extends StatelessWidget {
   }
 }
 
-class _SideButton extends StatelessWidget {
+class _SideButton extends StatefulWidget {
   const _SideButton({required this.glyph, required this.tooltip, required this.onTap, this.color});
   final GlyphData glyph;
   final String tooltip;
   final VoidCallback onTap;
   final Color? color;
+
+  @override
+  State<_SideButton> createState() => _SideButtonState();
+}
+
+class _SideButtonState extends State<_SideButton> {
+  bool _over = false;
   @override
   Widget build(BuildContext context) {
     final c = context.c;
     return Tooltip(
-      message: tooltip,
-      child: Material(
-        color: c.raised,
-        shape: CircleBorder(side: BorderSide(color: c.border)),
-        elevation: 0,
-        child: InkWell(
-          customBorder: const CircleBorder(),
-          onTap: onTap,
-          child: SizedBox.square(dimension: 44, child: Center(child: Glyph(glyph, size: 19, color: color ?? c.muted))),
+      message: widget.tooltip,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _over = true),
+        onExit: (_) => setState(() => _over = false),
+        child: AnimatedContainer(
+          duration: context.motion(Motion.quick),
+          curve: Motion.standard,
+          decoration: BoxDecoration(
+            color: _over ? c.hover : c.raised,
+            shape: BoxShape.circle,
+            border: Border.all(color: _over ? c.borderStrong : c.border),
+            boxShadow: _over ? Shapes.lift(c) : Shapes.card(c),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            shape: const CircleBorder(),
+            child: InkWell(
+              customBorder: const CircleBorder(),
+              onTap: widget.onTap,
+              child: SizedBox.square(
+                dimension: 44,
+                child: Center(child: Glyph(widget.glyph, size: 19, color: widget.color ?? c.muted)),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -320,7 +378,7 @@ class _SetupVoiceHint extends StatelessWidget {
         children: [
           Glyph(G.mic, size: 15, color: c.accent),
           const SizedBox(width: 6),
-          Text('Compii is built for talking.', style: context.type.labelMedium),
+          Flexible(child: Text('Compii is built for talking.', style: context.type.labelMedium)),
           TextButton(onPressed: onSetup, child: const Text('Set up free voice')),
         ],
       ),
@@ -369,28 +427,34 @@ class _SayChipState extends State<_SayChip> {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    return MouseRegion(
-      cursor: widget.onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 140),
-          padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
-          decoration: BoxDecoration(
-            color: _hover ? c.accentSoft : c.raised,
-            borderRadius: BorderRadius.circular(30),
-            border: Border.all(color: _hover ? c.accent.withValues(alpha: .4) : c.border),
-            boxShadow: Shapes.card(c),
-          ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Glyph(widget.glyph, size: 15, color: c.accent, duo: _hover),
-              const SizedBox(width: 7),
-              Text('“${widget.text}”', style: context.type.labelLarge?.copyWith(color: _hover ? c.accent : c.text, fontWeight: FontWeight.w500)),
-            ],
+    return Keyable(
+      label: 'Say “${widget.text}”',
+      onTap: widget.onTap,
+      child: MouseRegion(
+        cursor: widget.onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            curve: Motion.standard,
+            padding: const EdgeInsets.symmetric(horizontal: 13, vertical: 8),
+            decoration: BoxDecoration(
+              color: _hover ? c.accentSoft : c.raised,
+              borderRadius: Shapes.pill,
+              border: Border.all(color: _hover ? c.accent.withValues(alpha: .4) : c.border),
+              boxShadow: _hover ? Shapes.lift(c) : null,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Glyph(widget.glyph, size: 15, color: c.accent, duo: _hover),
+                const SizedBox(width: 7),
+                Text('“${widget.text}”', style: context.type.labelLarge?.copyWith(color: _hover ? c.accent : c.text, fontWeight: FontWeight.w500)),
+              ],
+            ),
           ),
         ),
       ),
