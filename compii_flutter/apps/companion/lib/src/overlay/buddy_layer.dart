@@ -13,8 +13,10 @@ import 'package:flutter/material.dart';
 /// happening, and dims further once your hand is off the mouse. Nothing spins — a
 /// badge that turns in front of text is unreadable, so work is shown by one growing
 /// arc and a single pulse per step. Hold Ctrl+Alt and it listens (cyan ripples and a
-/// tiny sound-wave), thinks, then answers in a small dark-glass label while Compii
-/// speaks. When Compii points at something, it glides to a spot clear of the item and
+/// tiny sound-wave), thinks, then answers. The badge itself never leaves the pointer;
+/// anything worth reading opens instead as a dark-glass card at the top of the screen,
+/// in the corner away from the cursor, while Compii speaks. When Compii points at
+/// something, the badge glides to a spot clear of the item and
 /// its lit side, comet tail and a tapered beam all aim at the exact spot.
 class BuddyLayer extends StatefulWidget {
   const BuddyLayer({
@@ -112,11 +114,6 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   double _clock = 0; // fixed-step seconds, for breathing and hover
   bool _still =
       false; // reduced motion: a steady moon beside the pointer, no circling
-
-  /// How far the badge has travelled from the pointer's shoulder into Compii's corner:
-  /// 0 rides the cursor, 1 is parked in the corner. It glides between the two rather
-  /// than appearing there, so you can follow where Compii went.
-  double _glide = 0;
 
   bool _asking = false;
 
@@ -260,36 +257,19 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     return _center + Offset(_flipX ? -lead : lead, _flipY ? -drop : drop);
   }
 
-  /// Compii's own place on screen: bottom right, clear of the taskbar and of whatever
-  /// you are looking at. It lives there while it is working or has words for you,
-  /// so nothing it does can cover your work.
-  Offset _dock(Size screen) => Offset(
-    math.max(48.0, screen.width - 68),
-    math.max(96.0, screen.height - 84),
-  );
+  /// The badge never leaves the pointer. What leaves the pointer is Compii's *words*:
+  /// the busy state and every answer open as a card in a top corner (_cardLeft), so a
+  /// long reply cannot trail across the text you are reading, and the small mark that
+  /// says "Compii is here" stays exactly where your attention already is.
 
-  /// Where the badge belongs: the pointer's shoulder while it is free, its corner once
-  /// Compii is busy. `_glide` is how far into that move it has got, so it travels there
-  /// instead of appearing there.
-  Offset _home(Size screen) => Offset.lerp(
-    _anchor(screen),
-    _dock(screen),
-    Curves.easeInOutCubic.transform(_glide),
-  )!;
-
-  /// Busy, or saying something: it stops riding the cursor. Only an idle mark, or a
-  /// turn where you are the one talking, stays by the pointer.
-  bool get _docked => switch (state) {
-    'thinking' ||
-    'watching' ||
-    'answer' ||
-    'note' ||
-    'selected' ||
-    'needs_you' ||
-    'setup' ||
-    'error' => true,
-    _ => false,
-  };
+  /// Which top corner Compii's card takes: the one furthest from the pointer, so the
+  /// answer lands beside empty desktop rather than over the sentence you are looking
+  /// at. Top because the taskbar owns the bottom.
+  ///
+  /// Latched while a card is on screen: one that hops to the other side because you
+  /// moved the mouse is worse than one that started on the wrong side.
+  bool _cardOnLeft = false;
+  bool _cardShown = false;
 
   /// The docked card that needs room to be read: Compii's answer, the text lifted from
   /// another app, a question with buttons. These open as a panel in the corner instead
@@ -339,7 +319,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     if (c == null) return;
     if (!_haveCenter) {
       _center = c;
-      _pos = _home(MediaQuery.sizeOf(context));
+      _pos = _anchor(MediaQuery.sizeOf(context));
       _haveCenter = true;
       // The first pointer fix turns the overlay from empty into the moon.
       setState(() {});
@@ -354,20 +334,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     }
     _catchClicksOverCard(c);
 
-    // Leaving the cursor for the corner, or back again, is a move you can watch:
-    // about a third of a second, whichever way it goes.
-    final toCorner = _docked ? 1.0 : 0.0;
-    if (_glide != toCorner) {
-      if (_still) {
-        _glide = toCorner;
-      } else {
-        final step = (1 / 60) / .34;
-        _glide = toCorner > _glide
-            ? math.min(1, _glide + step)
-            : math.max(0, _glide - step);
-      }
-    }
-    final rest = _home(MediaQuery.sizeOf(context));
+    final rest = _anchor(MediaQuery.sizeOf(context));
     final target = _target;
     Offset next;
     var aim = 0.0;
@@ -905,6 +872,11 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     };
     final showLabel = line.isNotEmpty || listening || thinking || watching;
     final roomy = _roomy && _target == null;
+    if (roomy != _cardShown) {
+      _cardShown = roomy;
+      if (roomy) _cardOnLeft = _center.dx > screen.width * .5;
+    }
+    final onLeft = _cardOnLeft;
     final body = TextStyle(
       color: muted ? const Color(0xB3FFFFFF) : const Color(0xF2FFFFFF),
       fontSize: 13,
@@ -914,8 +886,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
       decoration: TextDecoration.none,
       fontFamily: 'Segoe UI Variable Text',
     );
-    // A docked panel holds paragraphs, so it is wide, and shows as many lines as the
-    // corner has room for instead of eight lines and a shrug.
+    // A corner panel holds paragraphs, so it is wide, and shows as many lines as the
+    // top of the screen has room for instead of eight lines and a shrug.
     final panelWidth = (roomy ? 430.0 : 290.0) - 24;
     final panelLines = ((screen.height * .52 - 40) / 18.5).floor().clamp(6, 40);
     final cutOff =
@@ -1101,13 +1073,15 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                         ),
                         if (label != null)
                           if (roomy)
-                            // Compii's card opens in its corner, above its own light, in
-                            // the same place every time — never over what you are reading.
-                            // A question you have to answer takes the click itself; a
-                            // card you are reading closes when you tap it.
+                            // Compii's card opens at the top of the screen, in the corner
+                            // away from your pointer — never over what you are reading, and
+                            // never where the taskbar is. A question you have to answer
+                            // takes the click itself; a card you are reading closes when
+                            // you tap it.
                             Positioned(
-                              right: 18,
-                              bottom: 122,
+                              left: onLeft ? 18 : null,
+                              right: onLeft ? null : 18,
+                              top: 18,
                               child: asking
                                   ? label
                                   : Semantics(

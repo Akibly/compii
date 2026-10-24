@@ -6,7 +6,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from compii_core.agent import Agent, BrainReply
+from compii_core.agent import Agent, BrainReply, Task
 from compii_core.journal import Journal
 from compii_core.keys import MemoryKeyStore
 from compii_core.ledger import Ledger, estimate, usage_tool
@@ -108,7 +108,8 @@ def test_a_step_is_counted_against_the_brain_that_answered(toolbox, tmp_path):
     led = Ledger(tmp_path / "usage.jsonl")
     agent = Agent(Groq(), toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
     agent.ledger = led
-    agent._count(BrainReply([], "hi", [], "end_turn", {"prompt": 120, "completion": 34}),
+    task = Task("t1", "count this step")
+    agent._count(task, BrainReply([], "hi", [], "end_turn", {"prompt": 120, "completion": 34}),
                  "system words", [{"role": "user", "content": "hello"}], time.monotonic() - 0.5)
     row = led.entries()[0]
     assert row["provider"] == "groq" and row["model"] == "openai/gpt-oss-20b"
@@ -116,13 +117,13 @@ def test_a_step_is_counted_against_the_brain_that_answered(toolbox, tmp_path):
     assert row["ms"] >= 400
 
     # A provider that reports nothing: count the payload and mark it an estimate.
-    agent._count(BrainReply([], "a" * 400, [], "end_turn"), "s" * 800,
+    agent._count(task, BrainReply([], "a" * 400, [], "end_turn"), "s" * 800,
                  [{"role": "user", "content": "t" * 800}], time.monotonic())
     second = led.entries()[1]
     assert second["est"] is True and second["prompt"] > 300 and second["completion"] == 100
 
     agent.ledger = None  # no ledger: counting is simply not done, and nothing breaks
-    agent._count(BrainReply([], "x", [], "end_turn"), "", [], time.monotonic())
+    agent._count(task, BrainReply([], "x", [], "end_turn"), "", [], time.monotonic())
 
 
 def test_a_refusal_is_recorded_as_a_failed_step(toolbox, tmp_path):
@@ -135,7 +136,7 @@ def test_a_refusal_is_recorded_as_a_failed_step(toolbox, tmp_path):
     led = Ledger(tmp_path / "usage.jsonl")
     agent = Agent(Silent(), toolbox, Policy(), Journal(tmp_path / "j.jsonl"), lambda e: asyncio.sleep(0))
     agent.ledger = led
-    agent._count(BrainReply([], "", [], "refusal"), "", [], time.monotonic())
+    agent._count(Task("t2", "refuse this step"), BrainReply([], "", [], "refusal"), "", [], time.monotonic())
     assert led.entries()[0]["ok"] is False
 
 

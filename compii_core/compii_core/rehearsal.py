@@ -7,12 +7,18 @@ canned reply. The app labels this mode clearly as a rehearsal.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
 from .agent import BrainReply, ToolCall
 
 PLAN = ["Find last month's invoices", "Build the spreadsheet", "Check it", "Email it to you"]
+
+# What a step came back with is data from outside, so it arrives in the envelope that says
+# so — the same one a real model is shown, so the rehearsal is not reading a friendlier Core
+# than the app ever gets. The script wants the payload inside it.
+_ENVELOPE = re.compile(r'<untrusted_data source="[^"]*">\n(.*)\n</untrusted_data>', re.S)
 
 
 class RehearsalBrain:
@@ -73,5 +79,7 @@ class RehearsalBrain:
 def _last_result(messages: list[dict[str, Any]]) -> str:
     for block in messages[-1]["content"]:
         if isinstance(block, dict) and block.get("type") == "tool_result":
-            return block["content"]
+            text = str(block["content"])
+            inside = _ENVELOPE.search(text)
+            return inside.group(1) if inside else text
     return "{}"

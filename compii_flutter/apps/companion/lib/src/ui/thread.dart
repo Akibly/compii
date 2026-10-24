@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../console/character.dart';
 import '../console/core_client.dart';
@@ -23,7 +26,9 @@ class Turn {
   final List<Map<String, dynamic>> files = [];
   final List<Map<String, dynamic>> sources = []; // web pages Compii actually read for this answer
   final List<Map<String, dynamic>> approvals = [];
-  final Set<String> resolved = {};
+  // Decided approvals by id, and whether the user said yes: a declined action has to leave a
+  // visible mark, not vanish as though it was never asked.
+  final Map<String, bool> resolved = {};
   final List<Map<String, dynamic>> questions = [];
   final Set<String> answered = {};
   final List<Map<String, dynamic>> takeovers = []; // secret steps waiting for the user's own hands
@@ -37,15 +42,23 @@ class Turn {
   final Map<String, Map<String, dynamic>> hiringResolved = {}; // proposal id -> hired/declined
   final List<Map<String, dynamic>> screens = []; // what Compii actually looked at
   final List<Map<String, dynamic>> safety = []; // blocked, injection, redacted, rule used
+  // What Compii was given to answer this turn from: each piece says where it came from and
+  // when it was read, so the list can be seen whole and one source struck off this chat.
+  Map<String, dynamic>? context;
   List<Map<String, dynamic>>? plan;
   String? reply;
   String? draft; // words still being written, before the answer is finished
   String status = 'running';
   double? endedAt;
 
+  /// Which teammate actually spoke this exchange. Core stamps the current speaker on
+  /// every event, so a handoff mid-turn moves it: without this the thread would say
+  /// Compii answered when a specialist did.
+  String? botId;
+
   bool get active => status == 'running' || status == 'waiting';
   Map<String, dynamic>? get pending => active
-      ? approvals.where((a) => !resolved.contains(a['approval_id'])).lastOrNull
+      ? approvals.where((a) => !resolved.containsKey(a['approval_id'])).lastOrNull
       : null;
   Map<String, dynamic>? get pendingQuestion => active
       ? questions.where((q) => !answered.contains(q['question_id'])).lastOrNull
@@ -61,6 +74,12 @@ class Turn {
   List<Map<String, dynamic>> get finished => steps.where((s) => s['type'] == 'action_done').toList();
 }
 
+/// The teammate a event was emitted by, if it names one.
+String? _speakerOf(Map<String, dynamic> e) {
+  final id = e['bot_id'];
+  return id is String && id.isNotEmpty ? id : null;
+}
+
 /// Rebuilds the conversation from Core's event stream.
 List<Turn> turnsOf(TaskView task) {
   final turns = <Turn>[];
@@ -68,23 +87,33 @@ List<Turn> turnsOf(TaskView task) {
     final at = (e['at'] as num?)?.toDouble() ?? 0;
     switch (e['type']) {
       case 'task_started':
-        turns.add(Turn(task.request, at));
+        turns.add(Turn(task.request, at)..botId = _speakerOf(e) ?? task.botId);
         _filesOf(e, turns.last);
-      case 'user_message':
-        turns.add(Turn(e['text'] as String, at));
+      case 'user_message' || 'retry':
+        // A retry is Compii answering the same ask again, so the thread shows the ask
+        // once more with a fresh answer under it — not a new request from the user.
+        final asked = '${e['text'] ?? ''}'.trim();
+        turns.add(Turn(asked.isEmpty ? task.request : asked, at)..botId = _speakerOf(e) ?? task.botId);
         _filesOf(e, turns.last);
       default:
-        if (turns.isEmpty) turns.add(Turn(task.request, at));
+        if (turns.isEmpty) turns.add(Turn(task.request, at)..botId = task.botId);
         final t = turns.last;
+        t.botId = _speakerOf(e) ?? t.botId;
         switch (e['type']) {
           case 'answer_delta':
             final words = (e['text'] as String? ?? '').trim();
             t.draft = words.isEmpty ? null : words;
           case 'note':
-            t.notes.add(e['text'] as String);
+            final note = '${e['text'] ?? ''}'.trim();
+            if (note.isNotEmpty) t.notes.add(note);
             t.draft = null;
           case 'plan':
-            t.plan = [for (final s in e['steps'] as List) Map<String, dynamic>.from(s as Map)];
+            final steps = e['steps'];
+            t.plan = [
+              if (steps is List)
+                for (final s in steps)
+                  if (s is Map) Map<String, dynamic>.from(s),
+            ];
           case 'action_started':
             t.draft = null;
             if (e['tool'] != 'update_plan') t.steps.add(e);
@@ -96,25 +125,27 @@ List<Turn> turnsOf(TaskView task) {
             t.files.add(e);
           case 'sources':
             for (final s in (e['items'] as List? ?? const [])) {
-              t.sources.add(Map<String, dynamic>.from(s as Map));
+              if (s is Map) t.sources.add(Map<String, dynamic>.from(s));
             }
+          case 'context':
+            t.context = e;
           case 'action_blocked' || 'injection_warning' || 'redacted' || 'rule_used':
             t.safety.add(e);
           case 'approval_needed':
             t.draft = null;
             t.approvals.add(e);
           case 'approval_resolved':
-            t.resolved.add(e['approval_id'] as String);
+            t.resolved['${e['approval_id'] ?? ''}'] = e['approved'] == true;
           case 'question':
             t.draft = null;
             t.questions.add(e);
           case 'question_answered':
-            t.answered.add(e['question_id'] as String);
+            t.answered.add('${e['question_id'] ?? ''}');
           case 'takeover':
             t.draft = null;
             t.takeovers.add(e);
           case 'takeover_done':
-            t.handedBack.add(e['takeover_id'] as String);
+            t.handedBack.add('${e['takeover_id'] ?? ''}');
           case 'handoff':
             t.handoffs.add(e);
           case 'delegation':
@@ -136,8 +167,8 @@ List<Turn> turnsOf(TaskView task) {
             t.screens.add(e);
           case 'task_finished':
             t.draft = null;
-            t.reply = e['text'] as String?;
-            t.status = e['status'] as String;
+            t.reply = e['text'] is String ? e['text'] as String : null;
+            if (e['status'] is String) t.status = e['status'] as String;
             t.endedAt = at;
         }
     }
@@ -179,6 +210,9 @@ class ThreadView extends StatelessWidget {
       itemCount: turns.length,
       itemBuilder: (context, i) {
         final turn = turns[turns.length - 1 - i];
+        // Only the newest exchange can be answered again or edited: everything
+        // before it is history that other answers already depend on.
+        final last = i == 0 && !task.active;
         return Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
@@ -187,10 +221,16 @@ class ThreadView extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  _UserBubble(text: turn.ask, files: turn.attachments),
+                  _UserBubble(
+                    text: turn.ask,
+                    files: turn.attachments,
+                    onResend: last
+                        ? (text) => run(() => core.reply(task.id, text))
+                        : null,
+                  ),
                   const SizedBox(height: 14),
                   _AssistantTurn(turn: turn, task: task, core: core, run: run, compact: compact,
-                      onOpenTask: onOpenTask),
+                      latest: last, onOpenTask: onOpenTask),
                 ],
               ),
             ),
@@ -201,10 +241,14 @@ class ThreadView extends StatelessWidget {
   }
 }
 
-class _UserBubble extends StatelessWidget {
-  const _UserBubble({required this.text, this.files = const []});
+class _UserBubble extends StatefulWidget {
+  const _UserBubble({required this.text, this.files = const [], this.onResend});
   final String text;
   final List<Map<String, dynamic>> files;
+
+  /// Send these words into the conversation as a new message. Null on a turn the
+  /// user can't edit (an older ask, or while Compii is still working).
+  final void Function(String text)? onResend;
 
   static String _size(int bytes) {
     if (bytes < 1024) return '$bytes B';
@@ -213,75 +257,175 @@ class _UserBubble extends StatelessWidget {
   }
 
   @override
+  State<_UserBubble> createState() => _UserBubbleState();
+}
+
+class _UserBubbleState extends State<_UserBubble> {
+  final _text = TextEditingController();
+  bool _editing = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _text.addListener(_changed);
+  }
+
+  void _changed() {
+    if (_editing) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _text.removeListener(_changed);
+    _text.dispose();
+    super.dispose();
+  }
+
+  void _edit() {
+    _text.text = widget.text;
+    _text.selection = TextSelection.collapsed(offset: _text.text.length);
+    setState(() => _editing = true);
+  }
+
+  void _send() {
+    final t = _text.text.trim();
+    if (t.isEmpty) return;
+    setState(() => _editing = false);
+    widget.onResend?.call(t);
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = context.c;
+    final files = widget.files;
     return Align(
       alignment: Alignment.centerRight,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 560),
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
-          decoration: BoxDecoration(
-            color: c.userBubble,
-            borderRadius: Shapes.r18.copyWith(bottomRight: const Radius.circular(6)),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SelectableText(text, style: context.type.bodyLarge?.copyWith(color: c.onBubble)),
-              if (files.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Wrap(
-                  alignment: WrapAlignment.end,
-                  spacing: 6,
-                  runSpacing: 5,
-                  children: [
-                    for (final f in files)
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                        decoration: BoxDecoration(
-                          color: c.onBubble.withValues(alpha: .08),
-                          borderRadius: Shapes.r8,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+              decoration: BoxDecoration(
+                color: c.userBubble,
+                borderRadius: Shapes.r18.copyWith(bottomRight: const Radius.circular(6)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.end,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (_editing)
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(minHeight: 28),
+                          child: TextField(
+                            key: const Key('edit-ask'),
+                            controller: _text,
+                            autofocus: true,
+                            minLines: 1,
+                            maxLines: 8,
+                            textInputAction: TextInputAction.send,
+                            onSubmitted: (_) => _send(),
+                            style: context.type.bodyLarge?.copyWith(color: c.onBubble),
+                            cursorColor: c.accent,
+                          ),
                         ),
-                        child: Row(
+                        const SizedBox(height: 2),
+                        Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Glyph(G.file, size: 12, color: c.onBubble.withValues(alpha: .75)),
-                            const SizedBox(width: 5),
-                            ConstrainedBox(
-                              constraints: const BoxConstraints(maxWidth: 220),
-                              child: Text('${f['name'] ?? 'file'}', maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: context.type.labelSmall?.copyWith(color: c.onBubble)),
+                            Text('Goes in as a new message.',
+                                style: context.type.labelSmall?.copyWith(color: c.onBubble.withValues(alpha: .6))),
+                            const SizedBox(width: 6),
+                            TextButton(
+                              onPressed: () => setState(() => _editing = false),
+                              child: const Text('Cancel'),
                             ),
-                            if (f['size'] is num) ...[
-                              const SizedBox(width: 4),
-                              Text(_size((f['size'] as num).toInt()),
-                                  style: context.type.labelSmall?.copyWith(color: c.onBubble.withValues(alpha: .6))),
-                            ],
+                            TextButton.icon(
+                              key: const Key('resend-ask'),
+                              onPressed: _text.text.trim().isEmpty ? null : _send,
+                              icon: const Glyph(G.send, size: 15),
+                              label: const Text('Send'),
+                            ),
                           ],
                         ),
-                      ),
+                      ],
+                    )
+                  else
+                    SelectableText(widget.text, style: context.type.bodyLarge?.copyWith(color: c.onBubble)),
+                  if (files.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Wrap(
+                      alignment: WrapAlignment.end,
+                      spacing: 6,
+                      runSpacing: 5,
+                      children: [
+                        for (final f in files)
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: c.onBubble.withValues(alpha: .08),
+                              borderRadius: Shapes.r8,
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Glyph(G.file, size: 12, color: c.onBubble.withValues(alpha: .75)),
+                                const SizedBox(width: 5),
+                                ConstrainedBox(
+                                  constraints: const BoxConstraints(maxWidth: 220),
+                                  child: Text('${f['name'] ?? 'file'}', maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: context.type.labelSmall?.copyWith(color: c.onBubble)),
+                                ),
+                                if (f['size'] is num) ...[
+                                  const SizedBox(width: 4),
+                                  Text(_UserBubble._size((f['size'] as num).toInt()),
+                                      style: context.type.labelSmall?.copyWith(color: c.onBubble.withValues(alpha: .6))),
+                                ],
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
                   ],
-                ),
-              ],
-            ],
-          ),
+                ],
+              ),
+            ),
+            if (widget.onResend != null && !_editing)
+              TextButton.icon(
+                key: const Key('edit-ask-button'),
+                onPressed: _edit,
+                icon: const Glyph(G.edit, size: 14),
+                label: const Text('Edit'),
+              ),
+          ],
         ),
       ),
     );
   }
 }
 
+/// A link in Compii's own words opens the way a source under the answer does:
+/// through Core, so the same rules cover what the model cites and what it read.
+OpenLink? _openLink(CoreClient core, Run run) => (url) => run(() => core.openUrl(url));
+
 class _AssistantTurn extends StatelessWidget {
   const _AssistantTurn({required this.turn, required this.task, required this.core, required this.run, required this.compact,
-    this.onOpenTask});
+    required this.latest, this.onOpenTask});
   final Turn turn;
   final TaskView task;
   final CoreClient core;
   final Run run;
   final bool compact;
+
+  /// The newest exchange: the one the user can have answered again.
+  final bool latest;
   final void Function(String taskId)? onOpenTask;
 
   Mood get _mood => switch (turn.status) {
@@ -296,18 +440,39 @@ class _AssistantTurn extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final pending = turn.pending;
+    final speaker = core.botFor(turn.botId);
+    // Compii keeps its own animated face; a teammate wears its own character, so
+    // the conversation shows who actually answered.
+    final specialist = speaker != null && !speaker.primary;
+    final handedOver = specialist && turn.handoffs.isNotEmpty;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         SizedBox.square(
           dimension: 34,
-          child: Ember(mood: _mood, jobs: turn.active ? 1 : 0, animate: turn.active),
+          child: specialist
+              ? BotAvatar(bot: speaker, size: 34, mood: _mood, animate: turn.active)
+              : Ember(mood: _mood, jobs: turn.active ? 1 : 0, animate: turn.active),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              if (handedOver)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 6),
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(speaker.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: context.type.labelMedium?.copyWith(color: botColor(speaker, c.accent))),
+                      ),
+                      const SizedBox(width: 6),
+                      Text('took this over', style: context.type.labelMedium?.copyWith(color: c.faint)),
+                    ],
+                  ),
+                ),
               if (turn.plan != null && compact) PlanList(steps: turn.plan!, dense: true),
               for (final s in turn.screens) _ScreenSeen(event: s),
               if (turn.steps.isNotEmpty || turn.active) StepLedger(turn: turn),
@@ -325,6 +490,7 @@ class _AssistantTurn extends StatelessWidget {
                     review: turn.reviews['${d['job_id']}'],
                     attempt: (turn.resumes['${d['job_id']}']?['attempt'] as num?)?.toInt() ?? 1,
                     core: core,
+                    run: run,
                     onOpen: onOpenTask,
                   ),
                 ),
@@ -343,6 +509,14 @@ class _AssistantTurn extends StatelessWidget {
                 const SizedBox(height: 10),
                 ApprovalCard(approval: pending, core: core, run: run),
               ],
+              // A no is an outcome too: the action is off, and the thread keeps that on screen
+              // instead of leaving a gap where the card used to be.
+              for (final a in turn.approvals)
+                if (turn.resolved[a['approval_id']] == false)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: _DeclinedNote(approval: a),
+                  ),
               if (turn.pendingTakeover != null) ...[
                 const SizedBox(height: 10),
                 TakeoverCard(event: turn.pendingTakeover!, core: core, run: run),
@@ -358,6 +532,7 @@ class _AssistantTurn extends StatelessWidget {
                   style: context.type.bodyLarge?.copyWith(
                     color: turn.status == 'failed' ? c.danger : null,
                   ),
+                  onOpen: _openLink(core, run),
                 ),
                 if (turn.reply!.length > 900)
                   Align(
@@ -366,8 +541,9 @@ class _AssistantTurn extends StatelessWidget {
                       onPressed: () => showAnswerReader(
                         context,
                         text: turn.reply!,
-                        title: 'Compii’s answer',
+                        title: specialist ? speaker.name : 'Compii’s answer',
                         subtitle: turn.ask.length > 90 ? '${turn.ask.substring(0, 90)}…' : turn.ask,
+                        onOpen: _openLink(core, run),
                       ),
                       icon: const Glyph(G.doc, size: 15),
                       label: const Text('Read in reader'),
@@ -375,7 +551,7 @@ class _AssistantTurn extends StatelessWidget {
                   ),
               ] else if (turn.active && turn.draft != null) ...[
                 const SizedBox(height: 8),
-                ReplyText(turn.draft!, style: context.type.bodyLarge),
+                ReplyText(turn.draft!, style: context.type.bodyLarge, onOpen: _openLink(core, run)),
                 const SizedBox(height: 6),
                 SizedBox(width: 64, child: LinearProgressIndicator(minHeight: 2, color: c.accent)),
               ] else if (turn.active && turn.notes.isNotEmpty && pending == null) ...[
@@ -390,10 +566,88 @@ class _AssistantTurn extends StatelessWidget {
                 const SizedBox(height: 10),
                 SourcesRow(sources: turn.sources, core: core, run: run),
               ],
+              if (!turn.active && turn.context != null) ...[
+                const SizedBox(height: 10),
+                ContextRow(turn: turn, task: task, core: core),
+              ],
+              if (latest && turn.reply != null) ...[
+                const SizedBox(height: 4),
+                TurnActions(turn: turn, task: task, core: core, run: run),
+              ],
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+/// What to do with an answer once it is on screen: take the words away, or have
+/// Compii answer the same ask again. "Again" is a real second turn over the same
+/// history — the earlier answer stays in the thread exactly as it was said.
+class TurnActions extends StatefulWidget {
+  const TurnActions({super.key, required this.turn, required this.task, required this.core, required this.run});
+  final Turn turn;
+  final TaskView task;
+  final CoreClient core;
+  final Run run;
+
+  @override
+  State<TurnActions> createState() => _TurnActionsState();
+}
+
+class _TurnActionsState extends State<TurnActions> {
+  Timer? _returned;
+  bool _copied = false;
+
+  @override
+  void dispose() {
+    _returned?.cancel();
+    super.dispose();
+  }
+
+  void _sayCopied() {
+    setState(() => _copied = true);
+    _returned?.cancel();
+    _returned = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _copied = false);
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final words = widget.turn.reply ?? '';
+    final again = switch (widget.turn.status) {
+      'failed' || 'stopped' => 'Try again',
+      _ => 'Again',
+    };
+    return Align(
+      alignment: Alignment.centerLeft,
+      // Wraps rather than clips: at large type or in a narrow island the two
+      // actions sit on separate lines instead of losing one off the edge.
+      child: Wrap(
+        spacing: 2,
+        runSpacing: 2,
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          TextButton.icon(
+            key: const Key('copy-answer'),
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: words));
+              if (mounted) _sayCopied();
+            },
+            icon: Glyph(_copied ? G.check : G.copy, size: 15, color: _copied ? c.success : null),
+            label: Text(_copied ? 'Copied' : 'Copy'),
+          ),
+          TextButton.icon(
+            key: const Key('answer-again'),
+            onPressed: () => widget.run(() => widget.core.answerAgain(widget.task.id)),
+            icon: const Glyph(G.sync, size: 15),
+            label: Text(again),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -580,6 +834,49 @@ class _KindBadge extends StatelessWidget {
   }
 }
 
+/// What the thread shows after the user said no. The card is gone, but the decision and its
+/// consequence stay: nothing ran, and Compii was told not to try it again.
+class _DeclinedNote extends StatelessWidget {
+  const _DeclinedNote({required this.approval});
+  final Map<String, dynamic> approval;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final label = '${approval['label'] ?? 'That action'}';
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 11),
+      decoration: BoxDecoration(
+        color: c.raised,
+        borderRadius: Shapes.r12,
+        border: Border.all(color: c.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          GlyphTile(glyph: G.block, size: 26, color: c.muted),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('You declined',
+                    style: context.type.labelLarge?.copyWith(color: c.muted, fontWeight: FontWeight.w600)),
+                const SizedBox(height: 2),
+                Text(label, style: context.type.bodySmall),
+                const SizedBox(height: 3),
+                Text('Nothing was done, and Compii was told not to retry it. If you still want it, say how to go ahead.',
+                    style: context.type.bodySmall?.copyWith(color: c.faint)),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Risk colours for approval tiers.
 (Color, Color) tierColors(BuildContext context, String kind) {
   final c = context.c;
@@ -623,8 +920,12 @@ class ApprovalCard extends StatelessWidget {
     final c = context.c;
     final kind = '${approval['kind']}';
     final (fg, bg) = tierColors(context, kind);
-    final id = approval['approval_id'] as String;
-    final input = Map<String, dynamic>.from(approval['input'] as Map);
+    final id = '${approval['approval_id'] ?? ''}';
+    // Events arrive from JSON, and this card is the only way to answer one. A
+    // missing field must not blank the thread, so both casts tolerate absence.
+    final input = approval['input'] is Map
+        ? Map<String, dynamic>.from(approval['input'] as Map)
+        : const <String, dynamic>{};
     final destructive = kind == 'delete' || kind == 'spend';
     final fields = input.entries.where((e) => e.key != 'code' && e.key != 'content' && e.value != null).toList();
     final body = input['code'] ?? input['content'];
@@ -733,7 +1034,8 @@ class ApprovalCard extends StatelessWidget {
                                 children: [
                                   SizedBox(
                                     width: 96,
-                                    child: Text(_fieldName(f.key), style: context.type.bodySmall),
+                                    child: Text(_fieldName(f.key),
+                                        maxLines: 2, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
                                   ),
                                   Expanded(child: _FieldValue(name: f.key, value: f.value)),
                                 ],
@@ -1216,6 +1518,188 @@ class SourcesRow extends StatelessWidget {
             ),
           ),
       ],
+    );
+  }
+}
+
+/// What Compii attached to this answer, and what the user can do about any of it.
+///
+/// Every item says where it came from, when it was read and which permission made that
+/// possible. Striking one off keeps it out of this conversation from then on — Core holds
+/// the refusal, so it cannot come back on a later message.
+class ContextRow extends StatelessWidget {
+  const ContextRow({super.key, required this.turn, required this.task, required this.core});
+  final Turn turn;
+  final TaskView task;
+  final CoreClient core;
+
+  static List<Map<String, dynamic>> _maps(Object? v) =>
+      [for (final m in (v as List? ?? const [])) Map<String, dynamic>.from(m as Map)];
+
+  static String _ago(num at) {
+    final s = DateTime.now().millisecondsSinceEpoch / 1000 - at;
+    if (s < 60) return 'read just now';
+    if (s < 3600) return 'read ${s ~/ 60} min ago';
+    if (s < 86400) return 'read ${s ~/ 3600} h ago';
+    return 'read ${s ~/ 86400} d ago';
+  }
+
+  static GlyphData _glyph(String kind) => switch (kind) {
+        'instruction' => G.skill,
+        'observation' => G.monitor,
+        'memory' => G.memory,
+        'claim' => G.team,
+        _ => G.eye,
+      };
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final gave = turn.context!;
+    final items = _maps(gave['items']);
+    final off = core.withheld[task.id] ?? {};
+    final live = items.where((i) => !off.contains(i['id'])).length;
+    final missed = _maps(gave['unavailable']);
+    final aside = <String>[
+      if (missed.isNotEmpty) '${missed.length} could not be read',
+      if (((gave['trimmed'] as num?) ?? 0) > 0) '${gave['trimmed']} did not fit',
+      if (((gave['expired'] as num?) ?? 0) > 0) '${gave['expired']} had gone stale',
+      if (((gave['duplicated'] as num?) ?? 0) > 0) '${gave['duplicated']} were repeats',
+    ];
+    return Wrap(
+      spacing: 8,
+      runSpacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Text('Compii used', style: context.type.labelMedium?.copyWith(color: c.muted)),
+        ActionChip(
+          avatar: Glyph(live == 0 ? G.eyeOff : G.eye, size: 14),
+          label: Text(
+            '${live == items.length ? '$live thing${live == 1 ? '' : 's'}' : '$live of ${items.length} thing${items.length == 1 ? '' : 's'}'}'
+            ' it could see${aside.isEmpty ? '' : ' · ${aside.join(' · ')}'}',
+            style: context.type.labelMedium,
+          ),
+          onPressed: () => _open(context),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _open(BuildContext context) => showDialog<void>(
+        context: context,
+        builder: (context) {
+          final c = context.c;
+          final gave = turn.context!;
+          final items = _maps(gave['items']);
+          final missed = _maps(gave['unavailable']);
+          final refused = (gave['refused'] as List? ?? const []).length;
+          return StatefulBuilder(
+            builder: (context, set) => AlertDialog(
+              constraints: const BoxConstraints(maxWidth: 560, maxHeight: 520),
+              title: const Text('What Compii could see'),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('This is the whole list it was answered with. Strike one off and it stays out '
+                        'of this chat.', style: context.type.bodySmall?.copyWith(color: c.muted)),
+                    const SizedBox(height: 12),
+                    for (final item in items)
+                      _ContextLine(
+                        item: item,
+                        off: (core.withheld[task.id] ?? {}).contains(item['id']),
+                        onToggle: () => set(() => core.withhold(task.id, '${item['id']}',
+                            !(core.withheld[task.id] ?? {}).contains(item['id']))),
+                      ),
+                    for (final m in missed)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Row(
+                          children: [
+                            Glyph(G.warning, size: 15, color: c.warning),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text('Could not use ${m['source']}: ${m['why']}',
+                                  style: context.type.bodySmall?.copyWith(color: c.warning)),
+                            ),
+                          ],
+                        ),
+                      ),
+                    if (refused > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 8),
+                        child: Text('$refused item(s) you struck off were left out of this answer.',
+                            style: context.type.bodySmall?.copyWith(color: c.muted)),
+                      ),
+                  ],
+                ),
+              ),
+              actions: [TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Done'))],
+            ),
+          );
+        },
+      );
+}
+
+class _ContextLine extends StatelessWidget {
+  const _ContextLine({required this.item, required this.off, required this.onToggle});
+  final Map<String, dynamic> item;
+  final bool off;
+  final VoidCallback onToggle;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final scope = '${item['scope']}';
+    final sensitive = '${item['sensitivity']}' != 'normal' ? ' · ${item['sensitivity']}' : '';
+    final expiresIn = item['expires_in'];
+    final age = expiresIn is num && expiresIn > 0
+        ? 'true for ${expiresIn ~/ 60}s more'
+        : ContextRow._ago(((item['at'] as num?) ?? 0).toDouble());
+    final why = '${item['why']}';
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 2),
+            child: Glyph(ContextRow._glyph('${item['kind']}'), size: 15, color: off ? c.muted : c.accent),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${item['label']}',
+                    style: context.type.bodyMedium
+                        ?.copyWith(color: off ? c.muted : null, decoration: off ? TextDecoration.lineThrough : null)),
+                Text('${item['source']} · ${item['kind']} · $age$sensitive'
+                    '${scope.isEmpty ? '' : ' · allowed by $scope'}',
+                    style: context.type.bodySmall?.copyWith(color: c.muted)),
+                if (why.isNotEmpty && why != 'null')
+                  Text(why, style: context.type.bodySmall?.copyWith(color: c.muted)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Tooltip(
+            message: off ? 'Use this again in this chat' : 'Do not use this in this chat again',
+            child: TextButton(
+              onPressed: onToggle,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Glyph(off ? G.eyeOff : G.eye, size: 14, color: off ? c.warning : c.muted),
+                  const SizedBox(width: 5),
+                  Text(off ? 'Left out' : 'Leave out', style: context.type.labelMedium),
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

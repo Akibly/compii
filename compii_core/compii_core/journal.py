@@ -162,4 +162,13 @@ class Journal:
                 return
             tmp = self.path.with_name(f"{self.path.name}.{os.getpid()}.tmp")
             tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
-            os.replace(tmp, self.path)
+            # Windows can refuse the swap for a moment when a scanner, the indexer or a
+            # just-closed reader still holds the journal; retry instead of losing the mark.
+            for attempt in range(5):
+                try:
+                    os.replace(tmp, self.path)
+                    break
+                except PermissionError:
+                    if attempt == 4:
+                        raise
+                    time.sleep(0.02)

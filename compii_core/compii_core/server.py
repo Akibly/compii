@@ -14,8 +14,10 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from . import __version__, catalog
@@ -40,6 +42,7 @@ from .skills import Skills, draft as draft_skill, from_task, skill_tools, sugges
 from .walkthrough import Walkthroughs
 from . import intents
 from .buddy import Buddy
+from .context import ContextBundle
 from .journal import Journal
 from .policy import ActionKind, Autonomy, Policy
 from .screen import desktop_now, make_dpi_aware
@@ -82,6 +85,8 @@ class NewTask(BaseModel):
     team: list[str] = []
     # Files already on this PC that the user attached to the message.
     attachments: list[str] = []
+    # Context items the user struck off before sending (ids from GET /context).
+    context_off: list[str] = []
 
 
 class BotNew(BaseModel):
@@ -93,6 +98,8 @@ class BotNew(BaseModel):
     template: str = ""
     mode: str = ""
     tools: list[str] | None = None
+    provider: str = ""
+    model: str = ""
 
 
 class BotEdit(BaseModel):
@@ -102,9 +109,12 @@ class BotEdit(BaseModel):
     color: str | None = None
     avatar: str | None = None
     pinned: bool | None = None
+    archived: bool | None = None
     trust: str | None = None
     mode: str | None = None
     tools: list[str] | None = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class HireBody(BaseModel):
@@ -138,6 +148,20 @@ class ClaimBody(BaseModel):
 class Reply(BaseModel):
     text: str
     attachments: list[str] = []
+    context_off: list[str] = []
+
+
+class Transfer(BaseModel):
+    """Hand a conversation to another teammate; `note` is what the user says as they pass it over."""
+    bot_id: str
+    note: str = ""
+
+
+class UiShow(BaseModel):
+    """Another Compii surface asking the workspace to show something: a conversation,
+    or a page of the app by name when the news it is pointing at has no thread."""
+    task_id: str = ""
+    section: str = ""
 
 
 class Choice(BaseModel):
@@ -475,7 +499,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if origin and "watch" in origin:
             # AI watches run quietly; only a "YES" becomes an update.
             if event["type"] == "task_finished":
-                await _finish_ai_watch(origin["watch"], event.get("text", ""))
+                await _finish_ai_watch(origin["watch"], event.get("text", ""), task.id)
             return
         if origin and "routine" in origin:
             if event["type"] == "task_finished":
@@ -504,13 +528,15 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                 ask = str(event.get("question", ""))
                 voice.say(ask, spoken=spoken_reply(ask, sentences=2, longest=160))
 
-    async def _finish_ai_watch(watch_id: str, text: str) -> None:
+    async def _finish_ai_watch(watch_id: str, text: str, task_id: str = "") -> None:
         w = plans.watches.get(watch_id)
         first = text.strip().splitlines()[0] if text.strip() else ""
         if w and first.upper().startswith("YES"):
             w.last_triggered = pro._now().isoformat()
             plans.save()
-            await post(pro.Update("watch", w.title, first[3:].lstrip(" :—-") or "It happened."))
+            # The thread it came from travels with the news: a surface that is already
+            # watching that conversation can tell you once instead of twice.
+            await post(pro.Update("watch", w.title, first[3:].lstrip(" :—-") or "It happened.", task_id=task_id))
 
     def _write_journal() -> dict[str, Any] | None:
         """Write yesterday's record from the live stores, then index it so ask_my_files can search it."""
@@ -550,6 +576,14 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                                speak=False)
         for r in plans.due_routines(now):
             bot = bots.get(r.bot_id) if r.bot_id else None
+            if bot is not None and bot.archived:
+                # The user put this teammate away, so its errand does not run under their name.
+                # The slot is still spent: a skipped run must not be re-announced every tick.
+                plans.mark_ran(r, now, None)
+                await post(pro.Update("routine", r.title,
+                                      f"{bot.name} is archived, so this did not run. Bring {bot.name} back, "
+                                      "or give the routine to someone else."), speak=False)
+                continue
             task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title, "bot": r.bot_id or ""},
                                bot_id=bot.id if bot else None)
             plans.mark_ran(r, now, task.id)
@@ -618,6 +652,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return prov.FallbackBrain(main, backup, fell_back) if backup else main
 
     audit = AuditLog(workspace / "audit" / "audit.jsonl")
+    # Re-hashed at startup, not on demand: a safety log that is only checked when
+    # someone opens the page can be edited for as long as nobody looks.
+    audit_state: dict[str, Any] = {"checked": False}
     ledger = Ledger(workspace / "usage.jsonl")  # what each answer cost, kept on this PC only
     if voice is not None:
         voice.ledger = ledger  # a heard request is counted as audio seconds
@@ -633,13 +670,52 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     # An AI that gave up mid-job is a Settings problem, not just a lost message: say so on the card.
     agent.on_brain_error = lambda why: brain_state.update(problem=f"Your AI stopped answering: {why}")
 
-    def roster() -> list[dict[str, Any]]:
-        """Everyone Compii can hand work to, with their live workload and track record."""
+    # Which AI each teammate answers with. A bot with no choice of its own uses Compii's, so the
+    # team is untouched until the user names a model — and a choice that can't be built is shown
+    # as a problem on that teammate's page instead of being quietly swapped for another one.
+    bot_brains = prov.BotBrains(keys)
+    bot_brain_problems: dict[str, str] = {}
+
+    def bot_ai(view: dict[str, Any] | None) -> tuple[Any | None, str]:
+        """(the AI this teammate answers with, why it can't). Under a test or rehearsal brain the
+        shared one always answers and no model that isn't speaking is ever named."""
+        if fixed_brain:
+            return None, ""
+        return bot_brains.resolve(view)
+
+    def brain_of_bot(bot_id: str | None) -> Any:
+        brain, problem = bot_ai(agent.bot_info(bot_id) if bot_id else None)
+        if problem:
+            bot_brain_problems[bot_id or ""] = problem
+        else:
+            bot_brain_problems.pop(bot_id or "", None)
+        return brain
+
+    agent.brain_for = brain_of_bot
+
+    def brain_label(brain: Any) -> str:
+        """`provider · model` for the AI that actually answers, or nothing when it can't be named."""
+        if brain is None or isinstance(brain, prov.MissingBrain):
+            return ""
+        return " · ".join([p for p in (str(getattr(brain, "provider", "") or ""),
+                                       str(getattr(brain, "model", "") or "")) if p])
+
+    def roster(*, active_only: bool = True) -> list[dict[str, Any]]:
+        """Everyone on the team, with their live workload and track record.
+
+        With `active_only` an archived teammate is left out — this is the list Compii reads, and a
+        put-away role must not offer itself as someone to delegate to, mention or hire a duplicate
+        of. The app asks for the full list: a conversation with an archived teammate still has to
+        say who answered it."""
         out = []
         for view in bots.view():
+            if active_only and view.get("archived"):
+                continue
             working = [t for t in agent.tasks.values()
                        if t.bot_id == view["id"] and t.status in ("running", "waiting")]
-            out.append({**view, "stats": supervisor.stats(view["id"]),
+            brain, problem = bot_ai(view)
+            out.append({**view, "stats": supervisor.stats(view["id"]), "answers_with": brain_label(brain or agent.brain),
+                        "model_note": problem,
                         "working": [{"id": t.id, "title": t.request[:90], "status": t.status}
                                     for t in working[:3]]})
         return out
@@ -723,14 +799,31 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     # answer "not installed" are noise in the model's hands.
     outlook_tools_list = outlook.outlook_tools() if outlook.installed() else []
 
-    def known_facts() -> str:
-        facts = [m["fact"] for m in toolbox.memories()][-25:]
-        return ("What you've learned about the user (from remember; use recall for older ones):\n"
-                + "\n".join(f"- {f}" for f in facts)) if facts else ""
+    def context_items() -> ContextBundle:
+        """Everything Compii attaches before the user has said anything, one item at a time.
 
-    agent.extra_context = lambda: "\n".join(
-        c for c in (known_facts(), profile.context(), projects.context(), skills.context(), lessons.context(),
-                    clips.snippets.context()) if c)
+        Each piece says where it came from and which permission made it possible, so the app
+        can show the list and the user can strike one off without losing the rest.
+        """
+        bundle = ContextBundle()
+        for m in toolbox.memories()[-25:]:
+            bundle.add_text("remembered", str(m["fact"]), kind="memory", scope="memory",
+                            sensitivity="personal", at=float(m.get("at") or time.time()),
+                            why="Compii learned this earlier and saved it on this PC")
+        for source, text, kind, scope, sensitivity, why in (
+                ("profile", profile.context(), "memory", "profile", "personal", "You filled this in under You"),
+                ("projects", projects.context(), "memory", "projects", "personal", "Your projects on this PC"),
+                ("snippets", clips.snippets.context(), "memory", "clips", "personal",
+                 "Saved from your screen, so Compii could reuse the words"),
+                ("skills", skills.context(), "instruction", "skills", "normal",
+                 "Installed or taught to Compii as a way of working"),
+                ("lessons", lessons.context(), "instruction", "lessons", "normal",
+                 "Recorded from your own demonstrations")):
+            if text:
+                bundle.add_text(source, text, kind=kind, scope=scope, sensitivity=sensitivity, why=why)
+        return bundle
+
+    agent.context_sources = context_items
     agent.ambient = desktop_now
     for t in [*skill_tools(skills, toolbox), *lesson_tools(lessons), *profile_form_tools(profile, lambda: toolbox.browser),
               *project_tools(projects), *lead_tools(workspace, toolbox.path), *outlook_tools_list,
@@ -767,6 +860,13 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         timeline.start()
         clips.start()
         voice.warm_up()
+        # Check the safety log's chain before anything else can be claimed from it,
+        # and keep the verdict for /health so the app can say so out loud.
+        audit_state.update(audit.verify())
+        audit_state["checked"] = True
+        if not audit_state.get("ok"):
+            audit.record("audit_chain_broken", broken_at=audit_state.get("broken_at"),
+                         why=str(audit_state.get("why", "")))
         ticker = asyncio.create_task(loop())
         # Asked in the background, so the first task of the day knows whether this AI can call tools
         # at all, instead of finding out by describing work it will never do.
@@ -790,6 +890,27 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             toolbox._browser.close()
 
     app = FastAPI(title="Compii Core", version=__version__, lifespan=lifespan)
+
+    # Core binds 127.0.0.1 with one token, and every web page open on this PC can send
+    # requests to it. Compii's own apps never add an Origin header; a browser always
+    # does and cannot be told to stop, so that is the line: a page is not the app, even
+    # one that guessed the token. Same-origin is allowed back (it is this port's own
+    # page), everything else is refused before any route runs.
+    _rejected = {"at": 0.0}
+
+    @app.middleware("http")
+    async def reject_strangers(request: Request, call_next):  # noqa: ANN001
+        origin = (request.headers.get("origin") or "").strip()
+        site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        same_host = bool(origin) and urlparse(origin).netloc == (request.headers.get("host") or "")
+        if (origin and not same_host) or site == "cross-site":
+            if time.time() - _rejected["at"] > 60:  # one line per minute, not one per retry
+                _rejected["at"] = time.time()
+                audit.record("api_rejected", origin=origin[:80], site=site[:20], path=request.url.path[:80])
+            return JSONResponse({"detail": "Compii's API answers the Compii app on this PC, not a web page."},
+                                status_code=403)
+        return await call_next(request)
+
     app.state.lessons = lessons
     app.state.library = library
     app.state.knowledge = knowledge
@@ -835,8 +956,11 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     def task_view(t: Any) -> dict[str, Any]:
         return {"id": t.id, "request": t.request, "status": t.status, "created": t.created, "events": t.events,
-                "origin": t.origin, "bot_id": t.bot_id, "team": t.team, "parent_id": t.parent_id,
-                "job": t.supervised, "probation": t.probation}
+                "origin": t.origin, "bot_id": t.bot_id, "owner_id": t.owner_id or t.bot_id, "team": t.team,
+                "parent_id": t.parent_id, "job": t.supervised, "probation": t.probation,
+                # Which AI is answering, named from the brain itself, so the app never claims a
+                # model the thread isn't using. Empty when there is nothing to name yet.
+                "answers_with": brain_label(agent.brain_of(t))}
 
     def _attached(paths: list[str]) -> list[str]:
         """Files the app attached: real files Compii is allowed to read, in order, once each."""
@@ -859,7 +983,11 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return {"ok": True, "version": __version__, "brain": "rehearsal" if mode == "rehearsal" else mode,
                 "credentials": "found" if fixed_brain or (not brain_state["problem"] and (has_key or mode != "claude"))
                 else "not_found",
-                "lockdown": agent.gate.lockdown, "proactive_error": ticker_state["error"], "sight": sight.status()}
+                "lockdown": agent.gate.lockdown, "proactive_error": ticker_state["error"], "sight": sight.status(),
+                # Re-hashed when Core started: the safety log is only worth trusting if the
+                # chain still holds, and the app can say so without opening the audit page.
+                "audit": {"ok": bool(audit_state.get("ok", True)), "count": int(audit_state.get("count", 0)),
+                          "broken_at": audit_state.get("broken_at"), "why": str(audit_state.get("why") or "")}}
 
     # ---- diagnostics: a report you can save and send ----
 
@@ -963,6 +1091,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         except KeyStoreError as e:
             raise HTTPException(400, str(e)) from e
         audit.record("key_saved", name=name)
+        bot_brains.reset()  # a teammate's own AI was built with the key that used to be there
         if not fixed_brain:
             agent.brain = make_current_brain()
             await probe_now()  # a pasted placeholder key must fail here, not in the user's first task
@@ -974,6 +1103,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(404, "Unknown key")
         keys.delete(name)
         audit.record("key_removed", name=name)
+        bot_brains.reset()
         if not fixed_brain:
             agent.brain = make_current_brain()
         return brain_view()
@@ -1099,10 +1229,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return library.view()
 
     @app.get("/library/catalog", dependencies=[Depends(auth)])
-    def search_catalog(q: str = "", kind: str = "") -> dict[str, Any]:
+    def search_catalog(q: str = "", kind: str = "", refresh: bool = False) -> dict[str, Any]:
         """What the public catalogues call the skills and remote servers Compii could learn."""
         try:
-            return catalog.search(q, library=library, kind=kind)
+            return catalog.search(q, library=library, kind=kind, fresh=refresh)
         except LibraryError as e:
             raise HTTPException(400, str(e)) from e
 
@@ -1377,6 +1507,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(400, "Empty request")
         team = [b.id for i in body.team if (b := bots.get(i)) is not None]
         team = list(dict.fromkeys(team))  # keep who spoke first first
+        away = [b for i in team if (b := bots.get(i)) is not None and b.archived]
+        if away:
+            raise HTTPException(409, f"{away[0].name} is archived. Bring them back before putting them on a team.")
         if len(team) > 6:
             raise HTTPException(400, "A team chat fits at most 6 bots.")
         if len(team) < 2:
@@ -1386,9 +1519,19 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             bot = bots.get(team[0])
         if bot is None:
             raise HTTPException(400, "No such bot")
+        if bot.archived:
+            # Its old conversations stay open to the user; starting a new one with a teammate
+            # they put away is not what "archived" means. Bring it back first, from the directory.
+            raise HTTPException(409, f"{bot.name} is archived. Bring them back before asking for anything new.")
         screen = await asyncio.to_thread(screen_for, request)
         return task_view(agent.start(voice.annotate(request), bot_id=bot.id, team=team, attachments=files,
-                                     screen=screen))
+                                     screen=screen, context_off=body.context_off))
+
+    @app.get("/context", dependencies=[Depends(auth)])
+    async def context_preview() -> dict[str, Any]:
+        """What the next message would be answered with - where each piece came from, when it
+        was read and how long it stays true - so the user can strike one off before sending."""
+        return await agent.preview_context()
 
     @app.get("/tasks", dependencies=[Depends(auth)])
     def list_tasks() -> list[dict[str, Any]]:
@@ -1402,11 +1545,74 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(400, "Empty message")
         try:
             screen = await asyncio.to_thread(screen_for, text)
-            return task_view(agent.reply(task_id, voice.annotate(text), attachments=files, screen=screen))
+            return task_view(agent.reply(task_id, voice.annotate(text), attachments=files, screen=screen,
+                                         context_off=body.context_off))
         except KeyError as e:
             raise HTTPException(404, "No such conversation") from e
         except RuntimeError as e:
             raise HTTPException(409, str(e)) from e
+
+    @app.post("/tasks/{task_id}/again", dependencies=[Depends(auth)])
+    async def answer_again(task_id: str) -> dict[str, Any]:
+        """Answer the same ask again. The earlier answer stays in the thread as it was said;
+        this starts a fresh turn over the same history."""
+        try:
+            return task_view(agent.again(task_id))
+        except KeyError as e:
+            raise HTTPException(404, "No such conversation") from e
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+
+    @app.post("/tasks/{task_id}/transfer", dependencies=[Depends(auth)])
+    def transfer_task(task_id: str, body: Transfer) -> dict[str, Any]:
+        """Move a conversation to another teammate because the user said so. The thread, the
+        files it touched and what was already established come with it, and the answer that
+        follows is spoken by them, not by Compii."""
+        try:
+            target = bots.get(body.bot_id)
+            if target is not None and target.archived:
+                raise RuntimeError(f"{target.name} is archived. Bring them back before handing them this thread.")
+            task, event = agent.transfer(task_id, body.bot_id, body.note)
+        except KeyError as e:
+            raise HTTPException(404, "No such conversation or teammate") from e
+        except RuntimeError as e:
+            raise HTTPException(409, str(e)) from e
+        hub.emit_threadsafe(event)
+        schedule_save()
+        audit.record("conversation_transferred", task=task.id, to=task.bot_id)
+        return task_view(task)
+
+    @app.delete("/tasks/{task_id}", dependencies=[Depends(auth)])
+    def drop_conversation(task_id: str) -> dict[str, Any]:
+        """Forget a conversation for good. It leaves the live set and the archive at once,
+        so it does not reappear after a restart. A thread still working or still waiting for
+        an answer has to be stopped first — an answer in mid-sentence is never thrown away.
+
+        Jobs this conversation delegated are left alone: they are another teammate's work,
+        and one of them may still be running.
+        """
+        task = agent.tasks.get(task_id)
+        if task is None:
+            raise HTTPException(404, "No such conversation")
+        if task.status in ("running", "waiting"):
+            raise HTTPException(409, "Compii is still working on this; stop it first.")
+        agent.tasks.pop(task_id)
+        save_conversations()
+        hub.emit_threadsafe({"type": "task_dropped", "task_id": task_id, "at": time.time()})
+        audit.record("conversation_deleted", task=task_id)
+        return {"ok": True, "id": task_id}
+
+    @app.post("/ui/show", dependencies=[Depends(auth)])
+    async def ui_show(body: UiShow) -> dict[str, Any]:
+        """Relay "show this" to every open Compii window.
+
+        The island uses this when you send a thread to the full workspace, and when a
+        routine, watch or the daily brief left something with no conversation of its
+        own to open. Core only carries the request, so each window decides how to
+        present it.
+        """
+        await hub.emit({"type": "ui_show", "task_id": body.task_id, "section": body.section, "at": time.time()})
+        return {"ok": True}
 
     @app.get("/search", dependencies=[Depends(auth)])
     def search(q: str = "", limit: int = 5) -> dict[str, Any]:
@@ -1428,7 +1634,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     def bots_view() -> dict[str, Any]:
         primary = bots.primary()
-        return {"bots": roster(), "templates": TEMPLATES, "packs": packs_view(),
+        return {"bots": roster(active_only=False), "templates": TEMPLATES, "packs": packs_view(),
                 "primary": primary.id if primary else None}
 
     def changed_bots() -> dict[str, Any]:
@@ -1439,12 +1645,22 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         return bots_view()
 
     def _bot_owner(bot_id: str | None) -> str | None:
-        """A routine's owner must be a bot that exists; empty means Compii."""
+        """A routine's owner must be a bot that exists and is on the team; empty means Compii."""
         if not bot_id:
             return None
-        if bots.get(bot_id) is None:
+        found = bots.get(bot_id)
+        if found is None:
             raise HTTPException(400, "That teammate doesn't exist any more.")
+        if found.archived:
+            raise HTTPException(400, f"{found.name} is archived. Bring them back before giving them errands.")
         return bot_id
+
+    def _check_ai_choice(provider: str, model: str) -> None:
+        """Only an AI Compii knows can be a teammate's own, and a model needs the one offering it."""
+        if provider and provider not in prov.PRESETS:
+            raise HTTPException(400, "Compii doesn't know that AI. Add it in Settings → Brain first.")
+        if model and not provider:
+            raise HTTPException(400, "Say which AI offers that model first.")
 
     @app.get("/bots", dependencies=[Depends(auth)])
     def list_bots() -> dict[str, Any]:
@@ -1452,21 +1668,29 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.post("/bots", dependencies=[Depends(auth)])
     def new_bot(body: BotNew) -> dict[str, Any]:
+        provider = body.provider.strip().lower()
+        _check_ai_choice(provider, body.model)
         try:
             bot = bots.create(body.name, job=body.job, instructions=body.instructions,
                               color=body.color, template=body.template, avatar=body.avatar,
-                              mode=body.mode, tools=body.tools)
+                              mode=body.mode, tools=body.tools, provider=provider, model=body.model)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
-        audit.record("bot_created", bot=bot.id, name=bot.name)
+        audit.record("bot_created", bot=bot.id, name=bot.name, provider=bot.provider, model=bot.model)
         return changed_bots()
 
     @app.patch("/bots/{bot_id}", dependencies=[Depends(auth)])
     def edit_bot(bot_id: str, body: BotEdit) -> dict[str, Any]:
+        changes = body.model_dump(exclude_none=True)
+        found = bots.get(bot_id)
+        if found is None:
+            raise HTTPException(404, "No such bot")
+        # A change to the model alone is checked against the AI already chosen for it.
+        provider = str(changes.get("provider") or "").strip().lower() if "provider" in changes else found.provider
+        model = str(changes["model"]) if "model" in changes else found.model
+        _check_ai_choice(provider, model)
         try:
-            bot = bots.update(bot_id, **body.model_dump(exclude_none=True))
-        except KeyError as e:
-            raise HTTPException(404, "No such bot") from e
+            bot = bots.update(bot_id, **changes)
         except ValueError as e:
             raise HTTPException(400, str(e)) from e
         audit.record("bot_changed", bot=bot.id)
@@ -1499,12 +1723,29 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             raise HTTPException(404, "No such memory")
         return changed_bots()
 
+    @app.get("/bots/{bot_id}/conversations", dependencies=[Depends(auth)])
+    def bot_conversations(bot_id: str, limit: int = 40) -> dict[str, Any]:
+        """One teammate's conversations with the user, most recently used first.
+
+        Kept server-side so an agent's history does not depend on the app pulling every
+        thread in the workspace. A thread counts as this teammate's if the user came to it
+        through them, if they are answering it now, or if they are on its team — so a chat
+        handed over shows up for both, and stays where the user left it. A job another bot
+        assigned is not a conversation with the user, so those are left out.
+        """
+        if bots.get(bot_id) is None:
+            raise HTTPException(404, "No such teammate")
+        mine = [t for t in agent.tasks.values()
+                if t.parent_id is None and bot_id in {(t.owner_id or t.bot_id), t.bot_id, *t.team}]
+        ordered = sorted(mine, key=lambda t: t.active, reverse=True)[:max(1, min(limit, 200))]
+        return {"bot_id": bot_id, "conversations": [task_view(t) for t in ordered]}
+
     # ---- the supervisor: delegated jobs, reviews and hiring ----
 
     @app.get("/team", dependencies=[Depends(auth)])
     def team_view() -> dict[str, Any]:
         primary = bots.primary()
-        return {"roster": roster(), "jobs": supervisor.jobs_view(80), "proposals": supervisor.proposals_view(),
+        return {"roster": roster(active_only=False), "jobs": supervisor.jobs_view(80), "proposals": supervisor.proposals_view(),
                 "packs": packs_view(), "primary": primary.id if primary else None}
 
     @app.post("/team/hires/{proposal_id}", dependencies=[Depends(auth)])
@@ -1895,6 +2136,8 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if r is None:
             raise HTTPException(404, "No such routine")
         bot = bots.get(r.bot_id) if r.bot_id else None
+        if bot is not None and bot.archived:
+            raise HTTPException(409, f"{bot.name} is archived. Bring them back, or give this routine to someone else.")
         task = agent.start(r.instruction, origin={"routine": r.id, "title": r.title, "bot": r.bot_id or ""},
                            bot_id=bot.id if bot else None)
         plans.note_run(r, task.id)  # the schedule itself is unchanged
@@ -2193,6 +2436,12 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     @app.websocket("/events")
     async def events(ws: WebSocket, t: str = Query(""), d: str = Query("")) -> None:
+        # A browser page can put the token in a URL it opens itself, so the live stream
+        # needs the same "you are not a web page" test the HTTP routes get.
+        origin = (ws.headers.get("origin") or "").strip()
+        if origin and urlparse(origin).netloc != (ws.headers.get("host") or ""):
+            await ws.close(code=4403)
+            return
         if not (t and secrets.compare_digest(t, token)) and not pairing.device_for(d):
             await ws.close(code=4401)
             return

@@ -14,9 +14,15 @@ import re
 from typing import Any
 
 # Tools whose output is text from the outside world (files, windows, web pages).
+# Anything a stranger can control belongs here — including a *filename*: a folder
+# listing or a search hit is as much outside text as the file it names, and the
+# confirmation a click gets back is written by the page that was clicked.
 UNTRUSTED_TOOLS = {"read_file", "search_in_files", "compare_documents", "ask_my_files", "read_window", "browse",
                    "read_page", "recall", "clipboard", "search_web", "read_web_page", "look_at_screen",
-                   "reach_platform", "reach_research", "second_opinion", "read_selection"}
+                   "reach_platform", "reach_research", "second_opinion", "read_selection",
+                   "list_folder", "find_files", "find_duplicate_files", "unzip", "read_pdf", "list_windows",
+                   "focus_window", "run_python", "form_fields", "view_profile",
+                   "click_on", "type_into", "fill_form", "fill_pdf_form", "browser_click", "browser_fill"}
 
 # The one rule for "this is a secret": never typed, never stored in the profile, never filled into a form.
 SECRET_FIELD = re.compile(

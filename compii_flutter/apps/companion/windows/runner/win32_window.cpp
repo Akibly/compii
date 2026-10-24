@@ -3,6 +3,8 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 
+#include <algorithm>
+
 #include "resource.h"
 
 namespace {
@@ -136,7 +138,23 @@ bool Win32Window::Create(const std::wstring& title,
 
   int x = Scale(origin.x, scale_factor), y = Scale(origin.y, scale_factor);
   int width = Scale(size.width, scale_factor), height = Scale(size.height, scale_factor);
-  if (popup_ && size.width == 0 && size.height == 0) {
+  if (island_ && size.width == 0 && size.height == 0) {
+    // The island keeps one physical surface for its whole life. Size it, in
+    // the monitor's own pixels, for the largest card plus its drop shadow, so
+    // the card keeps the same logical size at 100% through 300% scaling; the
+    // work area is still the hard ceiling. Dart lays the card out inside this
+    // fixed surface, and only the card catches clicks.
+    RECT work = {0, 0, GetSystemMetrics(SM_CXSCREEN),
+                 GetSystemMetrics(SM_CYSCREEN)};
+    SystemParametersInfo(SPI_GETWORKAREA, 0, &work, 0);
+    const int margin = Scale(10, scale_factor);
+    const int available_width = static_cast<int>(work.right - work.left) - 2 * margin;
+    const int available_height = static_cast<int>(work.bottom - work.top) - 2 * margin;
+    width = std::max(1, std::min(Scale(720, scale_factor), available_width));
+    height = std::max(1, std::min(Scale(860, scale_factor), available_height));
+    x = work.left + (work.right - work.left - width) / 2;
+    y = work.top + margin;
+  } else if (popup_ && size.width == 0 && size.height == 0) {
     // Full-screen overlay: every monitor (the whole virtual desktop), in physical pixels,
     // so the buddy follows the cursor onto any screen.
     x = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -144,9 +162,17 @@ bool Win32Window::Create(const std::wstring& title,
     width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
     height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
   }
+  // The island must be focusable so it can be typed into; the overlay must
+  // never take focus from the work underneath it.
+  LONG ex_style = 0;
+  if (island_) {
+    ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
+  } else if (popup_) {
+    ex_style = WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+  }
   HWND window = CreateWindowEx(
-      popup_ ? (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) : 0,
-      window_class, title.c_str(), popup_ ? WS_POPUP : WS_OVERLAPPEDWINDOW,
+      ex_style, window_class, title.c_str(),
+      popup_ ? WS_POPUP : WS_OVERLAPPEDWINDOW,
       x, y, width, height, nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
@@ -215,6 +241,11 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
 
     case WM_DPICHANGED: {
+      if (island_) {
+        // Keep the fixed surface: Dart reads the real window bounds and
+        // monitor scale and lays the card out to fit wherever it lands.
+        return 0;
+      }
       auto newRectSize = reinterpret_cast<RECT*>(lparam);
       LONG newWidth = newRectSize->right - newRectSize->left;
       LONG newHeight = newRectSize->bottom - newRectSize->top;

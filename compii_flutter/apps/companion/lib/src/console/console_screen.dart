@@ -21,15 +21,18 @@ class ConsoleScreen extends StatefulWidget {
 }
 
 class _ConsoleScreenState extends State<ConsoleScreen> {
-  bool _faceView = false;
+  bool? _faceView;
 
   @override
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, box) {
-      // Phones always get the Presence View; a desktop window squeezed small
-      // gets it too, because the workspace needs more room than that.
-      final phone = Platform.isAndroid || Platform.isIOS || box.biggest.shortestSide < 600;
-      if (phone || _faceView) {
+      // Phones always get the Presence View. A squeezed desktop window starts
+      // there too, because the workspace needs more room than that — but as a
+      // default it can leave, not a lock: its own button returns to the
+      // workspace, which keeps every destination in its drawer at any width.
+      final phone = Platform.isAndroid || Platform.isIOS;
+      final squeezed = box.biggest.shortestSide < 600;
+      if (phone || _faceView == true || (_faceView == null && squeezed)) {
         return ListenableBuilder(
           listenable: Listenable.merge([widget.core, widget.state, ?widget.state.voice]),
           builder: (context, _) => FaceStage(

@@ -40,6 +40,11 @@ class Win32Window {
   // Call before Create so the window never needs restyling or resizing.
   void SetPopup(bool popup) { popup_ = popup; }
 
+  // The floating island: a transparent popup that may take keyboard focus,
+  // with a fixed physical surface (no resizing after Create, which would
+  // leave a transparent Flutter window stretched or blank).
+  void SetIsland(bool island) { island_ = island; }
+
   // Show the current window. Returns true if the window was successfully shown.
   bool Show();
 
@@ -97,6 +102,8 @@ class Win32Window {
   bool quit_on_close_ = false;
 
   bool popup_ = false;
+
+  bool island_ = false;
 
   // window handle for top level window.
   HWND window_handle_ = nullptr;

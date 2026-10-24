@@ -9,7 +9,9 @@ the user picked by hand.
 
 from __future__ import annotations
 
+import json
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -24,11 +26,18 @@ GITHUB_API = "https://api.github.com/repos"
 GITHUB_RAW = "https://raw.githubusercontent.com"
 UA = "Compii/1"
 PER_CATALOGUE = 8
+BROWSE_PAGE = 100  # one registry page; about 50 distinct servers once older versions are dropped
 FOLDER_FILES = 60
 
 # Both catalogues sit behind public networks that sometimes stall. A search is bounded so one slow
 # index can never hold the other's results (or the whole answer) hostage.
 SEARCH_TIMEOUT = httpx.Timeout(6.0, connect=4.0)
+
+# Browsing has no second catalogue waiting on it, and the registry's own network is erratic —
+# the same 8 KB page measured from 1 to 60 seconds. So the last good page is kept and shown at
+# once; only a pressed Browse asks again, and a 30 second wait is allowed behind that press.
+BROWSE_TIMEOUT = httpx.Timeout(30.0, connect=8.0)
+PAGE_FILE = "catalog-first-page.json"
 
 # A skill is only ever fetched from an exactly-named owner/repo folder on github.com: nothing in a
 # catalogue row can point Compii at another host, and no address from the network is followed.
@@ -41,6 +50,7 @@ BROWSE = [
     {"name": "Smithery", "url": "https://smithery.ai/servers", "about": "Hosted MCP servers, one-click connect."},
     {"name": "Glama", "url": "https://glama.ai/mcp/servers", "about": "A wide directory of MCP servers with reviews."},
     {"name": "mcp.so", "url": "https://mcp.so", "about": "MCP servers, with the config each one wants."},
+    {"name": "skills.sh", "url": "https://skills.sh", "about": "Skill folders indexed from git."},
     {
         "name": "Anthropic skills",
         "url": "https://github.com/anthropics/skills",
@@ -49,9 +59,11 @@ BROWSE = [
 ]
 
 
-def search(query: str, *, library: Library, kind: str = "") -> dict[str, Any]:
+def search(query: str, *, library: Library, kind: str = "", fresh: bool = False) -> dict[str, Any]:
     """What the catalogues call the things Compii could learn, and which one didn't answer."""
     words = " ".join(str(query or "").split())[:80]
+    if not words:
+        return _browse(library, kind=kind, fresh=fresh)
     if len(words) < 2:
         raise LibraryError("Type at least two letters so Compii has something to look for.")
     asks: list[tuple[str, str, dict[str, str], Any]] = []
@@ -71,7 +83,85 @@ def search(query: str, *, library: Library, kind: str = "") -> dict[str, Any]:
                 results += to_rows(answer.result())
             except LibraryError as e:
                 problems.append({"catalogue": name, "problem": str(e)})
-    return {"query": words, "results": results, "problems": problems, "browse": BROWSE}
+    return {"query": words, "results": results, "problems": problems, "notes": [], "browse": BROWSE}
+
+
+def _browse(library: Library, *, kind: str, fresh: bool = False) -> dict[str, Any]:
+    """What the catalogues will show without being asked a question — the Library's opening view.
+
+    The MCP registry lists; skills.sh does not. Its only address answers a query of two letters
+    or more and there is no second one, so browsing skills is not a thing Compii can offer. The
+    page says that in plain words rather than showing an empty box that reads as broken.
+    """
+    notes = (
+        []
+        if kind == "connector"
+        else [
+            "skills.sh has no list to browse — its index only answers a search of two letters or more. "
+            "Open it from the places below, search there, and bring the folder back to Compii."
+        ]
+    )
+    if kind == "skill":
+        return {"query": "", "results": [], "problems": [], "notes": notes, "browse": BROWSE}
+    saved = _saved_page(library)
+    age = 0.0 if saved is None else time.time() - saved[0]
+    results: list[dict[str, Any]] = []
+    problems: list[dict[str, str]] = []
+    if saved is not None and not fresh:
+        results = saved[1]
+        if age > 30 * 60:
+            notes.append(
+                f"This is the page the registry gave Compii {_ago(age)}. Press Browse to ask for a fresh one."
+            )
+    else:
+        try:
+            results = _registry_rows(
+                _ask(library, REGISTRY, {"limit": str(BROWSE_PAGE)}, BROWSE_TIMEOUT), limit=BROWSE_PAGE
+            )
+            _keep_page(library, results)
+        except LibraryError as e:
+            if saved is not None:
+                results = saved[1]
+                notes.insert(
+                    0, f"The registry didn't answer just now, so this is the page it gave Compii {_ago(age)}."
+                )
+            else:
+                problems.append({"catalogue": "MCP registry", "problem": str(e)})
+    return {"query": "", "results": results, "problems": problems, "notes": notes, "browse": BROWSE}
+
+
+def _saved_page(library: Library) -> tuple[float, list[dict[str, Any]]] | None:
+    try:
+        raw = json.loads((library.root / PAGE_FILE).read_text(encoding="utf-8"))
+        at, rows = float(raw["at"]), raw["results"]
+        if not isinstance(rows, list) or not all(isinstance(r, dict) and r.get("id") for r in rows):
+            return None
+        return at, rows
+    except (OSError, ValueError, TypeError, KeyError):
+        return None
+
+
+def _keep_page(library: Library, rows: list[dict[str, Any]]) -> None:
+    if not rows:
+        return  # an empty answer must never wipe a page that had something on it
+    try:
+        path = library.root / PAGE_FILE
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps({"at": time.time(), "results": rows}, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(path)
+    except OSError:
+        pass  # a page that cannot be saved is still a page worth showing
+
+
+def _ago(seconds: float) -> str:
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return "a minute ago" if minutes < 2 else f"{minutes} minutes ago"
+    hours = minutes // 60
+    if hours < 24:
+        return "an hour ago" if hours == 1 else f"{hours} hours ago"
+    days = hours // 24
+    return "a day ago" if days == 1 else f"{days} days ago"
 
 
 def add(library: Library, entry: dict[str, Any]) -> list[Any]:
@@ -113,7 +203,7 @@ def _ask(library: Library, url: str, params: dict[str, str], timeout: httpx.Time
         raise LibraryError(f"{host} sent back something that isn't a list of things to add.") from None
 
 
-def _registry_rows(data: Any) -> list[dict[str, Any]]:
+def _registry_rows(data: Any, *, limit: int = PER_CATALOGUE) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for entry in (data.get("servers") or []) if isinstance(data, dict) else []:
         server = entry.get("server") if isinstance(entry, dict) else None
@@ -149,7 +239,7 @@ def _registry_rows(data: Any) -> list[dict[str, Any]]:
                 },
             }
         )
-    return rows[:PER_CATALOGUE]
+    return rows[:limit]
 
 
 def _headers(raw: Any) -> dict[str, str]:
@@ -244,20 +334,42 @@ def _locate(library: Library, source: str, branch: str, ident: str) -> tuple[str
     The listing comes back once, recursive, because GitHub's tree address only understands a
     branch or a SHA — a folder path like ``skills/pdf`` is a 404. So the files are picked out of
     this same listing instead of asking for the folder again.
+
+    The index names a skill by an id that is often not its folder's name — ``agent-reach`` lives
+    in ``agent_reach/skill`` — so the folder is matched three ways, in order: a folder named like
+    the id, any path containing the id, and, in a repository that publishes exactly one skill,
+    that one. When none hold, the message lists the SKILL.md files the repository actually has:
+    "the index may be behind the repository" is a guess, and the file list is a fact.
     """
     data = _ask(library, f"{GITHUB_API}/{source}/git/trees/{quote(branch, safe='')}", {"recursive": "1"})
     if (data or {}).get("truncated"):
         raise LibraryError(f"{source} is too large for Compii to look through. Import the folder yourself.")
     entries = [e for e in (data or {}).get("tree") or [] if isinstance(e, dict)]
-    paths = [str(e.get("path") or "") for e in entries]
-    wanted = f"/{ident.lower()}/skill.md"
-    folders = sorted(p for p in paths if p.lower().endswith(wanted))
+    holders = sorted(
+        {
+            str(e.get("path") or "")[: -len("skill.md")].rstrip("/")
+            for e in entries
+            if str(e.get("path") or "").lower().endswith("skill.md")
+        }
+    )
+    want = _plain(ident)
+    folders = [f for f in holders if _plain(f.rsplit("/", 1)[-1]) == want]
+    if not folders and want:
+        folders = [f for f in holders if want in _plain(f)]
+    if not folders and len(holders) == 1:
+        folders = holders
     if not folders:
+        shown = ", ".join(holders[:4]) or "none at all"
         raise LibraryError(
-            f"skills.sh lists {ident} in {source}, but Compii couldn't find that folder's "
-            "SKILL.md there. The index may be behind the repository."
+            f"{source} has no folder named like “{ident}” holding a SKILL.md. "
+            f"The SKILL.md files it does have are in: {shown}."
         )
-    return folders[0][: -len("skill.md")].rstrip("/"), entries
+    return folders[0], entries
+
+
+def _plain(text: str) -> str:
+    """A name with everything but its letters and digits gone, so a hyphen and an underscore agree."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def _fetch(

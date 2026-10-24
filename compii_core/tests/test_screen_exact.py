@@ -287,3 +287,8 @@ def test_a_hung_app_cannot_hold_the_screen_hostage(monkeypatch):
     with pytest.raises(screen.ScreenError, match="Restart Compii Core"):
         next_call()
 
+    # The workers this test wedged are still asleep on their own queues; hand the rest of
+    # the suite a clean one instead of making the next screen test wait behind them.
+    with screen._uia_lock:
+        screen._uia_jobs = screen._start_uia_worker()
+

@@ -27,6 +27,29 @@ void main() {
     expect(turns.last.files, isEmpty);
   });
 
+  test('an event with missing fields shrinks the thread instead of breaking it', () {
+    final events = <Map<String, dynamic>>[
+      {'type': 'task_started', 'at': 0},
+      {'type': 'plan', 'at': 1},
+      {'type': 'note', 'at': 2},
+      {'type': 'sources', 'at': 2},
+      {'type': 'approval_resolved', 'at': 3},
+      {'type': 'question_answered', 'at': 3},
+      {'type': 'takeover_done', 'at': 3},
+      {'type': 'task_finished', 'at': 4},
+    ];
+    final turns = turnsOf(_task(events, status: 'running'));
+    expect(turns, hasLength(1));
+    expect(turns.single.plan, isEmpty, reason: 'a plan with no steps is no steps');
+    expect(turns.single.notes, isEmpty);
+    expect(turns.single.sources, isEmpty);
+    expect(turns.single.reply, isNull, reason: 'an end that carried no words is not an empty answer');
+    // Nothing is invented for a field that never arrived, so the turn falls back to
+    // whatever the conversation says it is — running, or done, or stopped.
+    expect(turns.single.status, 'running');
+    expect(turnsOf(_task(events)).single.status, 'done');
+  });
+
   test('attachments stay with the turn they were sent in', () {
     final turns = turnsOf(_task([
       {'type': 'task_started', 'at': 0, 'attachments': [

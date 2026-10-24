@@ -57,6 +57,28 @@ String laneShort(CoreClient core, BotView bot) {
   return key;
 }
 
+/// Who is thinking behind this teammate, in its own words. Core names the AI that answers, so
+/// a teammate that was given a model which can't run says so instead of wearing another one.
+String aiLine(BotView bot) {
+  if (bot.provider.isEmpty) {
+    return bot.answersWith.isEmpty
+        ? 'Answers with Compii’s AI.'
+        : 'Answers with ${bot.answersWith}, the AI you chose in Settings.';
+  }
+  if (bot.modelNote.isNotEmpty) return 'Wanted ${bot.provider}, but it can’t run yet: ${bot.modelNote}';
+  return bot.answersWith.isEmpty
+      ? 'Answers with ${bot.provider}, its own AI.'
+      : 'Answers with ${bot.answersWith} — its own AI, not Compii’s.';
+}
+
+/// The AI line, sized for a roster card: a teammate that thinks with Compii's AI has nothing
+/// special to say, so only its own choice — or a choice that can't run — takes a line.
+String aiShort(BotView bot) {
+  if (bot.provider.isEmpty) return '';
+  if (bot.modelNote.isNotEmpty) return 'Wanted ${bot.provider}: ${bot.modelNote}';
+  return bot.answersWith.isEmpty ? bot.provider : bot.answersWith;
+}
+
 /// A bot's character, on its own soft disc.
 class BotAvatar extends StatelessWidget {
   const BotAvatar({
@@ -161,7 +183,12 @@ class TeamStrip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          Text('${bots.length} teammates', style: context.type.labelMedium?.copyWith(color: c.muted)),
+          Flexible(
+            child: Text('${bots.length} teammates',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.type.labelMedium?.copyWith(color: c.muted)),
+          ),
         ],
       ),
     );
@@ -182,6 +209,14 @@ class HandoffNote extends StatelessWidget {
     if (from == null || to == null) return const SizedBox.shrink();
     final note = '${event['note'] ?? ''}'.trim();
     final byUser = event['by'] == 'user';
+    // Core names what came with the thread, so the handover is shown, not silent.
+    final shared = event['shared'] as Map?;
+    final turns = (shared?['turns'] as num?)?.toInt() ?? 0;
+    final files = [for (final f in (shared?['files'] as List? ?? const [])) '$f'];
+    final carried = [
+      if (turns > 0) '$turns ${turns == 1 ? 'exchange' : 'exchanges'}',
+      if (files.isNotEmpty) '${files.length} ${files.length == 1 ? 'file' : 'files'}',
+    ].join(' · ');
     return Container(
       padding: const EdgeInsets.fromLTRB(10, 7, 12, 7),
       decoration: BoxDecoration(
@@ -210,10 +245,15 @@ class HandoffNote extends StatelessWidget {
               ],
             ],
           ),
-          if (note.isNotEmpty && !byUser) ...[
+          if (note.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(note, maxLines: 3, overflow: TextOverflow.ellipsis,
                 style: context.type.bodySmall?.copyWith(color: c.muted)),
+          ],
+          if (carried.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text('Shared with ${to.name}: $carried', maxLines: 2, overflow: TextOverflow.ellipsis,
+                style: context.type.labelSmall?.copyWith(color: c.faint)),
           ],
         ],
       ),
@@ -221,13 +261,112 @@ class HandoffNote extends StatelessWidget {
   }
 }
 
-/// A bot's own home: who it is, what it remembers, and the threads it owns.
-class BotHome extends StatelessWidget {
+/// Move a conversation to another teammate because the user asked. The thread itself
+/// travels; nothing outside it is shared.
+Future<void> showHandover(
+  BuildContext context, {
+  required CoreClient core,
+  required AppState state,
+  required Run run,
+  required TaskView task,
+}) async {
+  final from = core.botFor(task.botId);
+  final others = [for (final b in core.bots) if (b.id != task.botId && !b.archived) b];
+  if (others.isEmpty) return;
+  final to = await showDialog<BotView>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Hand this conversation to…'),
+      content: SizedBox(
+        width: 400,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              from == null
+                  ? 'They take over from here, with everything said in this thread.'
+                  : '${from.name} keeps the thread and passes it on. Nothing outside this conversation is shared.',
+              style: context.type.bodySmall?.copyWith(color: context.c.muted),
+            ),
+            const SizedBox(height: 10),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 320),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (final b in others)
+                      ListTile(
+                        leading: BotAvatar(bot: b, size: 30),
+                        title: Text(b.name),
+                        subtitle: b.job.isEmpty
+                            ? null
+                            : Text(b.job, maxLines: 2, overflow: TextOverflow.ellipsis),
+                        onTap: () => Navigator.pop(ctx, b),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel'))],
+    ),
+  );
+  if (to == null) return;
+  await run(() async {
+    await core.transferConversation(task.id, to.id);
+    state.open(task.id);
+  });
+}
+
+/// A bot's own home: who it is, what it remembers, and the conversations it owns.
+class BotHome extends StatefulWidget {
   const BotHome({super.key, required this.core, required this.state, required this.run, required this.bot});
   final CoreClient core;
   final AppState state;
   final Run run;
   final BotView bot;
+
+  @override
+  State<BotHome> createState() => _BotHomeState();
+}
+
+class _BotHomeState extends State<BotHome> {
+  List<TaskView> _threads = const [];
+  bool _loaded = false;
+  String? _historyError;
+
+  CoreClient get core => widget.core;
+  AppState get state => widget.state;
+  Run get run => widget.run;
+  BotView get bot => widget.bot;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final threads = await core.fetchConversations(bot.id);
+      if (!mounted) return;
+      setState(() {
+        _threads = threads;
+        _loaded = true;
+        _historyError = null;
+      });
+    } on Object catch (e) {
+      if (!mounted) return;
+      // The page still works from what this window already knows; say what couldn't be read.
+      setState(() {
+        _loaded = true;
+        _historyError = '$e';
+      });
+    }
+  }
 
   Future<void> _start(String text, [List<String> files = const []]) async {
     try {
@@ -242,7 +381,10 @@ class BotHome extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     final color = botColor(bot, c.accent);
-    final threads = core.ordered.where((t) => t.botId == bot.id).take(6).toList();
+    // Until Core answers, show the threads this window is already holding.
+    final threads = _threads.isNotEmpty
+        ? _threads
+        : core.ordered.where((t) => t.belongsTo(bot.id)).toList();
     final accepted = (bot.stats['accepted'] as num?)?.toInt() ?? 0;
     final rejected = (bot.stats['rejected'] as num?)?.toInt() ?? 0;
     final reviewed = accepted + rejected;
@@ -290,6 +432,16 @@ class BotHome extends StatelessWidget {
                       if (bot.working.isNotEmpty)
                         Pill('Working now', color: color, glyph: G.sync, pulse: true),
                     ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      aiLine(bot),
+                      key: const Key('bot-ai'),
+                      textAlign: TextAlign.center,
+                      style: context.type.bodySmall
+                          ?.copyWith(color: bot.modelNote.isEmpty ? c.faint : c.warning),
+                    ),
                   ),
                   Row(
                     mainAxisSize: MainAxisSize.min,
@@ -352,9 +504,32 @@ class BotHome extends StatelessWidget {
               const SizedBox(height: 24),
               BotRoutines(core: core, run: run, bot: bot, onOpenTask: state.open),
               const SizedBox(height: 24),
-              Text('RECENT', style: context.type.labelSmall),
+              Row(
+                children: [
+                  Text('CONVERSATIONS', style: context.type.labelSmall),
+                  const Spacer(),
+                  if (_historyError != null)
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(() => _historyError = null);
+                        _load();
+                      },
+                      icon: const Glyph(G.undo, size: 14),
+                      label: const Text('Try again'),
+                    ),
+                ],
+              ),
               const SizedBox(height: 8),
-              if (threads.isEmpty)
+              if (threads.isEmpty && !_loaded)
+                Row(
+                  children: [
+                    SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, color: color)),
+                    const SizedBox(width: 10),
+                    Text('Reading ${bot.name}’s conversations…',
+                        style: context.type.labelMedium?.copyWith(color: c.faint)),
+                  ],
+                )
+              else if (threads.isEmpty)
                 Panel(
                   padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 20),
                   child: Text(
@@ -364,6 +539,11 @@ class BotHome extends StatelessWidget {
                 )
               else
                 for (final t in threads) _BotThread(task: t, color: color, onTap: () => state.open(t.id)),
+              if (_historyError != null) ...[
+                const SizedBox(height: 8),
+                Text('This is what this window still holds. $_historyError',
+                    style: context.type.labelMedium?.copyWith(color: c.warning)),
+              ],
             ],
           ),
         ),
@@ -529,7 +709,8 @@ class _TeamPickerState extends State<_TeamPicker> {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final bots = widget.core.bots;
+    // A teammate that has been put away is not offered for new work.
+    final bots = [for (final b in widget.core.bots) if (!b.archived) b];
     return AlertDialog(
       title: const Text('New team chat'),
       content: SizedBox(
@@ -683,35 +864,48 @@ Future<void> showBotEditor(
   required AppState state,
   required Run run,
   BotView? bot,
+  BotView? copy,
 }) =>
     showDialog<void>(
       context: context,
-      builder: (_) => _BotEditor(core: core, state: state, run: run, bot: bot),
+      builder: (_) => _BotEditor(core: core, state: state, run: run, bot: bot, copy: copy),
     );
 
 class _BotEditor extends StatefulWidget {
-  const _BotEditor({required this.core, required this.state, required this.run, this.bot});
+  const _BotEditor({required this.core, required this.state, required this.run, this.bot, this.copy});
   final CoreClient core;
   final AppState state;
   final Run run;
   final BotView? bot;
+
+  /// An existing teammate to start a new one from: same job, same lane, same AI, new name.
+  final BotView? copy;
 
   @override
   State<_BotEditor> createState() => _BotEditorState();
 }
 
 class _BotEditorState extends State<_BotEditor> {
-  late final _name = TextEditingController(text: widget.bot?.name ?? '');
-  late final _job = TextEditingController(text: widget.bot?.job ?? '');
-  late final _instructions = TextEditingController(text: widget.bot?.instructions ?? '');
+  /// What the form starts from — the teammate being edited, or the one being copied.
+  BotView? get _src => widget.bot ?? widget.copy;
+
+  late final _name = TextEditingController(
+      text: widget.bot?.name ?? (widget.copy == null ? '' : '${widget.copy!.name} copy'));
+  late final _job = TextEditingController(text: _src?.job ?? '');
+  late final _instructions = TextEditingController(text: _src?.instructions ?? '');
   final _fact = TextEditingController();
-  late String _avatar = widget.bot?.avatar ?? '';
-  late String _color = widget.bot?.color ?? _colors.first;
+  late String _avatar = _src?.avatar ?? '';
+  late String _color = _src?.color ?? _colors.first;
   String _template = '';
   bool _pinned = false;
   late String _trust = widget.bot?.trust ?? 'probation';
-  late String _mode = widget.bot?.mode ?? 'team';
-  late List<String> _tools = [...?widget.bot?.tools];
+  late String _mode = _src?.mode ?? 'team';
+  late List<String> _tools = [...?_src?.tools];
+
+  /// The AI this teammate thinks with. Empty means Compii's own, from Settings → Brain.
+  late String _provider = _src?.provider ?? '';
+  late final _model = TextEditingController(text: _src?.model ?? '');
+  String? _aiProblem;
   bool _busy = false;
   String? _error;
 
@@ -725,6 +919,19 @@ class _BotEditorState extends State<_BotEditor> {
   void initState() {
     super.initState();
     _pinned = widget.bot?.pinned ?? false;
+    // A copy keeps its role, so it lands in the same category of the directory.
+    _template = widget.copy?.template ?? '';
+    // Core's own list of AIs, so the choice here is exactly what Compii can reach.
+    _loadAis().ignore();
+  }
+
+  Future<void> _loadAis() async {
+    if (widget.bot?.primary == true) return;
+    try {
+      await widget.core.fetchBrain();
+    } catch (e) {
+      if (mounted) setState(() => _aiProblem = 'Compii couldn’t read its list of AIs: $e');
+    }
   }
 
   @override
@@ -733,7 +940,23 @@ class _BotEditorState extends State<_BotEditor> {
     _job.dispose();
     _instructions.dispose();
     _fact.dispose();
+    _model.dispose();
     super.dispose();
+  }
+
+  /// What thinking with another AI means, said plainly — including when it cannot yet.
+  String _aiNote(BotView? live) {
+    final who = widget.bot?.name ?? 'this teammate';
+    if (_provider.isEmpty) return 'Thinks with the AI you chose in Settings → Brain.';
+    final preset = widget.core.aiPresets.firstWhere((p) => p['provider'] == _provider, orElse: () => const {});
+    final label = '${preset['label'] ?? _provider}';
+    if (preset['hasKey'] != true) {
+      return '$label needs a key in Settings → Brain. Until you add one, $who answers with Compii’s AI, '
+          'and its page says so.';
+    }
+    if (live != null && live.modelNote.isNotEmpty) return '$label: ${live.modelNote}';
+    final model = _model.text.trim();
+    return 'Thinks with $label${model.isEmpty ? '' : ' · $model'}, whatever your own AI is set to.';
   }
 
   BotView? get _current {
@@ -780,6 +1003,8 @@ class _BotEditorState extends State<_BotEditor> {
           avatar: _avatar,
           mode: _mode,
           tools: _tools,
+          provider: _provider,
+          model: _model.text.trim(),
         );
         final made = widget.core.bots.where((b) => !before.contains(b.id)).toList();
         if (made.isNotEmpty) widget.state.pickBot(made.first.id);
@@ -794,6 +1019,9 @@ class _BotEditorState extends State<_BotEditor> {
           if (widget.bot!.primary != true) 'trust': _trust,
           if (widget.bot!.primary != true) 'mode': _mode,
           if (widget.bot!.primary != true) 'tools': _tools,
+          // Always sent for a teammate: Core reads an empty value as "back to Compii's AI".
+          if (widget.bot!.primary != true) 'provider': _provider,
+          if (widget.bot!.primary != true) 'model': _model.text.trim(),
         });
       }
       if (mounted) Navigator.pop(context);
@@ -1034,6 +1262,49 @@ class _BotEditorState extends State<_BotEditor> {
                             'so the work stays with the right teammate.',
                     style: context.type.bodySmall?.copyWith(color: c.faint),
                   ),
+                  const SizedBox(height: 14),
+                  Row(
+                    children: [
+                      Text('Answers with', style: context.type.labelSmall),
+                      const Spacer(),
+                      if (_provider.isNotEmpty)
+                        TextButton(
+                          onPressed: _busy ? null : () => setState(() { _provider = ''; _model.clear(); }),
+                          child: const Text('Compii’s AI'),
+                        ),
+                    ],
+                  ),
+                  Wrap(
+                    spacing: 6,
+                    runSpacing: 6,
+                    children: [
+                      for (final p in widget.core.aiPresets)
+                        ChoiceChip(
+                          avatar: Glyph(p['hasKey'] == true ? G.check : G.key, size: 13,
+                              color: p['hasKey'] == true ? c.success : c.warning),
+                          label: Text('${p['label']}'),
+                          selected: _provider == p['provider'],
+                          onSelected: (_) => setState(() {
+                            _provider = '${p['provider']}';
+                            // The provider's own default model comes from Core, so the app
+                            // doesn't invent an id this AI has never heard of.
+                            _model.text = '${p['model'] ?? ''}';
+                          }),
+                        ),
+                    ],
+                  ),
+                  if (widget.core.aiPresets.isEmpty)
+                    Text(_aiProblem ?? 'Reading the AIs Compii knows…',
+                        style: context.type.bodySmall?.copyWith(color: c.faint))
+                  else
+                    Text(_aiNote(current), style: context.type.bodySmall?.copyWith(color: c.faint)),
+                  if (_provider.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    TextField(
+                      controller: _model,
+                      decoration: const InputDecoration(labelText: 'Model', hintText: 'openai/gpt-oss-120b'),
+                    ),
+                  ],
                 ],
                 if (!_creating) ...[
                   SwitchListTile(

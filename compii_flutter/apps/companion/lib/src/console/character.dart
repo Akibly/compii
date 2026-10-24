@@ -26,25 +26,53 @@ String moodLabel(Mood mood) => switch (mood) {
 enum CompiiBody { plush, moth, spark, shell, drop }
 
 extension CompiiBodyInfo on CompiiBody {
-  String get label => switch (this) {
-    CompiiBody.plush => 'Pip',
-    CompiiBody.moth => 'Mica',
-    CompiiBody.spark => 'Ember',
-    CompiiBody.shell => 'Pebble',
-    CompiiBody.drop => 'Dew',
-  };
-
-  String get note => switch (this) {
-    CompiiBody.plush => 'Round, soft and warm. The one Compii starts as.',
-    CompiiBody.moth => 'Furry and wide, wings folded over its back.',
-    CompiiBody.spark => 'A small flame the colour of whatever it is doing.',
-    CompiiBody.shell => 'A smooth pebble with a seam. Quiet and steady.',
-    CompiiBody.drop => 'Soft-bodied: it leans, squashes and settles.',
+  /// Screen readers only. The picker shows the shape and never a name.
+  String get desc => switch (this) {
+    CompiiBody.plush => 'Round head on a small body',
+    CompiiBody.moth => 'Wings folded over a furry back',
+    CompiiBody.spark => 'A small flame',
+    CompiiBody.shell => 'A smooth stone',
+    CompiiBody.drop => 'A soft drop',
   };
 }
 
-/// The body Compii wears, chosen in Settings and kept on this PC.
+/// The coat Compii is brushed in. Blue is the default: Compii lives in a dark
+/// indigo room, and a cool coat is the one that reads as light falling on fur
+/// rather than as a warm blob going muddy against a warm light.
+enum CompiiCoat { blue, mint, lilac, rose, amber, cream }
+
+extension CompiiCoatInfo on CompiiCoat {
+  /// The mid tone. Everything else about the coat is derived from it.
+  Color get base => switch (this) {
+    CompiiCoat.blue => const Color(0xFF7FB4E8),
+    CompiiCoat.mint => const Color(0xFF83E0BC),
+    CompiiCoat.lilac => const Color(0xFFB7A6F2),
+    CompiiCoat.rose => const Color(0xFFF2A2B4),
+    CompiiCoat.amber => const Color(0xFFF5C179),
+    CompiiCoat.cream => const Color(0xFFEEDDBE),
+  };
+
+  String get desc => switch (this) {
+    CompiiCoat.blue => 'Blue',
+    CompiiCoat.mint => 'Mint',
+    CompiiCoat.lilac => 'Lilac',
+    CompiiCoat.rose => 'Rose',
+    CompiiCoat.amber => 'Amber',
+    CompiiCoat.cream => 'Cream',
+  };
+
+  /// The picker swatch: the same three tones the fur is brushed with, so the
+  /// chip is the coat and not a flat dot.
+  List<Color> get chip => [
+    Color.lerp(base, Colors.white, .52)!,
+    base,
+    Color.lerp(base, EmberPalette.ash, .62)!,
+  ];
+}
+
+/// What Compii looks like, chosen in Settings and kept on this PC.
 final compiiBody = ValueNotifier<CompiiBody>(CompiiBody.plush);
+final compiiCoat = ValueNotifier<CompiiCoat>(CompiiCoat.blue);
 
 /// Compii is one small creature with a face, wearing a body you choose. Not a
 /// logo, not a lens, not an abstract light: a face fires from three dots in a
@@ -78,18 +106,14 @@ class CharacterSlot extends StatelessWidget {
   );
 }
 
-/// The fixed materials. The state colour comes from [core].
+/// The fixed materials. The coat comes from [CompiiCoat] and the state colour
+/// from [core]; nothing in here is a body colour.
 class EmberPalette {
-  /// Cream fur: the body material. Identity, never a mood colour.
-  static const paper = Color(0xFFF2E3C8);
-  static const paperShade = Color(0xFFB99A72);
-  static const fur = Color(0xFF4A382F);
-  static const furLight = Color(0xFF8A6647);
   static const ash = Color(0xFF241D2A);
   static const deep = Color(0xFF120D16);
   static const room = Color(0xFF1C1322);
 
-  /// The cool edge, so warm cream never turns to jam against a warm light.
+  /// The cool edge, so a warm coat never turns to jam against a warm light.
   static const rim = Color(0xFF5FD8C8);
 
   /// Focus rings and the overlay frame — the product's indigo, not the creature's.
@@ -113,6 +137,54 @@ class EmberPalette {
   };
 }
 
+/// One coat resolved into the five tones the fur is brushed with. The state
+/// colour tints the mid tones so the light shows *through* the coat instead of
+/// sitting on it as a badge; the tips stay the coat's own, which is what keeps
+/// six different coats from all looking like the same lamp.
+class _Coat {
+  const _Coat({
+    required this.hue,
+    required this.tip,
+    required this.lit,
+    required this.base,
+    required this.shade,
+    required this.dark,
+  });
+
+  /// The colour the coat was brushed in, before the state tinted it. The flame
+  /// body needs it to stay recognisably the user's choice.
+  final Color hue, tip, lit, base, shade, dark;
+
+  static _Coat of(CompiiCoat coat, Color mood) => _Coat(
+    hue: coat.base,
+    tip: Color.lerp(coat.base, Colors.white, .88)!,
+    lit: Color.lerp(coat.base, Colors.white, .52)!,
+    base: Color.lerp(coat.base, mood, .13)!,
+    shade: Color.lerp(Color.lerp(coat.base, EmberPalette.ash, .62)!, mood, .16)!,
+    dark: Color.lerp(coat.base, EmberPalette.deep, .82)!,
+  );
+
+  /// A coat made of the state colour itself — the one body whose material *is*
+  /// the light inside it. It runs a deeper ramp than the fur coats, because a
+  /// flame is read through its value range rather than its hue: the idle colour
+  /// is pale sand, and a flame the same colour as sand is a potato.
+  ///
+  /// The value ramp does the state's work and the chosen coat keeps the hue. The
+  /// earlier version mixed the state into the mid tones, which turned a blue
+  /// coat to grey mud on the body most people wear; now the coat owns the crown
+  /// and the whole shaded side of the flame, and only the burn at its foot —
+  /// [dark], which is what the occlusion and the undercoat are brushed with —
+  /// belongs to the state.
+  static _Coat flame(Color mood, Color hue) => _Coat(
+    hue: hue,
+    tip: Color.lerp(hue, Colors.white, .86)!,
+    lit: Color.lerp(hue, Colors.white, .46)!,
+    base: Color.lerp(Color.lerp(hue, EmberPalette.ash, .30)!, mood, .14)!,
+    shade: Color.lerp(Color.lerp(hue, EmberPalette.deep, .55)!, mood, .12)!,
+    dark: Color.lerp(mood, EmberPalette.deep, .74)!,
+  );
+}
+
 class Ember extends StatefulWidget {
   const Ember({
     super.key,
@@ -125,6 +197,7 @@ class Ember extends StatefulWidget {
     this.level = 0,
     this.followPointer = true,
     this.body,
+    this.coat,
   });
   final Mood mood;
   final int jobs;
@@ -149,6 +222,9 @@ class Ember extends StatefulWidget {
   /// Overrides [compiiBody] for a one-off render, as the picker does.
   final CompiiBody? body;
 
+  /// Overrides [compiiCoat] for a one-off render.
+  final CompiiCoat? coat;
+
   @override
   State<Ember> createState() => _EmberState();
 }
@@ -157,6 +233,16 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
   late final AnimationController clock = AnimationController(
     vsync: this,
     duration: const Duration(seconds: 8),
+  );
+
+  /// A second clock on purpose 37 seconds long — not a multiple of the first.
+  /// The eight-second cycle is the breath and has to stay regular, but anything
+  /// hung off it blinks on the beat, and a creature that blinks on the beat is a
+  /// looping GIF. Drift carries the blink and the slow lean-over, the two things
+  /// that must never look scheduled.
+  late final AnimationController drift = AnimationController(
+    vsync: this,
+    duration: const Duration(seconds: 37),
   );
 
   // Eases between states so the face glides into an expression instead of jumping.
@@ -171,6 +257,7 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     compiiBody.addListener(_changed);
+    compiiCoat.addListener(_changed);
   }
 
   void _changed() {
@@ -193,7 +280,9 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
   @override
   void dispose() {
     compiiBody.removeListener(_changed);
+    compiiCoat.removeListener(_changed);
     clock.dispose();
+    drift.dispose();
     blend.dispose();
     super.dispose();
   }
@@ -203,37 +292,44 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
     final still = !widget.animate || MediaQuery.of(context).disableAnimations;
     if (still) {
       clock.stop();
-    } else if (!clock.isAnimating) {
-      clock.repeat();
+      drift.stop();
+    } else {
+      if (!clock.isAnimating) clock.repeat();
+      if (!drift.isAnimating) drift.repeat();
     }
     return RepaintBoundary(
       child: AnimatedBuilder(
-        animation: Listenable.merge([clock, blend, if (widget.followPointer) pointer]),
+        animation: Listenable.merge([clock, drift, blend, if (widget.followPointer) pointer]),
         builder: (context, _) {
           final b = Curves.easeOutCubic.transform(blend.value).clamp(0.0, 1.0);
           final t = still ? widget.phase : clock.value;
+          final s = still ? widget.phase : drift.value;
           final look = widget.followPointer ? _look(context) : null;
           return CustomPaint(
             size: Size.infinite,
             painter: widget.face
                 ? EmberFacePainter(
                     body: widget.body ?? compiiBody.value,
+                    coat: widget.coat ?? compiiCoat.value,
                     mood: widget.mood,
                     previous: previous,
                     blend: b,
                     jobs: widget.jobs,
                     t: t,
+                    s: s,
                     still: still,
                     look: look,
                     level: widget.level,
                   )
                 : EmberPainter(
                     body: widget.body ?? compiiBody.value,
+                    coat: widget.coat ?? compiiCoat.value,
                     mood: widget.mood,
                     previous: previous,
                     blend: b,
                     jobs: widget.jobs,
                     t: t,
+                    s: s,
                     still: still,
                     reach: widget.reach,
                     look: look,
@@ -268,6 +364,11 @@ final pointer = ValueNotifier<Offset?>(null);
 /// What a mood does to the face and the stance. `brow` is raised(+)/furrowed(-),
 /// `tilt` is worried(+)/aimed(-), `eye` is shut..wide, and `mouth` runs
 /// frown..smile with values above 1.5 meaning "open, speaking".
+///
+/// The numbers are deliberately bigger than they look on paper. Half of these
+/// characters are seen at 30-44 px in a row or a sidebar, where a brow that moves
+/// a pixel is not a brow at all — so each mood is set so it still reads there,
+/// then checked against the character sheet at every size.
 class _Rig {
   const _Rig({
     required this.brow,
@@ -285,22 +386,25 @@ class _Rig {
   final double lean;
 
   static _Rig of(Mood m) => switch (m) {
-    // Ready: nothing is happening, and that is fine.
-    Mood.idle => const _Rig(brow: 0, tilt: 0, eye: 1, mouth: .35, bob: .012, lean: 0),
-    // Listening: a little wide, brows up, leaning toward the sound.
-    Mood.listening => const _Rig(brow: .55, tilt: .15, eye: 1.18, mouth: .1, bob: .02, lean: -.05),
-    // Thinking: eyes partly down and away, one brow up. Looking inward.
-    Mood.thinking => const _Rig(brow: .3, tilt: -.12, eye: .66, mouth: .0, bob: .008, lean: .06),
-    // Working: narrowed and steady. Not unhappy — aimed, so the mouth stays calm.
-    Mood.acting => const _Rig(brow: -.15, tilt: -.28, eye: .74, mouth: .08, bob: .026, lean: 0),
+    // Ready: nothing is happening, and that is fine. The only face without brows.
+    Mood.idle => const _Rig(brow: 0, tilt: 0, eye: 1, mouth: .35, bob: .016, lean: 0),
+    // Listening: wide and tipped toward the sound, brows up.
+    Mood.listening => const _Rig(brow: .75, tilt: .2, eye: 1.3, mouth: .08, bob: .022, lean: -.06),
+    // Thinking: eyes down and away, one brow up, weight on one side. Looking in.
+    Mood.thinking => const _Rig(brow: .42, tilt: -.18, eye: .56, mouth: .0, bob: .008, lean: .09),
+    // Working: narrowed and steady. Not unhappy — aimed, so the brows stay almost
+    // flat. A lowered brow at hero size reads as annoyed, and annoyed is not a
+    // thing a companion should look like while it is doing what you asked.
+    Mood.acting => const _Rig(brow: -.08, tilt: -.26, eye: .62, mouth: .12, bob: .034, lean: 0),
     // Speaking: an open mouth sized by the voice.
-    Mood.speaking => const _Rig(brow: .2, tilt: 0, eye: 1.02, mouth: 2, bob: .018, lean: 0),
-    // Needs you: brows up and pulled together — the classic worried face.
-    Mood.waiting => const _Rig(brow: .7, tilt: .85, eye: 1.15, mouth: -.45, bob: .014, lean: -.03),
+    Mood.speaking => const _Rig(brow: .24, tilt: .06, eye: 1.05, mouth: 2, bob: .02, lean: 0),
+    // Needs you: brows up and pulled together — the classic worried face, and the
+    // only mood that leans back off whatever it is looking at.
+    Mood.waiting => const _Rig(brow: .9, tilt: 1.05, eye: 1.28, mouth: -.5, bob: .014, lean: -.05),
     // Done: eyes closed into arcs and a big smile. The one happy face.
-    Mood.happy => const _Rig(brow: .5, tilt: 0, eye: .05, mouth: .95, bob: .05, lean: 0),
+    Mood.happy => const _Rig(brow: .55, tilt: 0, eye: .05, mouth: .95, bob: .055, lean: 0),
     // Problem: brows down and in, mouth turned down, nothing else moving.
-    Mood.problem => const _Rig(brow: -.7, tilt: -.8, eye: .68, mouth: -.6, bob: 0, lean: .02),
+    Mood.problem => const _Rig(brow: -.85, tilt: -.95, eye: .56, mouth: -.6, bob: 0, lean: .03),
     // Offline: shut and slack.
     Mood.offline => const _Rig(brow: 0, tilt: 0, eye: 0, mouth: 0, bob: 0, lean: .09),
   };
@@ -338,12 +442,14 @@ class _Figure {
     required this.rig,
     required this.mood,
     required this.t,
+    required this.s,
     required this.still,
     required this.jobs,
     required this.level,
     required this.look,
     required this.detail,
     required this.unit,
+    required this.coat,
     required this.color,
     required this.dim,
   });
@@ -352,6 +458,9 @@ class _Figure {
   final _Rig rig;
   final Mood mood;
   final double t;
+
+  /// 0..1 around the slow 37-second cycle: blink and the long lean.
+  final double s;
   final bool still;
   final int jobs;
   final double level;
@@ -362,16 +471,52 @@ class _Figure {
 
   /// One device pixel in figure units, so a hairline stays a hairline at 18 px.
   final double unit;
+
+  /// The fur the creature is brushed in.
+  final _Coat coat;
   final Color color;
   final bool dim;
 
   double _px(double n) => math.max(unit * n, .004);
 
-  /// The idle life in the body: a small bob and a lean, both from the rig.
-  late final Offset seat = Offset(
-    (still ? 0 : math.sin(t * 2 * math.pi) * .010) + rig.lean,
-    still ? 0 : math.sin(t * 4 * math.pi) * rig.bob,
+  /// Where the key light sits, in figure units. It slides as Compii looks at the
+  /// cursor, which is what makes the body read as a volume turning in the room
+  /// rather than a flat shape with a gradient painted on it.
+  late final Offset key = Offset(
+    -.13 + (look?.dx ?? 0) * .075,
+    -.30 + (look?.dy ?? 0) * .055,
   );
+
+  /// How each body carries itself: how fast it breathes, how far it drifts
+  /// sideways, and how much of the rig's bob it actually takes. Five bodies on
+  /// one beat are one body drawn five ways — the plush hops, the moth hovers,
+  /// the flame gutters, the stone only settles, and the drop wobbles half a beat
+  /// behind itself.
+  late final ({int rate, double sway, double hop}) tempo = switch (body) {
+    CompiiBody.plush => (rate: 1, sway: 1, hop: 1),
+    CompiiBody.moth => (rate: 2, sway: .5, hop: 1.5),
+    CompiiBody.spark => (rate: 3, sway: .8, hop: 1.25),
+    CompiiBody.shell => (rate: 1, sway: .55, hop: .45),
+    CompiiBody.drop => (rate: 2, sway: 1.5, hop: .9),
+  };
+
+  /// Sideways drift in figure units: the breath, the long lean on the slow
+  /// cycle, and wherever the mood is throwing its weight.
+  late final double sway = still
+      ? rig.lean
+      : math.sin(t * 2 * math.pi * tempo.rate) * .010 * tempo.sway +
+            math.sin(s * 2 * math.pi) * .008 +
+            rig.lean;
+
+  /// The idle life in the body: a drift and a bob, the bob from the rig.
+  late final Offset seat = Offset(
+    sway,
+    still ? 0 : math.sin(t * 4 * math.pi) * rig.bob * tempo.hop,
+  );
+
+  /// A few degrees, and the reason the drift is worth having at all: a body that
+  /// slides sideways is a sticker, a body that tips is a weight on its feet.
+  late final double rock = (sway - rig.lean) * 3.0 + rig.lean * .6;
 
   _Fit get fit => switch (body) {
     CompiiBody.plush => const _Fit(Offset(0, -.15), 1),
@@ -387,6 +532,12 @@ class _Figure {
     }
     canvas.save();
     canvas.translate(seat.dx, seat.dy);
+    if (rock != 0) {
+      // Pivoted at the feet, not at the middle.
+      canvas.translate(0, .42);
+      canvas.rotate(rock);
+      canvas.translate(0, -.42);
+    }
     switch (body) {
       case CompiiBody.plush:
         _plush(canvas);
@@ -430,28 +581,31 @@ class _Figure {
 
   // -- bodies ---------------------------------------------------------------
 
+  /// A union of ovals, so the outline is the silhouette. Drawn as separate
+  /// sub-paths, the fur would sprout along the seams where two lobes of the same
+  /// body overlap instead of only around the edge of the creature.
+  Path _blob(Iterable<Rect> ovals) => ovals
+      .map((r) => Path()..addOval(r))
+      .reduce((a, b) => Path.combine(PathOperation.union, a, b));
+
   /// The default: a big round head, a small soft body, two stubby feet. No ears,
   /// no wings, no shell — nothing that names a species and can therefore be wrong.
   void _plush(Canvas canvas) {
-    final shape = Path()
-      ..addOval(Rect.fromCenter(center: const Offset(0, .185), width: .40, height: .34))
-      ..addOval(Rect.fromCenter(center: const Offset(0, -.155), width: .56, height: .53));
-    for (final s in const [-1.0, 1.0]) {
-      shape.addOval(Rect.fromCenter(center: Offset(s * .115, .345), width: .15, height: .085));
-    }
-    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(0, -.28)));
+    final shape = _blob([
+      Rect.fromCenter(center: const Offset(0, .185), width: .40, height: .34),
+      Rect.fromCenter(center: const Offset(0, -.155), width: .56, height: .53),
+      for (final s in const [-1.0, 1.0])
+        Rect.fromCenter(center: Offset(s * .115, .345), width: .15, height: .085),
+    ]);
+    _furred(canvas, shape, nap: .036);
     if (dim || detail < 2) return;
-    // The crown catches the light and the jaw does not, so it reads as a volume
-    // rather than a cream-coloured disc.
+    // The chin throws a shadow onto the chest. Without it the head sits *on* the
+    // body rather than growing out of it.
     canvas.save();
     canvas.clipPath(shape);
     canvas.drawOval(
-      Rect.fromCenter(center: const Offset(0, -.36), width: .36, height: .16),
-      _soft(EmberPalette.light.withValues(alpha: .22), .055),
-    );
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(0, .33), width: .38, height: .13),
-      _soft(EmberPalette.paperShade.withValues(alpha: .30), .05),
+      Rect.fromCenter(center: const Offset(.01, .022), width: .40, height: .11),
+      _soft(coat.dark.withValues(alpha: .22), .030),
     );
     canvas.restore();
   }
@@ -464,19 +618,14 @@ class _Figure {
     final beat = still ? 0.0 : math.sin(t * 4 * math.pi) * .022;
     final roof = Path()
       ..moveTo(0, -.30)
-      ..cubicTo(.30 + beat, -.27, .40 + beat, -.02, .25, .23)
-      ..cubicTo(.13, .34, -.13, .34, -.25, .23)
-      ..cubicTo(-.40 - beat, -.02, -.30 - beat, -.27, 0, -.30)
+      ..cubicTo(.30 + beat, -.27, .40 + beat, -.04, .23, .19)
+      ..cubicTo(.11, .30, -.11, .30, -.23, .19)
+      ..cubicTo(-.40 - beat, -.04, -.30 - beat, -.27, 0, -.30)
       ..close();
-    canvas.drawPath(roof, _skin(roof.getBounds(), const Offset(-.10, -.22)));
+    // A moth's wings are scaled, not bare: the edge is a fringe, and it is the
+    // shortest fur on the creature.
+    _furred(canvas, roof, nap: .010);
     if (!dim) {
-      canvas.drawPath(
-        roof,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = _px(1.4)
-          ..color = EmberPalette.paperShade.withValues(alpha: .26),
-      );
       // The far side of the tent falls away from the light. This one shading is
       // what turns a flat pair of wings into a roof.
       canvas.save();
@@ -488,32 +637,34 @@ class _Figure {
           ..lineTo(.46, .30)
           ..lineTo(.46, -.36)
           ..close(),
-        _soft(EmberPalette.paperShade.withValues(alpha: .34), .045),
+        _soft(coat.shade.withValues(alpha: .34), .045),
       );
       if (detail >= 2) {
-        final veins = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = _px(.8)
-          ..color = EmberPalette.paperShade.withValues(alpha: .22);
-        for (var i = 0; i < 4; i++) {
-          final y = -.16 + i * .115;
-          canvas.drawLine(Offset(.03, y), Offset(.33, y + .07), veins);
-          canvas.drawLine(Offset(-.03, y), Offset(-.33, y + .07), veins);
-        }
+        // One soft crease where the two wings meet, and nothing else: straight
+        // vein lines across the tent read as a ladder, not as a wing.
+        canvas.drawLine(
+          const Offset(.005, -.28),
+          const Offset(.02, .30),
+          Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = _px(2.6)
+            ..color = coat.shade.withValues(alpha: .22),
+        );
       }
       canvas.restore();
     }
     // Abdomen, thorax, head: the thorax is the fattest thing about the creature.
-    final body = Path()
-      ..addOval(Rect.fromCenter(center: const Offset(0, .20), width: .175, height: .28))
-      ..addOval(Rect.fromCenter(center: const Offset(0, -.04), width: .26, height: .30))
-      ..addOval(Rect.fromCenter(center: const Offset(0, -.235), width: .19, height: .17));
-    canvas.drawPath(body, _skin(body.getBounds(), const Offset(0, -.30)));
+    final body = _blob([
+      Rect.fromCenter(center: const Offset(0, .20), width: .175, height: .28),
+      Rect.fromCenter(center: const Offset(0, -.04), width: .26, height: .30),
+      Rect.fromCenter(center: const Offset(0, -.235), width: .19, height: .17),
+    ]);
+    _furred(canvas, body, nap: .034);
     if (!dim && detail >= 1) {
       final ring = Paint()
         ..style = PaintingStyle.stroke
         ..strokeWidth = _px(.9)
-        ..color = EmberPalette.paperShade.withValues(alpha: .32);
+        ..color = coat.dark.withValues(alpha: .34);
       for (var i = 0; i < 3; i++) {
         final y = .14 + i * .062;
         canvas.drawLine(Offset(-.065, y), Offset(.065, y), ring);
@@ -536,38 +687,31 @@ class _Figure {
       ..cubicTo(.24, .39, .33, .24, .30, .06)
       ..cubicTo(.27, -.14, .18, -.31, .10, -.47 - lick)
       ..close();
+    final flame = _Coat.flame(color, coat.hue);
     final b = shape.getBounds();
-    canvas.drawPath(
+    _furred(
+      canvas,
       shape,
-      _radial(
-        b,
-        const Offset(0, .22),
-        [
-          Color.lerp(EmberPalette.light, color, .18)!.withValues(alpha: dim ? .32 : .96),
-          color.withValues(alpha: dim ? .24 : .88),
-          Color.lerp(color, EmberPalette.deep, .62)!.withValues(alpha: dim ? .20 : .70),
-        ],
-        const [0, .48, 1],
-      ),
+      nap: .012,
+      mat: flame,
+      // Lit from inside, from the base up — the opposite of the fur bodies.
+      fill: _radial(b, const Offset(0, .22), [
+        flame.tip.withValues(alpha: dim ? .32 : .96),
+        flame.lit.withValues(alpha: dim ? .26 : .93),
+        flame.base.withValues(alpha: dim ? .24 : .88),
+        flame.shade.withValues(alpha: dim ? .20 : .76),
+      ], const [0, .26, .60, 1]),
     );
-    if (dim) return;
-    canvas.drawPath(
-      shape,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _px(1.2)
-        ..color = EmberPalette.light.withValues(alpha: .26),
-    );
-    if (detail < 1) return;
+    if (dim || detail < 1) return;
     // The hot core.
     canvas.drawOval(
       Rect.fromCenter(center: const Offset(.01, .18), width: .19, height: .27),
-      _soft(Color.lerp(EmberPalette.light, color, .22)!.withValues(alpha: .62), .055),
+      _soft(flame.tip.withValues(alpha: .55), .055),
     );
   }
 
   /// A river stone: wider than it is tall with a settled base and one seam.
-  /// Quiet and steady, and nothing like the soft bodies around it.
+  /// Felted rather than furry — a short nap, so it stays the quiet one.
   void _shell(Canvas canvas) {
     final shape = Path()
       ..moveTo(-.31, .14)
@@ -576,7 +720,7 @@ class _Figure {
       ..cubicTo(.29, .25, .22, .29, .0, .29)
       ..cubicTo(-.22, .29, -.28, .25, -.31, .14)
       ..close();
-    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(-.10, -.20)));
+    _furred(canvas, shape, nap: .009);
     if (dim) return;
     canvas.drawPath(
       Path()
@@ -586,12 +730,12 @@ class _Figure {
         ..style = PaintingStyle.stroke
         ..strokeWidth = _px(1.3)
         ..strokeCap = StrokeCap.round
-        ..color = EmberPalette.paperShade.withValues(alpha: .34),
+        ..color = coat.dark.withValues(alpha: .28),
     );
   }
 
-  /// A soft drop: plump and wider than it is tall, with a short neck at the top
-  /// and a wet highlight. It squashes as it settles, which is the whole point.
+  /// A soft drop: plump and wider than it is tall, with a short neck at the top.
+  /// It squashes as it settles, which drags the whole coat with it.
   void _drop(Canvas canvas) {
     final squash = still ? 0.0 : math.sin(t * 4 * math.pi) * .035;
     final w = .30 * (1 + squash); // half-width at the belly
@@ -604,22 +748,7 @@ class _Figure {
       ..cubicTo(-.21, bottom, -w - .01, bottom - .10, -w, .07)
       ..cubicTo(-w + .01, -.05, -.14, top + .11, -.02, top)
       ..close();
-    canvas.drawPath(shape, _skin(shape.getBounds(), const Offset(-.09, -.12)));
-    if (dim) return;
-    canvas.drawPath(
-      shape,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = _px(1.1)
-        ..strokeCap = StrokeCap.round
-        ..color = EmberPalette.rim.withValues(alpha: .22),
-    );
-    if (detail < 2) return;
-    // A wet highlight: the one thing that says liquid rather than fur.
-    canvas.drawOval(
-      Rect.fromCenter(center: const Offset(-.14, -.06), width: .09, height: .16),
-      _soft(EmberPalette.light.withValues(alpha: .34), .035),
-    );
+    _furred(canvas, shape, nap: .024);
   }
 
   /// Combs, not clubs: a moth's antennae are feathers swept back off the head.
@@ -628,7 +757,7 @@ class _Figure {
       ..style = PaintingStyle.stroke
       ..strokeWidth = _px(1.4)
       ..strokeCap = StrokeCap.round
-      ..color = Color.lerp(EmberPalette.furLight, color, dim ? 0 : .2)!.withValues(alpha: dim ? .3 : .8);
+      ..color = (dim ? coat.shade : coat.dark).withValues(alpha: dim ? .3 : .85);
     for (final s in const [-1.0, 1.0]) {
       final start = Offset(s * .055, -.30);
       final ctl = Offset(s * .19, -.42);
@@ -644,7 +773,7 @@ class _Figure {
         ..style = PaintingStyle.stroke
         ..strokeWidth = _px(.8)
         ..strokeCap = StrokeCap.round
-        ..color = EmberPalette.furLight.withValues(alpha: .5);
+        ..color = coat.shade.withValues(alpha: .62);
       for (var i = 1; i <= 5; i++) {
         final u = i / 6;
         final p = _quad(start, ctl, tip, u);
@@ -700,7 +829,7 @@ class _Figure {
       // The white is only ever a thin ring; the dark is the eye.
       canvas.drawOval(
         Rect.fromCenter(center: at, width: .118, height: .118 * open * 1.15),
-        Paint()..color = EmberPalette.light.withValues(alpha: dim ? .20 : .92),
+        Paint()..color = coat.tip.withValues(alpha: dim ? .20 : .92),
       );
       canvas.drawOval(
         Rect.fromCenter(center: at + gaze, width: .088, height: .094 * open * 1.15),
@@ -724,17 +853,17 @@ class _Figure {
     if (dim || rig.brow == 0 && rig.tilt == 0) return;
     // `brow` lifts both ends; `tilt` lifts the inner one, which is the worried
     // brow. Dropping it instead aims the brow at the nose — working, not sad.
-    final lift = rig.brow * .010;
-    final inner = at + Offset(-s * .055, -.082 - lift - rig.tilt * .028);
-    final outer = at + Offset(s * .062, -.080 - lift + rig.tilt * .012);
+    final lift = rig.brow * .016;
+    final inner = at + Offset(-s * .046, -.080 - lift - rig.tilt * .038);
+    final outer = at + Offset(s * .052, -.078 - lift + rig.tilt * .018);
     canvas.drawLine(
       inner,
       outer,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = _px(1.6)
+        ..strokeWidth = _px(1.5)
         ..strokeCap = StrokeCap.round
-        ..color = Color.lerp(EmberPalette.furLight, EmberPalette.paperShade, .4)!.withValues(alpha: .9),
+        ..color = coat.shade.withValues(alpha: .7),
     );
   }
 
@@ -785,14 +914,23 @@ class _Figure {
     );
   }
 
-  /// One blink per eight-second cycle.
+  /// Where the blinks sit around the 37-second drift cycle, and how long each one
+  /// takes. Six at uneven gaps, the last two a pair — the double blink people
+  /// actually do when they are tired or thinking — so nothing about resting looks
+  /// scheduled. `.007` of a 37-second cycle is a quarter of a second, which is a
+  /// blink; anything longer is a wince.
+  static const _blinks = <double>[.055, .19, .365, .52, .70, .727, .885];
+
   double _blink() {
     if (rig.eye <= .06) return 0;
     if (still) return rig.eye;
-    final p = t % 1;
-    if (p < .855 || p > .885) return rig.eye;
-    // Ease the lids so a blink is a blink and not a flicker.
-    return rig.eye * (1 - math.sin((p - .855) / .030 * math.pi));
+    for (final c in _blinks) {
+      final d = (s % 1 - c).abs();
+      if (d >= .007) continue;
+      final k = 1 - d / .007;
+      return rig.eye * (1 - k * k * (3 - 2 * k));
+    }
+    return rig.eye;
   }
 
   // -- gestures on top ------------------------------------------------------
@@ -832,26 +970,152 @@ class _Figure {
 
   // -- material -------------------------------------------------------------
 
-  /// The body's own skin: cream fur, lit from wherever the light falls on it.
-  Paint _skin(Rect b, Offset litAt) {
+  /// One material for every body: a dark undercoat, a lit volume, and a topcoat
+  /// of hairs whose tips catch the key light. `nap` is the hair length in figure
+  /// units; zero leaves the shape smooth.
+  void _furred(Canvas canvas, Path body, {double nap = 0, _Coat? mat, Paint? fill}) {
+    final m = mat ?? coat;
+    final b = body.getBounds();
+    // A coat of two hundred hairs on an 18 px chip is grey mud. At that size the
+    // gradient alone carries the fur.
+    final fuzzy = nap > 0 && detail >= 1;
+    final len = nap * (detail == 2 ? 1 : .74);
+    if (!dim && fuzzy) {
+      _hairs(canvas, b, body, len * .8, m, under: true);
+    }
+    canvas.drawPath(body, fill ?? _skin(b, m));
+    if (dim) return;
+    _volume(canvas, body, b, m);
+    if (fuzzy) _hairs(canvas, b, body, len, m, under: false);
+  }
+
+  /// The body's own fur: lit where the key light falls, cool and dark at the
+  /// terminator, and never a flat colour.
+  Paint _skin(Rect b, _Coat m) {
     if (dim) {
       return _radial(
         b,
-        litAt,
+        key,
         [const Color(0xFF3E3646).withValues(alpha: .95), EmberPalette.ash.withValues(alpha: .85)],
         const [0, 1],
       );
     }
-    final lit = Color.lerp(EmberPalette.paper, EmberPalette.light, .32)!;
-    final mid = Color.lerp(EmberPalette.paper, color, .16)!;
-    final edge = Color.lerp(mid, EmberPalette.paperShade, .44)!;
-    return _radial(
-      b,
-      litAt,
-      [lit.withValues(alpha: .98), mid.withValues(alpha: .98), edge.withValues(alpha: .92)],
-      const [0, .52, 1],
-    );
+    return _radial(b, key, [
+      m.lit.withValues(alpha: .99),
+      m.base.withValues(alpha: .99),
+      m.shade.withValues(alpha: .96),
+      // The terminator stops short of black: a body that goes to near-black at its
+      // own edge reads as a silhouette, and the fur tips have nothing to sit on.
+      Color.lerp(m.shade, m.dark, .45)!.withValues(alpha: .93),
+    ], const [0, .46, .84, 1]);
   }
+
+  /// The three things that sell a lit volume: sheen where the light lands,
+  /// occlusion where the body sinks into the floor, and back-lit hair along the
+  /// edge the light never reaches.
+  void _volume(Canvas canvas, Path body, Rect b, _Coat m) {
+    if (b.isEmpty) return;
+    canvas.save();
+    canvas.clipPath(body);
+    canvas.drawOval(
+      Rect.fromCenter(center: key, width: b.width * .50, height: b.height * .34),
+      _soft(m.tip.withValues(alpha: .26), b.shortestSide * .13),
+    );
+    canvas.drawOval(
+      Rect.fromCenter(
+        center: Offset(b.center.dx + (key.dx - b.center.dx) * .18, b.bottom - b.height * .03),
+        width: b.width * .84,
+        height: b.height * .30,
+      ),
+      _soft(m.dark.withValues(alpha: .30), b.height * .10),
+    );
+    // The rim is the only cool thing on the creature: it is the room's own light
+    // bouncing off the far side, and it is what separates one body from the dark.
+    canvas.clipRect(
+      Rect.fromLTWH(b.right - b.width * .34, b.bottom - b.height * .52, b.width * .36, b.height * .54),
+    );
+    canvas.drawPath(
+      body,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = _px(2.8)
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, b.shortestSide * .022)
+        ..color = EmberPalette.rim.withValues(alpha: .30),
+    );
+    canvas.restore();
+  }
+
+  /// Fur, in the two passes a real coat is drawn with: the undercoat starts
+  /// inside the outline so the body swallows its roots, and the topcoat starts on
+  /// the outline so only lit tips stick out. The silhouette is a fringe, not a line.
+  ///
+  /// Every hair leaves the skin and then bends, because a hair that runs straight
+  /// out from the body is a spine. The hairs are batched into five tone-paths and
+  /// drawn once each, so a coat costs five draws, not two hundred.
+  void _hairs(Canvas canvas, Rect b, Path body, double len, _Coat m, {required bool under}) {
+    final n = detail == 2 ? (under ? 120 : 96) : (under ? 44 : 34);
+    final paints = [
+      _hair(m.dark, under ? .58 : .30, under),
+      _hair(m.shade, under ? .62 : .58, under),
+      _hair(m.base, under ? .55 : .82, under),
+      _hair(m.lit, under ? .38 : .95, under),
+      _hair(m.tip, under ? .22 : 1, under),
+    ];
+    final strokes = List.generate(5, (_) => Path());
+    final centre = b.center;
+    final far = math.max(b.width, b.height) * .5 + len;
+    final sway = still ? 0.0 : math.sin(t * 4 * math.pi) * .22 + level * .4;
+    var i = 0;
+    for (final metric in body.computeMetrics()) {
+      if (metric.length == 0) continue;
+      for (var k = 0; k < n; k++) {
+        final u = (k + _noise(i * 3 + (under ? 11 : 5))) / n * metric.length;
+        final tan = metric.getTangentForOffset(u);
+        if (tan == null) continue;
+        final at = tan.position;
+        var out = Offset(-tan.vector.dy, tan.vector.dx);
+        if (out.distance == 0) continue;
+        out /= out.distance;
+        final from = at - centre;
+        if (from.dx * out.dx + from.dy * out.dy < 0) out = -out;
+        final j1 = _noise(i * 7 + 3), j2 = _noise(i * 13 + 1), j3 = _noise(i * 29 + 7);
+        final l = len * (.55 + j2 * .62);
+        // The tip falls with gravity and scatters sideways; the sway is the body
+        // moving underneath the coat.
+        var dir = out * (.5 + j1 * .5) + Offset((j3 - .5) * 1.15 + sway, .42 + j1 * .4);
+        if (dir.distance == 0) continue;
+        dir /= dir.distance;
+        final lit = (1 - ((at - key).distance / far)).clamp(0.0, 1.0);
+        strokes[(lit * 4).round()]
+          ..moveTo(at.dx - out.dx * l * (under ? .4 : .03), at.dy - out.dy * l * (under ? .4 : .03))
+          ..quadraticBezierTo(
+            at.dx + out.dx * l * .5,
+            at.dy + out.dy * l * .5,
+            at.dx + dir.dx * l,
+            at.dy + dir.dy * l,
+          );
+        i++;
+      }
+    }
+    for (var s = 0; s < 5; s++) {
+      canvas.drawPath(strokes[s], paints[s]);
+    }
+  }
+
+  Paint _hair(Color color, double alpha, bool under) => Paint()
+    ..style = PaintingStyle.stroke
+    ..strokeCap = StrokeCap.round
+    ..strokeWidth = _px(under ? 1.1 : .85)
+    ..color = color.withValues(alpha: alpha);
+}
+
+/// A stable pseudo-random 0..1 for one hair. The same index always gives the
+/// same number, so the coat does not boil as the body moves.
+double _noise(int seed) {
+  var x = seed * 0x1b873593;
+  x = (x ^ (x >> 15)) * 0x2c1b3c6d;
+  x = (x ^ (x >> 12)) * 0x297a2d39;
+  return ((x ^ (x >> 15)) & 0xffff) / 0xffff;
 }
 
 Offset _quad(Offset a, Offset c, Offset b, double t) {
@@ -903,6 +1167,7 @@ Paint _soft(Color color, double sigma) => Paint()
 class EmberPainter extends CustomPainter {
   EmberPainter({
     required this.body,
+    required this.coat,
     required this.mood,
     required this.previous,
     required this.blend,
@@ -912,14 +1177,19 @@ class EmberPainter extends CustomPainter {
     required this.look,
     required this.level,
     this.reach,
+    this.s = 0,
   });
 
   final CompiiBody body;
+  final CompiiCoat coat;
   final Mood mood;
   final Mood previous;
   final double blend;
   final int jobs;
   final double t;
+
+  /// Where the 37-second drift cycle is. See [_EmberState.drift].
+  final double s;
   final bool still;
   final Offset? look;
   final double level;
@@ -932,14 +1202,17 @@ class EmberPainter extends CustomPainter {
     final color = Color.lerp(EmberPalette.core(previous), EmberPalette.core(mood), blend)!;
     final span = s * .86;
     final centre = Offset(size.width / 2, size.height / 2 - s * .02);
+    final look = this.look ?? Offset.zero;
 
+    // The cast shadow slides the other way from the key light, so the creature is
+    // standing in a room with one lamp rather than floating over a grey smudge.
     canvas.drawOval(
       Rect.fromCenter(
-        center: Offset(centre.dx, centre.dy + span * .44),
+        center: Offset(centre.dx - span * .05 - look.dx * span * .03, centre.dy + span * .44),
         width: span * .46,
         height: span * .08,
       ),
-      _soft(EmberPalette.deep.withValues(alpha: dim ? .12 : .34), span * .018),
+      _soft(EmberPalette.deep.withValues(alpha: dim ? .12 : .38), span * .018),
     );
     if (reach != null) _reach(canvas, centre, s);
 
@@ -952,12 +1225,14 @@ class EmberPainter extends CustomPainter {
       rig: _Rig.mix(_Rig.of(previous), _Rig.of(mood), blend),
       mood: mood,
       t: t,
+      s: s,
       still: still,
       jobs: jobs,
       level: level,
       look: look,
       detail: f.detail,
       unit: f.unit,
+      coat: _Coat.of(coat, color),
       color: color,
       dim: dim,
     ).draw(canvas);
@@ -986,11 +1261,13 @@ class EmberPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant EmberPainter old) =>
       old.body != body ||
+      old.coat != coat ||
       old.mood != mood ||
       old.previous != previous ||
       old.blend != blend ||
       old.jobs != jobs ||
       old.t != t ||
+      old.s != s ||
       old.still != still ||
       old.look != look ||
       old.level != level ||
@@ -1000,6 +1277,7 @@ class EmberPainter extends CustomPainter {
 class EmberFacePainter extends CustomPainter {
   EmberFacePainter({
     required this.body,
+    required this.coat,
     required this.mood,
     required this.previous,
     required this.blend,
@@ -1008,14 +1286,19 @@ class EmberFacePainter extends CustomPainter {
     required this.still,
     required this.look,
     required this.level,
+    this.s = 0,
   });
 
   final CompiiBody body;
+  final CompiiCoat coat;
   final Mood mood;
   final Mood previous;
   final double blend;
   final int jobs;
   final double t;
+
+  /// Where the 37-second drift cycle is. See [_EmberState.drift].
+  final double s;
   final bool still;
   final Offset? look;
   final double level;
@@ -1063,12 +1346,14 @@ class EmberFacePainter extends CustomPainter {
       rig: _Rig.mix(_Rig.of(previous), _Rig.of(mood), blend),
       mood: mood,
       t: t,
+      s: s,
       still: still,
       jobs: jobs,
       level: level,
       look: look,
       detail: f.detail,
       unit: f.unit,
+      coat: _Coat.of(coat, color),
       color: color,
       dim: dim,
     ).draw(canvas);
@@ -1097,11 +1382,13 @@ class EmberFacePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant EmberFacePainter old) =>
       old.body != body ||
+      old.coat != coat ||
       old.mood != mood ||
       old.previous != previous ||
       old.blend != blend ||
       old.jobs != jobs ||
       old.t != t ||
+      old.s != s ||
       old.still != still ||
       old.look != look ||
       old.level != level;

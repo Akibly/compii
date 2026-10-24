@@ -7,6 +7,9 @@ class AppControl {
   /// The pointing / cursor-buddy overlay process.
   Process? overlay;
 
+  /// The floating island process (compact capsule, ask card, live conversations).
+  Process? island;
+
   static const _runKey = r'HKCU\Software\Microsoft\Windows\CurrentVersion\Run';
 
   /// Whether Compii starts quietly when you sign in to Windows (per-user, no admin needed).
@@ -25,9 +28,10 @@ class AppControl {
     if (r.exitCode != 0 && on) throw Exception('Windows didn\'t accept the start-up setting: ${r.stderr}');
   }
 
-  /// Really quit: the window and the cursor buddy (Compii Core keeps running).
+  /// Really quit: the window, the cursor buddy and the island (Compii Core keeps running).
   Future<void> quit() async {
     overlay?.kill();
+    island?.kill();
     await windowManager.setPreventClose(false);
     await windowManager.close();
   }

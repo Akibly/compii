@@ -6,13 +6,14 @@ import 'agent_character.dart';
 import 'bots.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
+import 'thread.dart' show Run;
 import 'tokens.dart';
 
 /// A job Compii handed to a teammate: who has it, what "done" means, and how
 /// it came back. The verdict line appears once Compii has checked the work.
 class DelegationCard extends StatelessWidget {
   const DelegationCard({super.key, required this.event, this.done, this.review, this.attempt = 1,
-      required this.core, this.onOpen});
+      required this.core, required this.run, this.onOpen});
   final Map<String, dynamic> event;
   final Map<String, dynamic>? done;
   final Map<String, dynamic>? review;
@@ -20,6 +21,7 @@ class DelegationCard extends StatelessWidget {
   /// 1 the first time; 2+ after Compii sent it back and the teammate is fixing it.
   final int attempt;
   final CoreClient core;
+  final Run run;
   final void Function(String taskId)? onOpen;
 
   @override
@@ -115,6 +117,13 @@ class DelegationCard extends StatelessWidget {
                     onPressed: () => onOpen!(child),
                     icon: const Glyph(G.eye, size: 14),
                     label: const Text('Watch'),
+                  ),
+                if (child.isNotEmpty)
+                  TextButton.icon(
+                    style: TextButton.styleFrom(foregroundColor: c.danger),
+                    onPressed: () => run(() => core.stop(child)),
+                    icon: const Glyph(G.stop, size: 14, duo: true),
+                    label: const Text('Stop'),
                   ),
               ],
             ),

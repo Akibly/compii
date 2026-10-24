@@ -732,7 +732,7 @@ class PaletteButton extends StatelessWidget {
         child: Material(
           type: MaterialType.transparency,
           child: Ink(
-            height: 30,
+            height: MediaQuery.textScalerOf(context).scale(30),
             decoration: ShapeDecoration(color: c.sunken, shape: shape),
             child: InkWell(
               onTap: onTap,

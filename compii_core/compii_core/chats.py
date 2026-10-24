@@ -46,6 +46,7 @@ def _record(task: Any) -> dict[str, Any]:
         "active": task.active,
         "origin": task.origin,
         "bot_id": getattr(task, "bot_id", None),
+        "owner_id": getattr(task, "owner_id", None),
         "team": list(getattr(task, "team", [])),
         "events": events,
         "history": _history(task),
@@ -90,6 +91,11 @@ def restore(agent: Any, records: list[dict[str, Any]], valid_bots: set[str], fal
         bot_id = r.get("bot_id")
         if bot_id not in valid_bots:
             bot_id = fallback_bot
+        # An archive written before threads tracked their owner keeps the speaker as the
+        # owner; a deleted teammate falls back to whoever is left holding the thread.
+        owner_id = r.get("owner_id") or bot_id
+        if owner_id not in valid_bots:
+            owner_id = bot_id
         team = [b for b in r.get("team", []) if b in valid_bots]
         if bot_id and bot_id not in team:
             team.insert(0, bot_id)
@@ -106,7 +112,7 @@ def restore(agent: Any, records: list[dict[str, Any]], valid_bots: set[str], fal
             while history and history[-1].get("role") == "user":
                 history.pop()  # a turn that never answered: don't leave two user roles in a row
         task = Task(id=task_id, request=str(r.get("request") or ""), origin=r.get("origin"), status=status,
-                    created=created, active=active, events=events, bot_id=bot_id, team=team,
+                    created=created, active=active, events=events, bot_id=bot_id, owner_id=owner_id, team=team,
                     messages=[{"role": h["role"], "content": h["content"]} for h in history])
         agent.tasks[task_id] = task
         restored += 1

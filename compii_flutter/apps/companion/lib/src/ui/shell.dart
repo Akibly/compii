@@ -9,6 +9,7 @@ import '../console/character.dart';
 import '../console/core_client.dart';
 import 'bots.dart';
 import 'clips.dart';
+import 'conversation_io.dart';
 import 'pages.dart';
 import 'proactive.dart';
 import 'thread.dart';
@@ -91,6 +92,13 @@ class AppState extends ChangeNotifier {
         compiiBody.value = CompiiBody.values.firstWhere(
           (b) => b.name == form,
           orElse: () => CompiiBody.plush,
+        );
+      }
+      final coat = p.getString('compii_coat');
+      if (coat != null) {
+        compiiCoat.value = CompiiCoat.values.firstWhere(
+          (c) => c.name == coat,
+          orElse: () => CompiiCoat.blue,
         );
       }
       final seen = p.getString('bot_seen');
@@ -199,6 +207,16 @@ class AppState extends ChangeNotifier {
     compiiBody.value = b;
     notifyListeners();
     SharedPreferences.getInstance().then((p) => p.setString('compii_form', b.name)).ignore();
+  }
+
+  /// The coat Compii is brushed in. Same reasoning as the body: taste, not state.
+  CompiiCoat get coat => compiiCoat.value;
+
+  void setCoat(CompiiCoat c) {
+    if (compiiCoat.value == c) return;
+    compiiCoat.value = c;
+    notifyListeners();
+    SharedPreferences.getInstance().then((p) => p.setString('compii_coat', c.name)).ignore();
   }
 
   void fail(Object? e) {
@@ -405,6 +423,10 @@ class _Sidebar extends StatelessWidget {
     final mood = state.moodWith(core);
     final tasks = core.ordered;
     final voice = state.voice;
+    // A teammate the user put away keeps a lane here — its conversations have to stay reachable —
+    // but it sits under the team and asks for nothing: no waiting count, no new work.
+    final team = [for (final b in core.bots) if (!b.archived) b].take(8).toList();
+    final away = [for (final b in core.bots) if (b.archived) b];
     final jobs = tasks.where((t) => t.active).length;
     final (String status, Color statusColor) = switch (mood) {
       Mood.offline => ('Offline', c.danger),
@@ -506,7 +528,7 @@ class _Sidebar extends StatelessWidget {
                       icon: const Glyph(G.plus, size: 14),
                     ),
                   ]),
-                  for (final bot in core.bots.take(8))
+                  for (final bot in team)
                     _TeamRow(
                       bot: bot,
                       core: core,
@@ -518,6 +540,28 @@ class _Sidebar extends StatelessWidget {
                         state.markBotSeen(bot.id);
                         state.pickBot(bot.primary ? null : bot.id);
                       },
+                    ),
+                  for (final bot in away.take(3))
+                    _TeamRow(
+                      bot: bot,
+                      core: core,
+                      state: state,
+                      selected: state.section == Section.home && state.botId == bot.id,
+                      onTap: () => state.pickBot(bot.id),
+                    ),
+                  if (away.length > 3)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(10, 2, 6, 0),
+                      child: Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          onPressed: () => state.go(Section.team),
+                          style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
+                          icon: Glyph(G.box, size: 12, color: c.faint),
+                          label: Text('${away.length} put away',
+                              style: context.type.labelMedium?.copyWith(color: c.faint)),
+                        ),
+                      ),
                     ),
                 ],
                 group('Workspace'),
@@ -751,6 +795,9 @@ class _TeamRowState extends State<_TeamRow> {
     final c = context.c;
     final bot = widget.bot;
     final on = widget.selected;
+    // Retired, not gone: the lane stays so its history is one tap away, but it is visibly out of
+    // the team and it never claims anything is waiting on it.
+    final away = bot.archived;
     return MouseRegion(
       onEnter: (_) => setState(() => _hover = true),
       onExit: (_) => setState(() => _hover = false),
@@ -771,8 +818,9 @@ class _TeamRowState extends State<_TeamRow> {
                 selected: on,
                 label: [
                   bot.name,
+                  if (away) 'archived',
                   if (bot.job.isNotEmpty) bot.job,
-                  if (widget.unread > 0) '${widget.unread} waiting',
+                  if (!away && widget.unread > 0) '${widget.unread} waiting',
                 ].join(', '),
                 onTap: widget.onTap,
                 child: MouseRegion(
@@ -782,24 +830,34 @@ class _TeamRowState extends State<_TeamRow> {
                     onTap: widget.onTap,
                     child: Row(
                       children: [
-                        BotAvatar(bot: bot, size: 22),
+                        if (away)
+                          Opacity(opacity: .45, child: BotAvatar(bot: bot, size: 22))
+                        else
+                          BotAvatar(bot: bot, size: 22),
                         const SizedBox(width: 9),
                         Expanded(
                           child: Tooltip(
-                            message: bot.job.isEmpty ? bot.name : '${bot.name} — ${bot.job}',
+                            message: away
+                                ? '${bot.name} — archived. Its conversations stay; bring it back for new work.'
+                                : (bot.job.isEmpty ? bot.name : '${bot.name} — ${bot.job}'),
                             waitDuration: const Duration(milliseconds: 500),
                             child: Text(
                               bot.name,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
                               style: context.type.labelLarge?.copyWith(
-                                color: on ? c.accent : (_hover ? c.text : c.muted),
+                                color: away ? c.faint : (on ? c.accent : (_hover ? c.text : c.muted)),
                                 fontWeight: on ? FontWeight.w600 : FontWeight.w500,
                               ),
                             ),
                           ),
                         ),
-                        if (widget.unread > 0)
+                        if (away)
+                          Padding(
+                            padding: const EdgeInsets.only(right: 3),
+                            child: Glyph(G.box, size: 11, color: c.faint),
+                          )
+                        else if (widget.unread > 0)
                           Container(
                             constraints: const BoxConstraints(minWidth: 17),
                             padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
@@ -835,12 +893,16 @@ class _TeamRowState extends State<_TeamRow> {
                       onSelected: (v) {
                         if (v == 'pin') {
                           _act(() => widget.core.editBot(bot.id, {'pinned': !bot.pinned}));
+                        } else if (v == 'back') {
+                          _act(() => widget.core.editBot(bot.id, {'archived': false}));
                         } else if (v == 'edit') {
                           showBotEditor(context, core: widget.core, state: widget.state, run: _act, bot: bot);
                         }
                       },
                       itemBuilder: (_) => [
-                        PopupMenuItem(value: 'pin', child: Text(bot.pinned ? 'Unpin from top' : 'Pin to top')),
+                        if (!away)
+                          PopupMenuItem(value: 'pin', child: Text(bot.pinned ? 'Unpin from top' : 'Pin to top')),
+                        if (away) const PopupMenuItem(value: 'back', child: Text('Bring back to the team')),
                         const PopupMenuItem(value: 'edit', child: Text('Edit teammate…')),
                       ],
                     )
@@ -1542,50 +1604,79 @@ class _Conversation extends StatelessWidget {
                   children: [
                     Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.headlineSmall),
                     const SizedBox(height: 6),
-                    Row(
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
                       children: [
-                        if (task.isTeam) ...[
-                          TeamStrip(task: task, core: core),
-                          const SizedBox(width: 8),
-                        ] else if (bot != null && !bot.primary) ...[
+                        if (task.isTeam)
+                          TeamStrip(task: task, core: core)
+                        else if (bot != null && !bot.primary)
                           BotChip(bot: bot),
-                          const SizedBox(width: 6),
-                        ],
                         Pill(label, color: color),
-                        if (core.sight.value['looking'] == true) ...[
-                          const SizedBox(width: 6),
-                          Pill('Seeing your screen', color: c.accent, glyph: G.eye),
-                        ],
-                        if (task.fromRoutine) ...[
-                          const SizedBox(width: 6),
-                          Pill('Routine', color: c.accent, glyph: G.routine),
-                        ],
-                        if (task.delegated) ...[
-                          const SizedBox(width: 6),
-                          Pill('Delegated job', color: c.accent, glyph: G.team),
-                        ],
-                        if (task.probation || (task.delegated && core.botFor(task.botId)?.trust == 'probation')) ...[
-                          const SizedBox(width: 6),
+                        if (task.answersWith.isNotEmpty)
+                          Tooltip(
+                            message: 'The AI thinking behind this conversation: ${task.answersWith}',
+                            waitDuration: const Duration(milliseconds: 350),
+                            child: ConstrainedBox(
+                              // A model id is long; on a narrow pane or at 2x type it shortens
+                              // rather than pushing the header off the screen.
+                              constraints: const BoxConstraints(maxWidth: 200),
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Glyph(G.memory, size: 12, color: c.faint),
+                                  const SizedBox(width: 5),
+                                  Flexible(
+                                    child: Text(task.answersWith,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: context.type.labelSmall?.copyWith(color: c.faint)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        if (core.sight.value['looking'] == true) Pill('Seeing your screen', color: c.accent, glyph: G.eye),
+                        if (task.fromRoutine) Pill('Routine', color: c.accent, glyph: G.routine),
+                        if (task.delegated) Pill('Delegated job', color: c.accent, glyph: G.team),
+                        if (task.probation || (task.delegated && core.botFor(task.botId)?.trust == 'probation'))
                           Pill('On probation', color: c.warning, glyph: G.warning),
-                        ],
                       ],
                     ),
                   ],
                 ),
               ),
-              if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
-              TextButton.icon(
-                onPressed: () => state.setChatView(false),
-                icon: const Glyph(G.memory, size: 16),
-                label: const Text('Character view'),
-              ),
-              if (task.active)
-                OutlinedButton.icon(
-                  style: OutlinedButton.styleFrom(foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),
-                  onPressed: () => run(() => core.stop(task.id)),
-                  icon: const Glyph(G.stop, size: 16, duo: true),
-                  label: const Text('Stop'),
+              // Five controls beside a long title: they flow onto a second line rather
+              // than pushing the header out of a narrow pane or at enlarged type.
+              Flexible(
+                child: Wrap(
+                  alignment: WrapAlignment.end,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (!task.active && core.bots.length > 1)
+                      TextButton.icon(
+                        onPressed: () => showHandover(context, core: core, state: state, run: run, task: task),
+                        icon: const Glyph(G.hand, size: 15),
+                        label: const Text('Hand over'),
+                      ),
+                    if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
+                    TextButton.icon(
+                      onPressed: () => state.setChatView(false),
+                      icon: const Glyph(G.memory, size: 16),
+                      label: const Text('Character view'),
+                    ),
+                    if (task.active)
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                            foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),
+                        onPressed: () => run(() => core.stop(task.id)),
+                        icon: const Glyph(G.stop, size: 16, duo: true),
+                        label: const Text('Stop'),
+                      ),
+                    ConversationMenu(task: task, core: core, state: state),
+                  ],
                 ),
+              ),
             ],
           ),
         ),

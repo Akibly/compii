@@ -14,7 +14,8 @@ import '../console/character.dart';
 import '../updates.dart';
 import 'first_run.dart';
 
-/// One of Compii's bodies, shown wearing the face it will actually use.
+/// One of Compii's bodies, shown wearing the face it will actually use. No name
+/// under it: the shape is the choice, and a screen reader gets a description.
 class _FormTile extends StatelessWidget {
   const _FormTile({required this.body, required this.selected, required this.onTap});
   final CompiiBody body;
@@ -27,37 +28,70 @@ class _FormTile extends StatelessWidget {
     return Semantics(
       button: true,
       selected: selected,
-      label: '${body.label}: ${body.note}',
+      label: body.desc,
       child: InkWell(
         onTap: onTap,
         borderRadius: Shapes.r12,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
+          duration: context.motion(180),
           curve: Curves.easeOut,
-          padding: const EdgeInsets.fromLTRB(6, 10, 6, 9),
+          padding: const EdgeInsets.all(5),
           decoration: BoxDecoration(
             color: selected ? c.accent.withValues(alpha: .10) : c.sunken,
             borderRadius: Shapes.r12,
             border: Border.all(color: selected ? c.accent : c.border, width: selected ? 1.6 : 1),
           ),
-          child: Column(
-            children: [
-              SizedBox.square(
-                dimension: 62,
-                child: Ember(
-                  mood: Mood.idle,
-                  body: body,
-                  animate: false,
-                  phase: .3,
-                  followPointer: false,
-                ),
+          child: Center(
+            child: SizedBox.square(
+              dimension: 64,
+              child: Ember(
+                mood: Mood.idle,
+                body: body,
+                animate: false,
+                phase: .3,
+                followPointer: false,
               ),
-              const SizedBox(height: 6),
-              Text(
-                body.label,
-                style: context.type.labelMedium?.copyWith(color: c.text, fontWeight: FontWeight.w600),
-              ),
-            ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The coat, as the three tones the fur is actually brushed with.
+class _CoatTile extends StatelessWidget {
+  const _CoatTile({required this.coat, required this.selected, required this.onTap});
+  final CompiiCoat coat;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '${coat.desc} coat',
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: AnimatedContainer(
+          duration: context.motion(180),
+          curve: Curves.easeOut,
+          width: 42,
+          height: 42,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: coat.chip,
+            ),
+            border: Border.all(
+              color: selected ? c.accent : c.border,
+              width: selected ? 2.6 : 1,
+            ),
           ),
         ),
       ),
@@ -126,7 +160,7 @@ class _MemoryPageState extends State<MemoryPage> {
   void _revealFocus() {
     final found = _focusTile.currentContext;
     if (found != null) {
-      Scrollable.ensureVisible(found, duration: const Duration(milliseconds: 240),
+      Scrollable.ensureVisible(found, duration: context.motion(240),
           alignment: .35, curve: Curves.easeOutCubic);
     }
   }
@@ -397,8 +431,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           Text('Compii’s form', style: context.type.titleSmall),
                           const SizedBox(height: 3),
                           Text(
-                            'The same face and the same moods in every body — only the shape changes. '
-                            'Kept on this PC.',
+                            'The same face and the same moods in every body. Pick the shape and '
+                            'the colour of its coat. Kept on this PC.',
                             style: context.type.bodySmall?.copyWith(color: c.muted),
                           ),
                         ],
@@ -411,7 +445,7 @@ class _SettingsPageState extends State<SettingsPage> {
                   builder: (context, box) {
                     const gap = 10.0;
                     final n = CompiiBody.values.length;
-                    final w = ((box.maxWidth - gap * (n - 1)) / n).clamp(72.0, 118.0);
+                    final w = ((box.maxWidth - gap * (n - 1)) / n).clamp(66.0, 104.0);
                     return Wrap(
                       spacing: gap,
                       runSpacing: gap,
@@ -428,6 +462,19 @@ class _SettingsPageState extends State<SettingsPage> {
                       ],
                     );
                   },
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 12,
+                  runSpacing: 12,
+                  children: [
+                    for (final k in CompiiCoat.values)
+                      _CoatTile(
+                        coat: k,
+                        selected: k == widget.state.coat,
+                        onTap: () => widget.state.setCoat(k),
+                      ),
+                  ],
                 ),
               ],
             ),
@@ -698,19 +745,21 @@ class VoiceSettings extends StatelessWidget {
                         'How Compii answers you',
                         'Out loud, a chime with the words on screen, the words on their own, or nothing at all. '
                             'Full answers are always in the conversation.',
-                        DropdownButton<String>(
-                          value: voice.outputMode,
-                          underline: const SizedBox.shrink(),
-                          items: [
-                            for (final (mode, label) in const [
-                              ('voice', 'Speak'),
-                              ('sound', 'Chime + words on screen'),
-                              ('caption', 'Words on screen'),
-                              ('off', 'Nothing'),
-                            ])
-                              DropdownMenuItem(value: mode, child: Text(label)),
-                          ],
-                          onChanged: (v) => run(() => voice.set({'output_mode': v})),
+                        ScrollCapped(
+                          child: DropdownButton<String>(
+                            value: voice.outputMode,
+                            underline: const SizedBox.shrink(),
+                            items: [
+                              for (final (mode, label) in const [
+                                ('voice', 'Speak'),
+                                ('sound', 'Chime + words on screen'),
+                                ('caption', 'Words on screen'),
+                                ('off', 'Nothing'),
+                              ])
+                                DropdownMenuItem(value: mode, child: Text(label)),
+                            ],
+                            onChanged: (v) => run(() => voice.set({'output_mode': v})),
+                          ),
                         ),
                       ),
                       Divider(height: 1, color: c.border),
@@ -727,14 +776,16 @@ class VoiceSettings extends StatelessWidget {
                                 ? 'An open voice model on your PC. Pick how Compii sounds.'
                                 : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
                         voice.engine != 'fast' && voice.naturalVoice
-                            ? DropdownButton<String>(
-                                value: '${settings['voice']}',
-                                underline: const SizedBox.shrink(),
-                                items: [
-                                  for (final e in voices.entries)
-                                    DropdownMenuItem(value: e.key, child: Text('${e.value}')),
-                                ],
-                                onChanged: (v) => run(() => voice.set({'voice': v})),
+                            ? ScrollCapped(
+                                child: DropdownButton<String>(
+                                  value: '${settings['voice']}',
+                                  underline: const SizedBox.shrink(),
+                                  items: [
+                                    for (final e in voices.entries)
+                                      DropdownMenuItem(value: e.key, child: Text('${e.value}')),
+                                  ],
+                                  onChanged: (v) => run(() => voice.set({'voice': v})),
+                                ),
                               )
                             : voice.naturalVoice
                                 ? Glyph(G.checkCircle, color: c.success)

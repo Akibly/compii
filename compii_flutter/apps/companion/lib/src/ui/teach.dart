@@ -72,7 +72,9 @@ class _TeachDialogState extends State<_TeachDialog> {
       final botsFuture = TrustApi.call('GET', '/bots');
       final status = Map<String, dynamic>.from(await statusFuture);
       final botView = Map<String, dynamic>.from(await botsFuture as Map);
-      final bots = [for (final b in botView['bots'] as List) Map<String, dynamic>.from(b as Map)];
+      final all = [for (final b in botView['bots'] as List) Map<String, dynamic>.from(b as Map)];
+      // A teammate that has been put away is not offered for a new errand.
+      final bots = [for (final b in all) if (b['archived'] != true) b];
       if (!mounted) return;
       setState(() {
         _bots = bots;

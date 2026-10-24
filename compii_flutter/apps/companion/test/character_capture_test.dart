@@ -40,13 +40,15 @@ class _Sheet extends StatelessWidget {
                     children: [
                       const SizedBox(height: 20),
                       const Text('Compii', style: TextStyle(color: _ink, fontSize: 54, fontWeight: FontWeight.w700)),
-                      const Text('One face, five bodies — you choose which it wears.',
+                      const Text('One face, five bodies, six coats — you choose what it wears.',
                           style: TextStyle(color: _ink, fontSize: 21)),
                       const SizedBox(height: 20),
                       for (final line in const [
                         'The face is the identity: two large dark eyes that track the cursor, brows, blush, a mouth that answers the voice.',
                         'The body is a preference. All five wear the same rig, so the creature is the same in any mood at any size.',
-                        'One state colour lights the rim, the embers and the spark — never the fur, which stays cream.',
+                        'Fur is drawn in two passes — a dark undercoat at the roots and lit tips at the edge — so the silhouette is a fringe.',
+                        'One key light, and it slides as the creature looks around: sheen, terminator, occlusion and a cool rim on the far side.',
+                        'One state colour lights the rim, the embers and the spark — the coat underneath it is yours to choose.',
                         'Each job it runs rises beside it as a small light; feelings live in the face, work lives in the lights.',
                       ])
                         Padding(
@@ -57,7 +59,7 @@ class _Sheet extends StatelessWidget {
                       Row(
                         children: [
                           for (final (c, name) in [
-                            (EmberPalette.paper, 'Cream fur'),
+                            (CompiiCoat.blue.base, 'Coat · blue'),
                             (EmberPalette.deep, 'Ink'),
                             (EmberPalette.blush, 'Blush'),
                             (EmberPalette.rim, 'Cool edge'),
@@ -94,20 +96,30 @@ class _Sheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 14),
+            const Text('Five bodies — no names, because the shape is the choice',
+                style: TextStyle(color: Color(0xFFB9B2C8), fontSize: 15)),
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
                 for (final b in CompiiBody.values)
                   Expanded(
-                    child: Column(
-                      children: [
-                        SizedBox.square(
-                          dimension: 150,
-                          child: Ember(mood: Mood.idle, body: b, animate: false, phase: .3),
-                        ),
-                        Text(b.label, style: label),
-                        Text(b.name, style: note.copyWith(fontSize: 12)),
-                      ],
+                    child: SizedBox.square(
+                      dimension: 150,
+                      child: Ember(mood: Mood.idle, body: b, animate: false, phase: .3),
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 14),
+            const Text('Six coats', style: TextStyle(color: Color(0xFFB9B2C8), fontSize: 15)),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                for (final k in CompiiCoat.values)
+                  Expanded(
+                    child: SizedBox.square(
+                      dimension: 124,
+                      child: Ember(mood: Mood.idle, coat: k, animate: false, phase: .3),
                     ),
                   ),
               ],
@@ -176,7 +188,7 @@ void main() {
         await tester.runAsync(loader.load);
       }
     }
-    tester.view.physicalSize = const Size(1600, 1240);
+    tester.view.physicalSize = const Size(1600, 1440);
     tester.view.devicePixelRatio = 1;
     final key = GlobalKey();
     await tester.pumpWidget(

@@ -611,7 +611,10 @@ class _OwnerTag extends StatelessWidget {
       children: [
         Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
         const SizedBox(width: 5),
-        Text(bot?.name ?? 'Compii', style: context.type.labelMedium?.copyWith(color: color)),
+        Text(
+          bot == null ? 'Compii' : (bot.archived ? '${bot.name} (archived — not running)' : bot.name),
+          style: context.type.labelMedium?.copyWith(color: color),
+        ),
       ],
     );
   }
@@ -1553,7 +1556,12 @@ Future<void> showRoutineEditor(
     at = TimeOfDay(hour: int.tryParse(parts[0]) ?? 8, minute: int.tryParse(parts[1]) ?? 0);
   }
   final days = <String>{for (final d in schedule['days'] as List? ?? const ['mon']) '$d'};
-  final ownerIds = {for (final b in core.bots) b.id};
+  // A put-away teammate takes no new errand, but one it already owns keeps saying whose it is:
+  // the schedule stops firing until it comes back, and hiding the owner would hide that reason.
+  final runnable = [for (final b in core.bots) if (!b.archived) b];
+  final ownerIds = {for (final b in runnable) b.id};
+  final current = core.botFor('${routine?['bot_id'] ?? ''}');
+  if (current != null && current.archived) ownerIds.add(current.id);
   var owner = '${routine?['bot_id'] ?? botId ?? core.primaryBotId ?? ''}';
   if (owner.isEmpty || !ownerIds.contains(owner)) owner = core.primaryBotId ?? (core.bots.isEmpty ? '' : core.bots.first.id);
   String? problem;
@@ -1624,13 +1632,18 @@ Future<void> showRoutineEditor(
                     label: Text('At ${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}'),
                   ),
                   const SizedBox(height: 8),
-                  if (!lockOwner && core.bots.length > 1) ...[
+                  if (!lockOwner && (runnable.length > 1 || ownerIds.length > 1)) ...[
                     Text('Who runs it', style: context.type.labelMedium),
                     DropdownButton<String>(
                       isExpanded: true,
                       value: ownerIds.contains(owner) ? owner : null,
                       items: [
-                        for (final b in core.bots) DropdownMenuItem(value: b.id, child: Text(b.name)),
+                        for (final b in core.bots)
+                          if (ownerIds.contains(b.id))
+                            DropdownMenuItem(
+                              value: b.id,
+                              child: Text(b.archived ? '${b.name} — archived, will not run' : b.name),
+                            ),
                       ],
                       onChanged: (v) => setLocal(() => owner = v ?? owner),
                     ),
@@ -1932,7 +1945,7 @@ class _UpdateNoticesState extends State<UpdateNotices> {
           top: 16,
           right: 16,
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 220),
+            duration: context.motion(220),
             transitionBuilder: (child, anim) => SlideTransition(
               position: Tween(begin: const Offset(.15, 0), end: Offset.zero).animate(anim),
               child: FadeTransition(opacity: anim, child: child),

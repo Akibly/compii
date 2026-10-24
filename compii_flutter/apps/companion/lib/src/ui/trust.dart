@@ -60,9 +60,12 @@ class TrustApi {
   static Future<Map<String, dynamic>> library() => map('GET', '/library');
 
   /// Public catalogues: the official MCP registry and the skills index.
-  static Future<Map<String, dynamic>> catalogSearch(String query, {String kind = ''}) => map(
-      'GET',
-      '/library/catalog?q=${Uri.encodeQueryComponent(query)}${kind.isEmpty ? '' : '&kind=$kind'}');
+  static Future<Map<String, dynamic>> catalogSearch(String query,
+          {String kind = '', bool refresh = false}) =>
+      map(
+          'GET',
+          '/library/catalog?q=${Uri.encodeQueryComponent(query)}'
+          '${kind.isEmpty ? '' : '&kind=$kind'}${refresh ? '&refresh=1' : ''}');
   static Future<Map<String, dynamic>> catalogAdd(Map<String, dynamic> entry) =>
       map('POST', '/library/catalog/add', {'entry': entry});
   static Future<Map<String, dynamic>> libraryImport({String path = '', String url = '', bool allowPrivate = false}) =>
@@ -1203,7 +1206,10 @@ class _WalkthroughBarState extends State<WalkthroughBar> {
           children: [
             Glyph(G.skill, color: c.accent, size: 20),
             const SizedBox(width: 10),
-            Text('${w['goal']} · step ${i + 1} of ${steps.length}', style: context.type.labelLarge?.copyWith(color: c.accent)),
+            Flexible(
+              child: Text('${w['goal']} · step ${i + 1} of ${steps.length}',
+                  maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.labelLarge?.copyWith(color: c.accent)),
+            ),
             const SizedBox(width: 10),
             Expanded(
               child: Text('${steps[i]['instruction']}',

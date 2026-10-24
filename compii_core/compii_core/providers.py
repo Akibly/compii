@@ -585,6 +585,49 @@ class MissingBrain:
         raise RuntimeError(self.reason)
 
 
+class BotBrains:
+    """The AI each teammate answers with, built once from its own choice and kept.
+
+    No choice means None here — answer with Compii's brain — because a role, a lane of
+    tools and a memory are not a model. When the user does name one, the chosen AI is the
+    one that speaks, and a choice that cannot be built is reported in their words instead
+    of quietly answering from a different model."""
+
+    def __init__(self, keys: KeyStore) -> None:
+        self.keys = keys
+        self._built: dict[tuple[str, str], Any] = {}
+        self._problems: dict[tuple[str, str], str] = {}
+
+    def reset(self) -> None:
+        """A new key or a new Settings brain changes what any of these can be."""
+        self._built.clear()
+        self._problems.clear()
+
+    def build(self, provider: str, model: str) -> Any:
+        key = (provider, model)
+        if key not in self._built:
+            self._built[key] = make_brain(BrainChoice(provider, model), self.keys)
+            self._problems.pop(key, None)
+        return self._built[key]
+
+    def resolve(self, bot: dict[str, Any] | None) -> tuple[Any | None, str | None]:
+        """(the brain this teammate answers with, or None for Compii's) and why it isn't there."""
+        provider = str((bot or {}).get("provider") or "").strip()
+        if not provider:
+            return None, None
+        model = str((bot or {}).get("model") or "").strip()
+        key = (provider, model)
+        if key in self._built:
+            return self._built[key], None
+        if key in self._problems:
+            return None, self._problems[key]
+        try:
+            return self.build(provider, model), None
+        except (NoKeyError, ValueError) as e:
+            self._problems[key] = str(e)
+            return None, str(e)
+
+
 # ---- capability probe ----------------------------------------------------------------
 
 _PING = {"name": "ping", "description": "Reply to a connection test.",

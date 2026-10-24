@@ -89,8 +89,9 @@ void main() {
           hasEnabledState: true,
           isEnabled: true,
           isFocusable: true,
-          hasSelectedState: true,
-          isSelected: false,
+          // A plain button says nothing about selection; only a control that
+          // toggles takes the `selected:` argument.
+          hasSelectedState: false,
         ),
       );
       handle.dispose();
@@ -199,20 +200,32 @@ void main() {
       await tester.pumpAndSettle();
     }
 
-    testWidgets('Shift+Tab goes back, so the top of the list is reachable', (tester) async {
+    testWidgets('Tab walks the highlight down, Shift+Tab walks it back', (tester) async {
       SharedPreferences.setMockInitialValues({});
       final core = CoreClient(host: '127.0.0.1', port: 8765)..status = CoreStatus.online;
-      final state = AppState();
-      await open(tester, core, state);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
-      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.pumpAndSettle();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-      await tester.pumpAndSettle();
-      expect(state.section, Section.home, reason: 'Tab then Shift+Tab lands where it started, not one further on');
+      // Each run starts from an unopened palette, so the highlight begins on the
+      // first row. Doing nothing would leave it there — which is exactly what the
+      // old test could not tell apart from working keys.
+      Future<Section> walk(int tabs, {int backTabs = 0}) async {
+        final state = AppState();
+        await open(tester, core, state);
+        for (var i = 0; i < tabs; i++) {
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+        }
+        for (var i = 0; i < backTabs; i++) {
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+          await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+        }
+        await tester.pump();
+        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+        await tester.pumpAndSettle();
+        return state.section;
+      }
+
+      expect(await walk(2), Section.updates, reason: 'two Tabs reach the third row');
+      expect(await walk(2, backTabs: 1), Section.team, reason: 'Shift+Tab goes back, not on');
     });
 
     testWidgets('a row grows with the text instead of clipping it', (tester) async {

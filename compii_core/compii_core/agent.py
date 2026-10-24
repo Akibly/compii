@@ -18,6 +18,7 @@ from typing import Any, Protocol
 from . import guard
 from . import ledger as ledger_mod
 from .bots import TOOL_PACKS, tools_for
+from .context import ContextBundle
 from .journal import Entry, Journal
 from .policy import ActionKind, Gate, Policy, scope_for
 from .tools import ToolError, Toolbox
@@ -302,6 +303,11 @@ def claude_effort() -> str:
 MAX_TASKS = 200
 TASK_KEEP_SECONDS = 60 * 60 * 24  # finished conversations are kept at least this long
 MAX_EVENTS_PER_TASK = 500  # a runaway task's event feed can't grow forever
+# How long a window title counts as "right now". A title says what was open when the user
+# asked, not what that app is doing as the answer lands, so it goes stale within one exchange.
+AMBIENT_TTL = 120
+SOURCES_TIMEOUT = 3  # seconds the saved instructions get before the turn answers without them
+AMBIENT_TIMEOUT = 2  # seconds the desktop reading gets; a turn never waits on a hung UIA call
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -462,11 +468,17 @@ class Task:
     all_tools: bool = True
     # The bot whose role and memory this conversation belongs to (the one speaking now).
     bot_id: str | None = None
+    # Who the user came to talk to. A handoff moves `bot_id` but never this, so an agent's
+    # own history still holds a conversation it handed part-way to a teammate.
+    owner_id: str | None = None
     # Team chat: every bot sharing this thread, lead first. Empty for a one-to-one chat.
     team: list[str] = field(default_factory=list)
     # Set by the handoff tool: the teammate taking the next turn, and the note they get.
     pending_handoff: tuple[str, str] | None = None
     handoffs: int = 0  # per turn, so two bots can't pass one request back and forth forever
+    # What the incoming teammate is told about on the next turn after a user hands the
+    # thread over — the conversation itself already travels with them.
+    handover_note: str | None = None
     # Delegation: the conversation waiting on this one, and the job it was handed.
     parent_id: str | None = None
     supervised_by: str | None = None
@@ -480,6 +492,12 @@ class Task:
     delegations_started: int = 0  # per turn, so one request can't spawn an army
     # Times an answer ran out of room and was asked to carry on: once, then it is honestly too long.
     length_restarts: int = 0
+    # The next turn answers the ask that is already the last message, instead of adding a
+    # repeated one: what "say that again" means for the model and for the thread.
+    replay: bool = False
+    # Context items the user refused for this conversation. Ids are made from the source and
+    # the words, so refusing one keeps working for every later turn that would attach it.
+    context_off: list[str] = field(default_factory=list)
 
 
 class Stopped(Exception):
@@ -490,6 +508,35 @@ def _settle(fut: asyncio.Future[Any], value: Any) -> None:
     """Give a waiting turn its answer — unless it ended on its own in the moment since."""
     if not fut.done():
         fut.set_result(value)
+
+
+def _ambient_lines(text: str) -> list[str]:
+    """Split the desktop reading into one line per app, so refusing a window's title does
+    not take every other open app with it."""
+    out: list[str] = []
+    for raw in (text or "").splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        head, sep, rest = line.partition(": ")
+        if sep and head.lower() == "also open":
+            out += [f"{head}: {piece.strip()}" for piece in rest.split(";") if piece.strip()]
+        else:
+            out.append(line)
+    return out
+
+
+def _shared_context(task: Task) -> dict[str, Any]:
+    """What a handed-over conversation actually carries, in the user's words, so the app
+    can show what travels before the next reply rather than sharing silently."""
+    files = [str(e.get("path")) for e in task.events if e.get("type") == "file" and e.get("path")]
+    tools = {str(e.get("tool")) for e in task.events if e.get("type") == "action_done" and e.get("tool")}
+    return {
+        "request": task.request[:200],
+        "turns": sum(1 for e in task.events if e.get("type") in ("task_started", "user_message")),
+        "tools": sorted(tools)[:12],
+        "files": [Path(f).name for f in dict.fromkeys(files)][:12],
+    }
 
 
 class Agent:
@@ -510,7 +557,9 @@ class Agent:
         self.can_call_tools: bool | None = None
         self.ledger = None  # usage ledger, set by the server: counts the tokens each step reported
         self.on_rules_changed: Callable[[], None] | None = None
-        self.extra_context: Callable[[], str] | None = None  # e.g. the user's saved skills
+        # What every turn is answered with besides the message itself - memories, profile, projects,
+        # skills - as items the user can list and refuse one at a time (set by the server).
+        self.context_sources: Callable[[], ContextBundle] | None = None
         # The bot's role and own memory, appended to the system prompt (set by the server).
         self.bot_context: Callable[[str], str] | None = None
         # A bot's public details, for team rosters and @mentions (set by the server).
@@ -529,6 +578,9 @@ class Agent:
         self.on_proposal_closed: Callable[[str, str], None] | None = None
         # Told when the AI itself gave up on a step, so Settings can say so out loud (set by the server).
         self.on_brain_error: Callable[[str], None] | None = None
+        # The AI this teammate answers with, when the user gave it one of its own (set by the server).
+        # None for "Compii's own brain" — a role, a lane of tools and a memory are not a model.
+        self.brain_for: Callable[[str | None], Any] | None = None
         # Hiring cards the user has not answered yet: proposal id -> the waiting turn.
         self.hire_requests: dict[str, asyncio.Future[dict[str, Any] | None]] = {}
         self._hire_pending: dict[str, tuple[str, asyncio.Future[dict[str, Any] | None]]] = {}
@@ -551,28 +603,33 @@ class Agent:
 
     def start(self, request: str, origin: dict[str, Any] | None = None, screen: dict[str, Any] | None = None,
               bot_id: str | None = None, team: list[str] | None = None,
-              attachments: list[str] | None = None) -> Task:
+              attachments: list[str] | None = None, context_off: list[str] | None = None) -> Task:
         n = next(self._ids)
         task = Task(id=f"t{n}-{uuid.uuid4().hex[:6]}", request=_shown(request), origin=origin, pending_screen=screen,
-                    bot_id=bot_id, team=list(team or []), ancestry=[bot_id] if bot_id else [])
-        if bot_id and self.bot_info is not None:
-            # Trust follows the teammate, not the door they came in through: chatting
-            # with a probation bot directly must not skip the probation delegated work gets.
-            try:
-                info = self.bot_info(bot_id) or {}
-            except Exception:  # noqa: BLE001 - an unknown bot simply keeps normal rules
-                info = {}
-            if info and not info.get("primary") and str(info.get("trust") or "probation") not in ("trusted", "full"):
-                task.probation = True
+                    bot_id=bot_id, owner_id=bot_id, team=list(team or []), ancestry=[bot_id] if bot_id else [],
+                    context_off=list(context_off or []))
+        if self._on_probation(bot_id):
+            task.probation = True
         if len(task.team) > 1:
             task.all_tools = True  # a team is doing real work across several lanes
         else:
             task.all_tools = not (origin or {}).get("buddy") or bool(NEEDS_ALL_TOOLS.search(request))
         self.tasks[task.id] = task
+        self._used(task)
         if len(self.tasks) > MAX_TASKS:
             self._trim()  # routines and watches must not grow this forever
         task.runner = asyncio.create_task(self._run(task, request, attachments))
         return task
+
+    def _used(self, task: Task) -> None:
+        """Mark a turn as the most recently used one.
+
+        Windows' clock only ticks every ~15.6 ms, so two turns inside one tick get the
+        same `time.time()`; trim then fell back to dict order and could evict the
+        conversation the user had just replied to. Making the stamp strictly later
+        than every other turn keeps "least recently used" meaning what it says."""
+        latest = max((t.active for t in self.tasks.values()), default=0.0)
+        task.active = max(time.time(), latest + 1e-6)
 
     def _trim(self) -> None:
         """Long sessions must not grow without limit: drop the conversations nobody has used.
@@ -598,7 +655,7 @@ class Agent:
             self.tasks.pop(t.id, None)
 
     def reply(self, task_id: str, text: str, screen: dict[str, Any] | None = None,
-              attachments: list[str] | None = None) -> Task:
+              attachments: list[str] | None = None, context_off: list[str] | None = None) -> Task:
         """Continue a conversation with a follow-up message."""
         task = self.tasks.get(task_id)
         if task is None:
@@ -609,13 +666,78 @@ class Agent:
         task.pending_screen = screen
         task.pending_handoff = None
         task.handoffs = 0
+        if context_off:
+            # Refusing a source lasts for the rest of this conversation, not just the one message.
+            task.context_off = list(dict.fromkeys([*task.context_off, *context_off]))
         if NEEDS_ALL_TOOLS.search(text):
             task.all_tools = True
         task.approved_kinds = set()
         task.status = "running"
-        task.active = time.time()
+        self._used(task)
         task.runner = asyncio.create_task(self._run(task, text, attachments))
         return task
+
+    def again(self, task_id: str) -> Task:
+        """Answer the same ask again — the user's retry, not a new question.
+
+        The last attempt's answer comes off the model's own history and its ask stays, so the
+        model is faced with exactly what it was faced with before. What already happened in the
+        thread is not rewritten: the retry is recorded as another turn, and the earlier answer
+        stays where it was."""
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        if task.status in ("running", "waiting"):
+            raise RuntimeError("Compii is still working on this; stop it first.")
+        asked = next((str(e.get("text") or "") for e in reversed(task.events)
+                      if e.get("type") == "user_message" and e.get("text")), "")
+        task.replay = True
+        task.stop = asyncio.Event()
+        task.pending_screen = None
+        task.pending_handoff = None
+        task.handoffs = 0
+        task.approved_kinds = set()
+        task.status = "running"
+        self._used(task)
+        task.runner = asyncio.create_task(self._run(task, asked or task.request))
+        return task
+
+    def _on_probation(self, bot_id: str | None) -> bool:
+        """Trust follows the teammate, not the door they came in through."""
+        if not bot_id or self.bot_info is None:
+            return False
+        try:
+            info = self.bot_info(bot_id) or {}
+        except Exception:  # noqa: BLE001 - an unknown bot simply keeps normal rules
+            return False
+        return bool(info) and not info.get("primary") \
+            and str(info.get("trust") or "probation") not in ("trusted", "full")
+
+    def transfer(self, task_id: str, bot_id: str, note: str = "") -> tuple[Task, dict[str, Any]]:
+        """Hand a finished conversation to another teammate because the user asked, not
+        because the model chose to. The thread and everything said in it come with it, and
+        the incoming bot answers as itself: its own role, its own lane of tools, its own trust."""
+        task = self.tasks.get(task_id)
+        if task is None:
+            raise KeyError(task_id)
+        if task.status in ("running", "waiting"):
+            raise RuntimeError("This conversation is still working; stop it before handing it over.")
+        info = (self.bot_info(bot_id) if self.bot_info is not None else None) or {}
+        if not info:
+            raise KeyError(bot_id)
+        was = task.bot_id
+        task.bot_id = bot_id
+        task.probation = self._on_probation(bot_id)
+        words = _shown(note)
+        name = str(info.get("name") or bot_id)
+        task.handover_note = (
+            f"(The user handed this conversation to you. You are {name} now, speaking to them in this thread. "
+            + (f"What they said as they handed it over: {words} " if words else "")
+            + "Everything said so far is yours to use, so pick it up from here rather than starting again.)"
+        )
+        event = self._record(task, "handoff", **self._handoff_view(was, bot_id, words, by="user"),
+                             shared=_shared_context(task))
+        return task, event
 
     def _wake(self, action: Callable[[], Any]) -> None:
         """Close off a waiting turn in a way the loop can see.
@@ -716,11 +838,16 @@ class Agent:
     # ---- loop ---------------------------------------------------------------
 
     async def emit(self, task: Task, type_: str, **data: Any) -> None:
+        await self._emit(self._record(task, type_, **data))
+
+    def _record(self, task: Task, type_: str, **data: Any) -> dict[str, Any]:
+        """Append an event to the conversation and return it, so a route can send the
+        same event the loop would have."""
         event = {"type": type_, "task_id": task.id, "bot_id": task.bot_id, "at": time.time(), **data}
         task.events.append(event)
         if len(task.events) > MAX_EVENTS_PER_TASK:
             del task.events[:-MAX_EVENTS_PER_TASK]  # keep the recent tail; a live run can't grow forever
-        await self._emit(event)
+        return event
 
     async def _preview(self, task: Task, text: str) -> None:
         """Words still being written: sent live, never stored in the conversation."""
@@ -745,6 +872,17 @@ class Agent:
             await self._preview(task, reply.text)
         return reply
 
+    def brain_of(self, task: Task) -> Any:
+        """Whichever AI answers this conversation right now: the speaker's own when the user
+        gave it one, Compii's otherwise. Asked per turn, because a conversation can be handed
+        over mid-way and the next answer should come from the model they chose, not the old one."""
+        if self.brain_for is None:
+            return self.brain
+        try:
+            return self.brain_for(task.bot_id) or self.brain
+        except Exception:  # noqa: BLE001 - a teammate's broken AI choice must not lose the turn
+            return self.brain
+
     async def _think(self, task: Task, system: str, sent: list[dict[str, Any]],
                      schemas: list[dict[str, Any]]) -> BrainReply:
         """One step of the model, with room for a free tier to hiccup.
@@ -753,12 +891,13 @@ class Agent:
         the thread the user was watching; two short retries fix the common case. Anything
         that will not be fixed by waiting — a wrong key, a model that does not exist — is
         raised at once and named, because the fix is in Settings, not here."""
-        stream = getattr(self.brain, "step_stream", None)
+        brain = self.brain_of(task)
+        stream = getattr(brain, "step_stream", None)
         for attempt in range(3):
             try:
                 if stream is not None:
                     return await self._until_stopped(task, self._stream_step(task, stream, system, sent, schemas))
-                return await self._until_stopped(task, self.brain.step(system, sent, schemas))
+                return await self._until_stopped(task, brain.step(system, sent, schemas))
             except Stopped:
                 raise
             except Exception as e:  # noqa: BLE001 - classified below, everything else travels on
@@ -771,7 +910,7 @@ class Agent:
                         self.on_brain_error(why[:300])
                 raise
 
-    def _count(self, reply: BrainReply, system: str, sent: list[dict[str, Any]],
+    def _count(self, task: Task, reply: BrainReply, system: str, sent: list[dict[str, Any]],
                started: float) -> None:
         """Write down what this step cost, using the provider's own numbers when it gives any."""
         if self.ledger is None:
@@ -779,8 +918,10 @@ class Agent:
         use = reply.usage or {}
         prompt = int(use.get("prompt") or 0)
         completion = int(use.get("completion") or 0)
-        # A fallback brain is counted against whichever model actually answered.
-        brain = getattr(self.brain, "used", self.brain)
+        # A fallback brain is counted against whichever model actually answered, which for a
+        # teammate is the one it speaks with, not whatever Compii's Settings say.
+        used = self.brain_of(task)
+        brain = getattr(used, "used", used)
         est = False
         if not (prompt or completion):
             # No numbers back from this provider: count the payload it was sent, and say so.
@@ -794,18 +935,68 @@ class Agent:
                            ms=int((time.monotonic() - started) * 1000),
                            ok=reply.stop_reason != "refusal")
 
+    async def _sources(self, task: Task | None = None, from_coach: bool = False) -> ContextBundle:
+        """Ask every standing source for its items, and say out loud about the ones that did
+        not answer. A source that fails quietly is how Compii ends up guessing about something
+        it never read."""
+        bundle = ContextBundle()
+        if self.context_sources is not None:
+            try:
+                bundle = await asyncio.wait_for(asyncio.to_thread(self.context_sources), SOURCES_TIMEOUT)
+            except Exception as e:  # noqa: BLE001 - lost instructions cost the turn's rules, not the answer
+                bundle = ContextBundle()
+                bundle.note_unavailable("the user's saved instructions and memories",
+                                        f"{type(e).__name__}: {e}"[:120])
+        if self.ambient is not None and not from_coach:
+            now = ""
+            try:
+                now = await asyncio.wait_for(asyncio.to_thread(self.ambient), AMBIENT_TIMEOUT)
+            except Exception:  # noqa: BLE001 - the desktop is never worth stalling an answer for
+                bundle.note_unavailable("what is open on this PC", "it could not be read in time")
+            for line in _ambient_lines(now):
+                if task is not None:
+                    phrase = guard.looks_like_injection(line)
+                    # A window title is written by whatever program made it, so a browser tab can
+                    # say anything to the model. Same warning as a poisoned file gets.
+                    if phrase and not task.warned_injection:
+                        task.warned_injection = True
+                        await self.emit(task, "injection_warning", tool="desktop", phrase=phrase)
+                bundle.add_text("desktop", line, kind="observation", scope="screen_aware",
+                                sensitivity="personal", expires=time.time() + AMBIENT_TTL,
+                                why="Open on this PC when you asked")
+        return bundle
+
+    async def _gather(self, task: Task, from_coach: bool = False) -> ContextBundle:
+        """The items this turn is answered with, minus what the user refused for this chat."""
+        return (await self._sources(task, from_coach=from_coach)).without(task.context_off)
+
+    async def preview_context(self) -> dict[str, Any]:
+        """What the next message would be answered with, for the app to show before sending."""
+        return (await self._sources()).view()
+
     async def _run(self, task: Task, text: str, attachments: list[str] | None = None) -> None:
         self._loop, self._loop_thread = asyncio.get_running_loop(), threading.get_ident()
         from_coach = text.startswith(COACH_NOTE)
         files = _attachment_files(attachments)
+        replay = task.replay
+        if replay:
+            task.replay = False
+            # Drop what the last attempt added, back to the ask itself, so the retry faces the
+            # model with the same question rather than the same question twice.
+            while task.messages and not (task.messages[-1]["role"] == "user"
+                                         and isinstance(task.messages[-1]["content"], str)):
+                task.messages.pop()
+            replay = bool(task.messages)
         if self.coach is not None and not from_coach:
             self.coach.stop()  # the user moved on: stop watching for the old step
-        called_on = None if from_coach else self._called_on(task, text)
+        called_on = None if (from_coach or replay) else self._called_on(task, text)
         if called_on is not None:
             task.bot_id = called_on[1]
         if not task.messages:
             await self.emit(task, "task_started", request=task.request, status="running", origin=task.origin,
                             team=task.team, attachments=files)
+        elif replay:
+            await self.emit(task, "retry", text=_shown(text), status="running", attachments=files)
         elif from_coach:
             await self.emit(task, "step_done", text=text[len(COACH_NOTE):].strip(), status="running")
         else:
@@ -818,23 +1009,14 @@ class Agent:
             roots=", ".join(str(r) for r in self.toolbox.roots),
             workspace=self.toolbox.workspace,
         )
-        if self.extra_context:
-            try:
-                extra = self.extra_context()
-            except Exception:  # noqa: BLE001 - a broken context source never cancels the turn
-                extra = ""
-            if extra:
-                head += "\n" + extra
-        ambient_note = ""
-        if self.ambient is not None and not from_coach:
-            try:
-                now = await asyncio.wait_for(asyncio.to_thread(self.ambient), 2)
-            except Exception:  # noqa: BLE001 - a turn never waits on this
-                now = ""
-            if now:
-                ambient_note = "\nRight now on the PC (refreshed every message):\n" + guard.wrap_untrusted("desktop", now)
-        # The role changes when the turn is handed off: rebuild from head + role + ambient.
-        system = head + self._role(task) + ambient_note
+        # Everything this turn is answered with arrives as items the user can list and refuse:
+        # a saved fact, an installed recipe, a window open when they asked. Sources that fail
+        # say so in the bundle instead of vanishing quietly.
+        bundle = await self._gather(task, from_coach=from_coach)
+        prompt = bundle.as_prompt()
+        await self.emit(task, "context", **bundle.view())
+        # The role changes when the turn is handed off: rebuild from head + role + context.
+        system = head + self._role(task) + prompt
         messages = task.messages
         if task.pending_screen:
             from .screen import describe_snapshot
@@ -855,6 +1037,11 @@ class Agent:
             seen = guard.wrap_untrusted("screen", describe_snapshot(snap))
             text = "\n\n".join([text, seen, "(This is what the user is looking at right now. "
                                             "Answer about it; point at items by id.)"])
+        if task.handover_note:
+            # The user moved this thread to a new teammate: say so in the turn itself, so
+            # the one answering knows it is them and picks the conversation up mid-stream.
+            text = f"{text}\n\n{task.handover_note}"
+            task.handover_note = None
         if messages and messages[-1]["role"] == "user" and isinstance(messages[-1]["content"], list):
             # The last turn ended right after showing something: keep roles alternating.
             messages[-1]["content"] = [*messages[-1]["content"],
@@ -865,8 +1052,12 @@ class Agent:
                                           and isinstance(messages[turn_start]["content"], str)):
                 turn_start -= 1
         else:
-            messages.append({"role": "user", "content": text + _attachment_note(files)})
-            turn_start = len(messages) - 1
+            if replay:
+                # The ask is already the last message: answer it again from here.
+                turn_start = len(messages) - 1
+            else:
+                messages.append({"role": "user", "content": text + _attachment_note(files)})
+                turn_start = len(messages) - 1
         done_tools: set[str] = set()  # tools that worked this turn: what Compii may say it did
         checked = False
         try:
@@ -876,7 +1067,7 @@ class Agent:
                 schemas = self._schemas(task)
                 started = time.monotonic()
                 reply = await self._think(task, system, sent, schemas)
-                self._count(reply, system, sent, started)
+                self._count(task, reply, system, sent, started)
                 messages.append({"role": "assistant", "content": reply.content})
                 if reply.stop_reason == "refusal":
                     return await self._finish(task, "failed", "I can't help with that one.")
@@ -937,7 +1128,7 @@ class Agent:
                     messages[-1]["content"] = [*messages[-1]["content"], {"type": "text", "text": (
                         f"(Handoff from {self._bot_name(was)}. You are {self._bot_name(target)} now, speaking to the "
                         f"user in this shared thread. Note from {self._bot_name(was)}: {note})")}]
-                    system = head + self._role(task) + ambient_note
+                    system = head + self._role(task) + prompt
                     continue
                 # Said it and pointed in one go: that's the answer; skip a second round trip.
                 if (reply.text.strip() and all(c.name in SHOW_ONLY_TOOLS for c in reply.tool_calls)
@@ -1893,14 +2084,19 @@ class Agent:
 
     def _no_answer(self, task: Task) -> str:
         """Why a turn ended with no work done and nothing worth saying, in terms the user can act on."""
-        if self.can_call_tools is False:
+        if self.can_call_tools is not False:
+            return "That answer came back with no words and no action in it, so nothing happened. Try again."
+        # The probe in Settings only tests Compii's own AI, so it is only named when this turn
+        # actually used it; a teammate answering with another model may call tools just fine.
+        if self.brain_of(task) is self.brain:
             return ("The model you have picked can chat but can't run tools, so I can describe your work and never "
                     "actually do it. Choose a model that calls tools in Settings > Brain.")
-        return "That answer came back with no words and no action in it, so nothing happened. Try again."
+        return ("That answer came back with no words and no action in it, so nothing happened. This teammate answers "
+                "with an AI of its own — if it can't call tools, pick one that can on its page.")
 
     async def _finish(self, task: Task, status: str, text: str) -> None:
         task.status = status
-        task.active = time.time()
+        self._used(task)
         await self.emit(task, "task_finished", status=status, text=text)
 
 

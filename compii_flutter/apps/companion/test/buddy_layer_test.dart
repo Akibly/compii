@@ -11,8 +11,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'while Compii is working it stands in its own corner, and a long answer opens there '
-    'as a panel you can actually read',
+    'the buddy stays on the pointer while Compii works, and a long answer opens as a '
+    'readable panel in the top corner away from the cursor',
     (tester) async {
       const size = Size(1400, 900);
       tester.view.physicalSize = size;
@@ -90,8 +90,6 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
       BuddyLayerState state() =>
           tester.state<BuddyLayerState>(find.byType(BuddyLayer));
-      final corner = const Offset(1400 - 68, 900 - 84);
-
       // Idle: it rides the pointer.
       expect(
         (state().buddyPosition - mouse).distance,
@@ -101,24 +99,21 @@ void main() {
 
       events.add({'type': 'voice_buddy', 'state': 'thinking', 'heard': 'do some work'});
       await tester.pump();
-      // It travels to the corner rather than appearing there, then holds.
-      await tester.pump(const Duration(milliseconds: 120));
-      final onTheWay = (state().buddyPosition - corner).distance;
       await tester.pump(const Duration(milliseconds: 500));
       expect(
-        (state().buddyPosition - corner).distance,
-        lessThan(2),
-        reason: 'busy Compii lives in its corner, distance $onTheWay to get there',
+        (state().buddyPosition - mouse).distance,
+        lessThan(48),
+        reason: 'busy or not, the mark never leaves the pointer — only the words move',
       );
 
-      mouse = const Offset(700, 450);
-      for (var i = 0; i < 30; i++) {
+      mouse = const Offset(1050, 430);
+      for (var i = 0; i < 40; i++) {
         await tester.pump(const Duration(milliseconds: 16));
       }
       expect(
-        (state().buddyPosition - corner).distance,
-        lessThan(2),
-        reason: 'moving the mouse does not pull it back onto the screen',
+        (state().buddyPosition - mouse).distance,
+        lessThan(64),
+        reason: 'the pointer still drags the mark along while Compii works',
       );
 
       // A researched answer: a wide panel of its own, not a bubble by the mark.
@@ -136,9 +131,35 @@ void main() {
       expect(box.width, greaterThan(300), reason: 'the panel is wide, not 290 of bubble');
       expect(box.height, greaterThan(200), reason: 'paragraphs get paragraph room');
       expect(
-        tester.getBottomRight(words).dx,
-        greaterThan(1400 - 120),
-        reason: 'and it opens in the corner, away from what you are reading',
+        tester.getTopLeft(words).dx,
+        lessThan(60),
+        reason: 'the pointer is on the right, so the answer opens top-left',
+      );
+      expect(
+        tester.getTopLeft(words).dy,
+        lessThan(60),
+        reason: 'and at the top, where the taskbar is not',
+      );
+      expect(
+        (state().buddyPosition - mouse).distance,
+        lessThan(64),
+        reason: 'answering never sends the mark off to a corner',
+      );
+
+      // Moving the mouse while you read does not swing the card to the other side.
+      mouse = const Offset(240, 300);
+      for (var i = 0; i < 40; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(
+        tester.getTopLeft(words).dx,
+        lessThan(60),
+        reason: 'the corner is latched for as long as the card is up',
+      );
+      expect(
+        (state().buddyPosition - mouse).distance,
+        lessThan(64),
+        reason: 'and the mark came to the new pointer anyway',
       );
       // All of it fits, so Compii does not claim a part of it is elsewhere.
       expect(find.text('The full answer is in Compii'), findsNothing);

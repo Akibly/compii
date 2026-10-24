@@ -106,6 +106,7 @@ void main() {
       },
       review: {'type': 'job_reviewed', 'job_id': 'j1', 'verdict': 'accepted'},
       core: core,
+      run: (action) => action(),
     )));
     expect(find.text('Assigned to Analyst'), findsOneWidget);
     expect(find.text('Trusted teammate'), findsOneWidget);
@@ -125,6 +126,7 @@ void main() {
         'objective': 'Read the lease.', 'budget_min': 12, 'trust': 'probation',
       },
       core: core,
+      run: (action) => action(),
     )));
     await tester.pump();
     expect(find.text('Working'), findsOneWidget);
@@ -213,7 +215,7 @@ void main() {
     expect(find.text('Runs the team'), findsOneWidget);
     expect(find.text('Waiting for your answer'.toUpperCase()), findsOneWidget);
     expect(find.text('Compii suggests Inbox Manager'), findsOneWidget);
-    expect(find.text('Reads contracts'), findsOneWidget);
+    expect(find.text('Reads contracts'), findsWidgets, reason: 'the directory row and the teammate on show');
     expect(find.text('Probation'), findsOneWidget);
     expect(find.text('Team player · Mail & calendar · Memory & knowledge'), findsOneWidget);
     expect(find.text('Working on “Read the lease”'), findsOneWidget);

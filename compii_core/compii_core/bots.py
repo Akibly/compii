@@ -23,6 +23,7 @@ MAX_FACTS = 200
 MAX_NAME = 40
 MAX_JOB = 120
 MAX_INSTRUCTIONS = 4000
+MAX_MODEL = 80
 TRUST_LEVELS = ("probation", "trusted", "full")
 
 # How a teammate works with the rest of the team. Compii itself is always "lead".
@@ -248,12 +249,22 @@ class Bot:
     # How it works with the rest of the team, and which packs of tools it may use.
     mode: str = "team"
     tools: list[str] = field(default_factory=list)  # empty = everything
+    # The AI this teammate answers with. Empty means Compii's own choice from Settings, so a
+    # bot stays on the shared brain until the user names one: a role is not a model.
+    provider: str = ""
+    model: str = ""
+    # Which ready-made role it was started from, so a directory can group it. "" = made from scratch.
+    template: str = ""
+    # Put away, not deleted: the role, what it learnt and its conversations stay, but it is out
+    # of the team Compii can hand work to and takes no new conversation until it is brought back.
+    archived: bool = False
 
     def view(self) -> dict[str, Any]:
         data = asdict(self)
         if self.primary:
             data["trust"] = "full"
             data["mode"] = "lead"
+        data["category"] = TEMPLATE_BY_KEY.get(self.template, {}).get("category", "")
         return data
 
     def prompt(self) -> str:
@@ -310,6 +321,11 @@ def _clean_mode(mode: str) -> str:
     if mode not in MODE_LABELS:
         raise ValueError("A teammate works either solo, as a team player, or as a team lead.")
     return mode
+
+
+def _clean_model(text: str) -> str:
+    """A provider or model id is a machine name: one line, no room for a sentence."""
+    return " ".join(str(text or "").split())[:MAX_MODEL].strip()
 
 
 def _clean_tools(tools: list[str] | None) -> list[str]:
@@ -377,16 +393,25 @@ class Bots:
         return next((b for b in self.items.values() if b.primary), None) or next(iter(self.items.values()), None)
 
     def view(self) -> list[dict[str, Any]]:
-        order = sorted(self.items.values(), key=lambda b: (not b.primary, not b.pinned, -b.created))
+        # An archived teammate sorts last: the directory still knows it — its conversations have
+        # to keep showing who answered — but it is not the team the user sees first.
+        order = sorted(self.items.values(), key=lambda b: (not b.primary, not b.pinned, b.archived, -b.created))
         return [b.view() for b in order]
 
+    def active(self) -> list[Bot]:
+        """The team as it stands today: everyone who can be talked to or handed work."""
+        return [b for b in self.items.values() if not b.archived]
+
     def create(self, name: str, *, job: str = "", instructions: str = "", color: str = "",
-               template: str = "", avatar: str = "", mode: str = "", tools: list[str] | None = None) -> Bot:
+               template: str = "", avatar: str = "", mode: str = "", tools: list[str] | None = None,
+               provider: str = "", model: str = "") -> Bot:
         named = TEMPLATE_BY_KEY.get(template, {})
         name = _clean(name or named.get("name", ""), MAX_NAME)
         if not name:
             raise ValueError("A bot needs a name.")
-        if any(b.name.lower() == name.lower() for b in self.items.values()):
+        # An archived teammate keeps its name out of the way: hiring "Ana" again while the old
+        # Ana is put away is normal, and bringing the old one back is what causes a clash.
+        if any(not b.archived and b.name.lower() == name.lower() for b in self.items.values()):
             raise ValueError(f"There is already a bot called “{name}”.")
         bot = Bot(
             name=name,
@@ -396,6 +421,9 @@ class Bots:
             avatar=(avatar or named.get("avatar") or avatar_for(name))[:48],
             mode=_clean_mode(mode or named.get("mode", "team")),
             tools=_clean_tools(tools if tools is not None else named.get("tools", [])),
+            provider=_clean_model(provider),
+            model=_clean_model(model),
+            template=template if template in TEMPLATE_BY_KEY else "",
         )
         with self._lock:
             self.items[bot.id] = bot
@@ -411,7 +439,8 @@ class Bots:
                 name = _clean(changes["name"], MAX_NAME)
                 if not name:
                     raise ValueError("A bot needs a name.")
-                if any(b.id != bot.id and b.name.lower() == name.lower() for b in self.items.values()):
+                if any(b.id != bot.id and not b.archived and b.name.lower() == name.lower()
+                       for b in self.items.values()):
                     raise ValueError(f"There is already a bot called “{name}”.")
                 bot.name = name
             if "job" in changes and changes["job"] is not None:
@@ -424,6 +453,19 @@ class Bots:
                 bot.avatar = str(changes["avatar"])[:48]
             if "pinned" in changes and changes["pinned"] is not None:
                 bot.pinned = bool(changes["pinned"])
+            if "archived" in changes and changes["archived"] is not None:
+                if bot.primary:
+                    raise ValueError("Compii is the team: it cannot be put away.")
+                # Away, or back — and only a real yes/no reaches this, never a stray string.
+                if not isinstance(changes["archived"], bool):
+                    raise ValueError("Archive is a yes or a no.")
+                away = changes["archived"]
+                if not away and any(b.id != bot.id and not b.archived and b.name.lower() == bot.name.lower()
+                                    for b in self.items.values()):
+                    raise ValueError(f"There is already a bot called “{bot.name}”.")
+                bot.archived = away
+                if bot.archived:
+                    bot.pinned = False
             if "trust" in changes and changes["trust"] is not None:
                 if bot.primary:
                     raise ValueError("Compii always has full trust.")
@@ -439,6 +481,18 @@ class Bots:
                 if bot.primary:
                     raise ValueError("Compii uses every tool; its lane can't be narrowed.")
                 bot.tools = _clean_tools(changes["tools"])
+            if "provider" in changes and changes["provider"] is not None:
+                if bot.primary:
+                    raise ValueError("Compii answers with the AI you chose in Settings.")
+                bot.provider = _clean_model(str(changes["provider"]).strip().lower())
+                if not bot.provider:
+                    bot.model = ""
+            if "model" in changes and changes["model"] is not None:
+                if bot.primary:
+                    raise ValueError("Compii answers with the AI you chose in Settings.")
+                bot.model = _clean_model(str(changes["model"]))
+                if bot.model and not bot.provider:
+                    raise ValueError("Say which AI offers that model first.")
             self.save()
         return bot
 

@@ -13,6 +13,7 @@ import 'src/desktop_toasts.dart';
 import 'src/console/character.dart';
 import 'src/console/console_screen.dart';
 import 'src/console/core_client.dart';
+import 'src/island/island_host.dart';
 import 'src/overlay/overlay_app.dart';
 import 'src/ui/pair.dart';
 import 'src/ui/first_run.dart';
@@ -25,6 +26,7 @@ import 'src/ui/voice.dart';
 import 'src/updates.dart';
 
 Future<void> main(List<String> args) async {
+  if (args.contains('--island')) return runIsland();
   if (args.contains('--overlay')) return runOverlay();
   // On a phone (or `--remote` on Windows, for testing) Compii is the remote for a paired PC.
   if (Platform.isAndroid || Platform.isIOS || args.contains('--remote')) return runPhone();
@@ -40,6 +42,7 @@ Future<void> main(List<String> args) async {
       // Everything in the install folder has to let go of its files before the updater runs.
       clearTheWay: () async {
         appControl.overlay?.kill();
+        appControl.island?.kill();
         try {
           await core.stopCore();
         } on Object {
@@ -102,7 +105,28 @@ Future<void> main(List<String> args) async {
       debugPrint('Hotkeys not available: $e');
     }
     await _startOverlay();
+    await _startIsland();
     _watchWindowShown();
+    // The island (or another window) can send work here: bring the workspace
+    // forward and open exactly what was asked for — a conversation, or the page
+    // that holds news with no conversation of its own.
+    core.uiEvents.stream.listen((e) async {
+      final id = e['task_id'] is String ? e['task_id'] as String : '';
+      final known = id.isNotEmpty && core.tasks.containsKey(id);
+      final page = e['section'] == 'updates' ? Section.updates : null;
+      if (!known && page == null) return;
+      try {
+        await windowManager.show();
+        await windowManager.focus();
+      } on Object {
+        // The window is still here; opening what was asked for is what matters.
+      }
+      if (known) {
+        state.open(id);
+      } else {
+        state.go(page!);
+      }
+    });
     // A Windows toast only when you're in another app; the buddy covers the rest.
     DesktopToasts(core, inBackground: () => !windowShown.value && quick?.active != true);
   }
@@ -179,6 +203,16 @@ Future<void> _startOverlay() async {
     windowManager.addListener(_HideOnClose());
   } on Object catch (e) {
     debugPrint('Compii overlay did not start: $e');
+  }
+}
+
+/// The floating island is a third copy, in its own always-on-top card window.
+/// It shares Compii Core, not code paths: one agent runtime answers both.
+Future<void> _startIsland() async {
+  try {
+    appControl.island = await Process.start(Platform.resolvedExecutable, ['--island']);
+  } on Object catch (e) {
+    debugPrint('Compii island did not start: $e');
   }
 }
 

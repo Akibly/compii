@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from compii_core.agent import Agent, BrainReply, ToolCall
+from compii_core.context import ContextBundle
 from compii_core.forms import profile_form_tools
 from compii_core.journal import Journal
 from compii_core.leads import lead_tools
@@ -292,7 +293,14 @@ def test_profile_and_projects_reach_the_model(home):
     app.state.profile = profile
     app.state.projects = projects
     agent: Agent = app.state.agent
-    agent.extra_context = lambda: "\n".join(x for x in (profile.context(), projects.context()) if x)
+    def standing() -> ContextBundle:
+        b = ContextBundle()
+        for source, text in (("profile", profile.context()), ("projects", projects.context())):
+            if text:
+                b.add_text(source, text, kind="memory", sensitivity="personal")
+        return b
+
+    agent.context_sources = standing
     with TestClient(app) as c, c.websocket_connect("/events?t=tok") as ws:
         c.post("/tasks", json={"request": "help me apply"}, headers=H)
         while ws.receive_json().get("type") != "task_finished":

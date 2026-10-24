@@ -570,6 +570,23 @@ def test_service_requires_token_and_runs_rehearsal(home, monkeypatch):
         assert (home["workspace"] / "Invoices last month.xlsx").exists()
 
 
+def test_one_surface_can_ask_the_workspace_to_show_a_conversation(home):
+    """The island hands a thread to the full window through Core, not by touching another process."""
+    app = build_app(brain=ScriptBrain([], final="Done."), workspace=home["workspace"],
+                    roots=[home["downloads"]], token="tok", voice=quiet_voice(home["workspace"]))
+    h = {"X-Compii-Token": "tok"}
+    with TestClient(app) as client, client.websocket_connect("/events?t=tok") as ws:
+        assert client.post("/ui/show", json={"task_id": "t1"}).status_code == 401
+        assert client.post("/ui/show", json={"task_id": "t1"}, headers=h).json() == {"ok": True}
+        e = ws.receive_json()
+        assert e["type"] == "ui_show" and e["task_id"] == "t1"
+        assert e["at"] > 0
+        # News with no thread of its own — a brief, a watch — points at a page instead.
+        assert client.post("/ui/show", json={"section": "updates"}, headers=h).json() == {"ok": True}
+        e = ws.receive_json()
+        assert e["type"] == "ui_show" and e["section"] == "updates" and e["task_id"] == ""
+
+
 # ---- pointing -----------------------------------------------------------------
 
 

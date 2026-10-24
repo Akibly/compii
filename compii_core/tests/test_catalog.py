@@ -241,14 +241,125 @@ def test_a_skill_the_index_no_longer_matches_is_reported_honestly(tmp_path):
     row = next(r for r in catalog.search("pdf", library=lib)["results"] if r["kind"] == "skill")
     with pytest.raises(LibraryError) as err:
         catalog.add(lib, row)
-    assert "couldn't find that folder's SKILL.md" in str(err.value)
+    assert "has no folder named like" in str(err.value)
+    assert "none at all" in str(err.value)
     assert lib.items == {}
+
+
+# ---- browsing without a question -------------------------------------------------
+
+
+def test_an_empty_box_lists_the_registry_and_leaves_skills_out(tmp_path):
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return serve(good_files())(request)
+
+    got = catalog.search("   ", library=library_at(tmp_path, handler))
+    assert got["query"] == ""
+    assert got["results"] and all(r["kind"] == "connector" for r in got["results"])
+    assert not any("skills.sh" in url for url in asked), "skills.sh has no list to browse"
+    registry = next(u for u in asked if "registry.modelcontextprotocol.io" in u)
+    assert "search=" not in registry and "limit=100" in registry
+    assert got["problems"] == []
+    assert "no list to browse" in got["notes"][0]
+
+
+def test_browsing_connectors_says_nothing_it_does_not_mean(tmp_path):
+    got = catalog.search("", library=library_at(tmp_path, serve(good_files())), kind="connector")
+    assert got["results"] and all(r["kind"] == "connector" for r in got["results"])
+    assert got["notes"] == []
+
+
+def test_browsing_skills_is_refused_in_words_not_with_an_empty_box(tmp_path):
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return serve(good_files())(request)
+
+    got = catalog.search("", library=library_at(tmp_path, handler), kind="skill")
+    assert asked == [], "there is nothing to ask for a list of skills"
+    assert got["results"] == [] and got["problems"] == []
+    assert "no list to browse" in got["notes"][0]
+
+
+def test_a_saved_first_page_is_shown_without_asking_again(tmp_path):
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return serve(good_files())(request)
+
+    lib = library_at(tmp_path, handler)
+    first = catalog.search("", library=lib)
+    second = catalog.search("", library=lib)
+    assert len([u for u in asked if "registry.modelcontextprotocol.io" in u]) == 1
+    assert [r["id"] for r in second["results"]] == [r["id"] for r in first["results"]]
+    assert second["problems"] == [] and second["notes"] == first["notes"]
+
+
+def test_browse_pressed_again_asks_the_registry_afresh(tmp_path):
+    asked: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        asked.append(str(request.url))
+        return serve(good_files())(request)
+
+    lib = library_at(tmp_path, handler)
+    catalog.search("", library=lib)
+    catalog.search("", library=lib, fresh=True)
+    assert len([u for u in asked if "registry.modelcontextprotocol.io" in u]) == 2
+
+
+def test_a_failed_refresh_keeps_the_last_page_and_says_so(tmp_path):
+    down = {"value": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "registry.modelcontextprotocol.io" in str(request.url) and down["value"]:
+            return httpx.Response(503, text="down")
+        return serve(good_files())(request)
+
+    lib = library_at(tmp_path, handler)
+    catalog.search("", library=lib)
+    down["value"] = True
+    got = catalog.search("", library=lib, fresh=True)
+    assert got["results"], "the saved page must survive a failed refresh"
+    assert got["problems"] == [], "a note explains the fallback; a warning flag would repeat it"
+    assert any("didn't answer just now" in n for n in got["notes"])
+
+
+def test_an_empty_answer_never_replaces_a_saved_page(tmp_path):
+    empty = {"value": False}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "registry.modelcontextprotocol.io" in str(request.url) and empty["value"]:
+            return httpx.Response(200, json={"servers": []})
+        return serve(good_files())(request)
+
+    lib = library_at(tmp_path, handler)
+    catalog.search("", library=lib)
+    empty["value"] = True
+    assert catalog.search("", library=lib, fresh=True)["results"] == []
+    assert catalog.search("", library=lib)["results"], "the earlier page is still on disk"
+
+
+def test_a_saved_page_says_how_old_it_is_once_it_is_stale(tmp_path):
+    lib = library_at(tmp_path, serve(good_files()))
+    catalog.search("", library=lib)
+    page = lib.root / catalog.PAGE_FILE
+    raw = json.loads(page.read_text(encoding="utf-8"))
+    raw["at"] -= 3 * 60 * 60
+    page.write_text(json.dumps(raw), encoding="utf-8")
+    got = catalog.search("", library=lib)
+    assert any("3 hours ago" in n for n in got["notes"])
 
 
 # ---- the routes the app uses -----------------------------------------------------
 
 
-def test_the_routes_refuse_an_empty_search_and_an_unknown_kind(home):  # noqa: F811
+def test_the_routes_refuse_a_one_letter_search_and_an_unknown_kind(home):  # noqa: F811
     from fastapi.testclient import TestClient
 
     from compii_core.server import build_app
@@ -264,7 +375,7 @@ def test_the_routes_refuse_an_empty_search_and_an_unknown_kind(home):  # noqa: F
     )
     h = {"X-Compii-Token": "tok"}
     with TestClient(app) as client:
-        assert client.get("/library/catalog", headers=h).status_code == 400
+        assert client.get("/library/catalog?q=p", headers=h).status_code == 400
         refused = client.post("/library/catalog/add", json={"entry": {"kind": "widget"}}, headers=h)
         assert refused.status_code == 400 and "doesn't know how" in refused.json()["detail"]
         assert client.get("/library", headers=h).json()["items"] == []

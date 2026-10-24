@@ -26,6 +26,13 @@ class BotView {
     this.tools = const [],
     this.stats = const {},
     this.working = const [],
+    this.provider = '',
+    this.model = '',
+    this.answersWith = '',
+    this.modelNote = '',
+    this.template = '',
+    this.category = '',
+    this.archived = false,
   });
 
   final String id;
@@ -53,6 +60,26 @@ class BotView {
   /// Threads this teammate is working on right now.
   List<Map<String, dynamic>> working;
 
+  /// The AI the user chose for this teammate, if any; empty means it thinks with Compii's.
+  String provider;
+  String model;
+
+  /// Which AI is really answering, named by Core from the brain that speaks, and why the chosen
+  /// one can't — so no page ever claims a teammate runs a model it isn't running.
+  String answersWith;
+  String modelNote;
+
+  /// Which ready-made role it started from, and the group that role belongs to in the directory.
+  String template;
+  String category;
+
+  /// Put away by the user: its role, memory and conversations stay, but it is not on the team
+  /// for new work, and Compii never hands anything to it until it is brought back.
+  bool archived;
+
+  bool get hasOwnAi => provider.isNotEmpty;
+  bool get thinksWithOwnAi => answersWith.isNotEmpty && provider.isNotEmpty;
+
   bool get trusted => trust == 'trusted' || trust == 'full';
   bool get busy => working.isNotEmpty;
 
@@ -74,6 +101,13 @@ class BotView {
           for (final w in (json['working'] as List? ?? const []))
             if (w is Map) Map<String, dynamic>.from(w)
         ],
+        provider: json['provider'] as String? ?? '',
+        model: json['model'] as String? ?? '',
+        answersWith: json['answers_with'] as String? ?? '',
+        modelNote: json['model_note'] as String? ?? '',
+        template: json['template'] as String? ?? '',
+        category: json['category'] as String? ?? '',
+        archived: json['archived'] == true,
       );
 }
 
@@ -84,10 +118,12 @@ class TaskView {
     required this.status,
     this.origin,
     this.botId,
+    this.ownerId,
     this.parentId,
     this.job,
     this.probation = false,
     List<String>? team,
+    this.answersWith = '',
   }) : team = team ?? [];
 
   /// Set when a routine or watch started it rather than the user.
@@ -95,8 +131,22 @@ class TaskView {
   bool get fromRoutine => origin?['routine'] != null;
   bool get fromWatch => origin?['watch'] != null;
 
-  /// The bot whose thread this is (the one speaking last).
-  final String? botId;
+  /// The bot speaking here now. Core moves it on a handoff, so it follows the events.
+  String? botId;
+
+  /// Who the user came to talk to. A handover changes the speaker, never this, so an
+  /// agent's own history keeps a thread it passed part-way to a teammate.
+  final String? ownerId;
+  String get threadOwnerId => ownerId ?? botId ?? '';
+
+  /// A thread this teammate was in: the user came to it, they are answering it now, or
+  /// they share it. Delegated jobs are not conversations with the user, so Core leaves
+  /// those out of the history list this mirrors.
+  bool belongsTo(String bot) => threadOwnerId == bot || (botId == bot && bot.isNotEmpty) || team.contains(bot);
+
+  /// Which AI is thinking behind this conversation, named by Core from the brain that answers
+  /// it. Empty when there is nothing to name, so the app never claims a model it isn't using.
+  final String answersWith;
   final String id;
   final String request;
   String status;
@@ -123,10 +173,12 @@ class TaskView {
       status: json['status'] as String,
       origin: json['origin'] == null ? null : Map<String, dynamic>.from(json['origin'] as Map),
       botId: json['bot_id'] as String?,
+      ownerId: json['owner_id'] as String?,
       parentId: json['parent_id'] as String?,
       job: json['job'] is Map ? Map<String, dynamic>.from(json['job'] as Map) : null,
       probation: json['probation'] == true,
       team: [for (final b in (json['team'] as List? ?? const [])) '$b'],
+      answersWith: json['answers_with'] as String? ?? '',
     );
     for (final e in json['events'] as List) {
       task.events.add(Map<String, dynamic>.from(e as Map));
@@ -209,6 +261,10 @@ class CoreClient extends ChangeNotifier {
   /// Every lane a teammate can be given: key, label, description, tools.
   List<Map<String, dynamic>> botPacks = [];
   String? primaryBotId;
+
+  /// The AIs Compii knows how to talk to, so a teammate can be given one of its own.
+  /// Core's own list, tagged with `provider` and whether this PC already has a key for it.
+  List<Map<String, dynamic>> aiPresets = [];
 
   BotView? get primaryBot {
     if (bots.isEmpty) return null;
@@ -453,10 +509,22 @@ class CoreClient extends ChangeNotifier {
   /// Every live task event (finished, needs you, questions), for desktop toasts.
   final StreamController<Map<String, dynamic>> taskEvents = StreamController.broadcast();
 
+  /// "Show this conversation" asked for by another Compii surface, such as the
+  /// island handing a thread to the full window.
+  final StreamController<Map<String, dynamic>> uiEvents = StreamController.broadcast();
+
   /// Compii's eyes: `screen_aware` (the user's switch) and `looking` (it is reading right now).
   /// The light next to the cursor and the one in this window both come from this, and Core is the
   /// only thing that can say it looked - so it never lights up on a guess.
   final ValueNotifier<Map<String, dynamic>> sight = ValueNotifier(const {'screen_aware': true, 'looking': false});
+
+  /// True when this client already carries the conversation an inbox update came
+  /// from. Both surfaces that tell you about work use this: a thread they can see
+  /// has already said it once, so the update is the same news in a second voice.
+  bool hasThreadFor(Map<String, dynamic> update) {
+    final id = update['task_id'];
+    return id is String && id.isNotEmpty && tasks.containsKey(id);
+  }
 
   void _onEvent(Map<String, dynamic> e) {
     if (e['type'] == 'point') lastPoint.value = e;
@@ -465,6 +533,10 @@ class CoreClient extends ChangeNotifier {
       sight.value = {'screen_aware': e['screen_aware'] != false, 'looking': e['looking'] == true};
     }
     if (e['type'] == 'device_paired') deviceEvents.add(e);
+    if (e['type'] == 'ui_show') {
+      uiEvents.add(e);
+      return;
+    }
     if (e['type'] == 'update') {
       updates.add(e);
       unread += 1;
@@ -480,6 +552,12 @@ class CoreClient extends ChangeNotifier {
     }
     final id = e['task_id'];
     if (id is! String || id.isEmpty) return; // not part of a task
+    if (e['type'] == 'task_dropped') {
+      // A conversation deleted — here or in another window. Nothing may recreate it, so it
+      // leaves this app's memory at once instead of lingering until the next restart.
+      if (tasks.remove(id) != null) notifyListeners();
+      return;
+    }
     final task = tasks.putIfAbsent(
       id,
       () => TaskView(
@@ -488,9 +566,13 @@ class CoreClient extends ChangeNotifier {
         status: 'running',
         origin: e['origin'] == null ? null : Map<String, dynamic>.from(e['origin'] as Map),
         botId: e['bot_id'] as String?,
+        ownerId: e['owner_id'] as String?,
         team: [for (final b in (e['team'] as List? ?? const [])) '$b'],
       ),
     );
+    // A handoff moves the speaker mid-thread; the chip must follow who answers now.
+    final speaker = e['bot_id'];
+    if (speaker is String && speaker.isNotEmpty) task.botId = speaker;
     if (task.team.isEmpty && e['team'] is List) {
       task.team.addAll([for (final b in e['team'] as List) '$b']);
     }
@@ -547,6 +629,13 @@ class CoreClient extends ChangeNotifier {
   Future<void> stop(String taskId) => _request('POST', '/tasks/$taskId/stop');
   Future<void> stopAll() => _request('POST', '/stop');
 
+  /// Ask whichever Compii window is open to show something: a conversation, or a
+  /// page of the app when what it has to show has no thread of its own — the daily
+  /// brief, a watch, a journal day. Core relays it, so an island click reaches the
+  /// full window and any other listener.
+  Future<void> uiShow(String taskId, {String section = ''}) =>
+      _request('POST', '/ui/show', {'task_id': taskId, 'section': section});
+
   /// Close Core on purpose, so an update can replace the files it is running from.
   Future<void> stopCore() => _request('POST', '/shutdown');
   Future<void> decide(String approvalId, {required bool approved}) =>
@@ -575,12 +664,13 @@ class CoreClient extends ChangeNotifier {
   /// Start a conversation; returns its id. `botId` picks which teammate answers first,
   /// and `team` (2–6 ids) opens a shared thread where they can hand work to each other.
   Future<String> startConversation(String request, {String? botId, List<String>? team,
-      List<String> attachments = const []}) async =>
+      List<String> attachments = const [], List<String> contextOff = const []}) async =>
       (await _request('POST', '/tasks', {
         'request': request,
         'bot_id': ?botId,
         if (team != null && team.length > 1) 'team': team,
         if (attachments.isNotEmpty) 'attachments': attachments,
+        if (contextOff.isNotEmpty) 'context_off': contextOff,
       }))['id'] as String;
 
   Future<void> createBot({
@@ -592,6 +682,8 @@ class CoreClient extends ChangeNotifier {
     String avatar = '',
     String mode = '',
     List<String>? tools,
+    String provider = '',
+    String model = '',
   }) async =>
       _applyBots(Map<String, dynamic>.from(await _request('POST', '/bots', {
         'name': name,
@@ -602,6 +694,8 @@ class CoreClient extends ChangeNotifier {
         'avatar': avatar,
         if (mode.isNotEmpty) 'mode': mode,
         'tools': ?tools,
+        if (provider.isNotEmpty) 'provider': provider,
+        if (model.isNotEmpty) 'model': model,
       }) as Map));
 
   Future<void> editBot(String id, Map<String, Object?> changes) async =>
@@ -616,10 +710,91 @@ class CoreClient extends ChangeNotifier {
   Future<void> forgetBotFact(String id, int index) async =>
       _applyBots(Map<String, dynamic>.from(await _request('DELETE', '/bots/$id/facts/$index') as Map));
 
-  /// Follow up in an existing conversation.
+  /// One teammate's own conversations, most recently used first. Core does the filtering,
+  /// so an agent's history holds the threads the user opened with it — including any it has
+  /// handed part-way to a colleague — and not the jobs it was assigned by another.
+  Future<List<TaskView>> fetchConversations(String botId) async {
+    final res = Map<String, dynamic>.from(await _request('GET', '/bots/$botId/conversations') as Map);
+    final out = <TaskView>[];
+    for (final t in (res['conversations'] as List? ?? const [])) {
+      final view = TaskView.fromJson(Map<String, dynamic>.from(t as Map));
+      // A thread already open in this window keeps its live copy; this fills in the rest.
+      final kept = tasks[view.id] ?? view;
+      tasks.putIfAbsent(kept.id, () => kept);
+      out.add(kept);
+    }
+    return out;
+  }
+
+  /// The AIs Compii can talk to, with the ones this PC already has a key for. Core's own list:
+  /// the app never keeps a second one that could go out of date.
+  Future<void> fetchBrain() async {
+    final v = Map<String, dynamic>.from(await _request('GET', '/brain') as Map);
+    final presets = Map<String, dynamic>.from(v['presets'] as Map? ?? {});
+    final keys = Map<String, dynamic>.from(v['keys'] as Map? ?? {});
+    aiPresets = [
+      for (final entry in presets.entries)
+        if (entry.value is Map)
+          {
+            'provider': entry.key,
+            'label': '${(entry.value as Map)['label'] ?? entry.key}',
+            'model': '${(entry.value as Map)['model'] ?? ''}',
+            'where': '${(entry.value as Map)['where'] ?? ''}',
+            'price': '${(entry.value as Map)['price'] ?? ''}',
+            // A local server needs no key, so it is always ready to answer.
+            'hasKey': '${(entry.value as Map)['key'] ?? ''}'.isEmpty ||
+                keys['${(entry.value as Map)['key']}'] == true,
+          },
+    ];
+    notifyListeners();
+  }
+
+  /// Hand a conversation over to another teammate. The thread, the files it touched and
+  /// what was already established travel with it, and the next answer is spoken by them.
+  Future<TaskView> transferConversation(String taskId, String botId, {String note = ''}) async {
+    final res = Map<String, dynamic>.from(
+        await _request('POST', '/tasks/$taskId/transfer', {'bot_id': botId, 'note': note}) as Map);
+    final moved = TaskView.fromJson(res);
+    tasks[taskId] = moved;
+    notifyListeners();
+    return moved;
+  }
+
+  /// Follow up in an existing conversation. Whatever the user struck off in that chat is
+  /// sent with every later message, so a source cannot come back on the next turn.
   Future<void> reply(String taskId, String text, {List<String> attachments = const []}) =>
-      _request('POST', '/tasks/$taskId/messages',
-          {'text': text, if (attachments.isNotEmpty) 'attachments': attachments});
+      _request('POST', '/tasks/$taskId/messages', {
+        'text': text,
+        if (attachments.isNotEmpty) 'attachments': attachments,
+        if (withheld[taskId]?.isNotEmpty == true) 'context_off': withheld[taskId]!.toList(),
+      });
+
+  /// Context items the user refused for one conversation, by the id Core gave them.
+  final Map<String, Set<String>> withheld = {};
+
+  /// Strike a source off this chat, or put it back. Core keeps the refusal for the
+  /// conversation, so it is the app's job only to remember what the user switched off.
+  void withhold(String taskId, String id, bool off) {
+    final set = withheld.putIfAbsent(taskId, () => {});
+    if (off) {
+      set.add(id);
+    } else {
+      set.remove(id);
+    }
+    notifyListeners();
+  }
+
+  /// What the next message would be answered with, before sending it.
+  Future<Map<String, dynamic>> contextPreview() async =>
+      Map<String, dynamic>.from(await _request('GET', '/context') as Map);
+
+  /// Answer the last ask again. Core re-reads the same history and starts a fresh turn;
+  /// the answer already given stays in the thread exactly as it was said.
+  Future<void> answerAgain(String taskId) => _request('POST', '/tasks/$taskId/again');
+
+  /// Forget a conversation for good: Core drops it from the live set and from the archive,
+  /// so it does not come back after a restart.
+  Future<void> deleteConversation(String taskId) => _request('DELETE', '/tasks/$taskId');
 
   /// Send a file to Core so Compii can read it. Streams the bytes; nothing is loaded whole.
   Future<Map<String, dynamic>> uploadFile(String path) async {

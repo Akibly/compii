@@ -54,6 +54,48 @@ void main() {
     expect(find.text('Always allow'), findsOneWidget);
   });
 
+  test('a decided approval keeps whether the user said yes', () {
+    final turn = turnsOf(_task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'approval_needed', 'approval_id': 'a1', 'kind': 'send', 'label': 'Email', 'input': {}, 'at': 1},
+      {'type': 'approval_resolved', 'approval_id': 'a1', 'approved': false, 'at': 2},
+    ], status: 'running')).single;
+    expect(turn.resolved['a1'], isFalse);
+    expect(turn.pending, isNull);
+  });
+
+  testWidgets('a declined approval leaves its outcome on screen', (tester) async {
+    final events = [
+      {'type': 'task_started', 'at': 0},
+      {'type': 'approval_needed', 'approval_id': 'a1', 'kind': 'send', 'label': 'Email the brief', 'input': {}, 'at': 1},
+      {'type': 'approval_resolved', 'approval_id': 'a1', 'approved': false, 'at': 2},
+      {'type': 'task_finished', 'status': 'done', 'text': 'I did not send it.', 'at': 3},
+    ];
+    Future<void> run(Future<void> Function() f) async {}
+    await tester.pumpWidget(MaterialApp(
+      theme: compiiTheme(Brightness.light),
+      home: Scaffold(body: ThreadView(task: _task(events, status: 'done'), core: CoreClient(), run: run)),
+    ));
+    expect(find.text('You declined'), findsOneWidget);
+    expect(find.text('Email the brief'), findsOneWidget);
+    expect(find.textContaining('Compii was told not to retry it'), findsOneWidget);
+    expect(find.text('Needs your okay'), findsNothing, reason: 'the card is gone; the outcome stays');
+    expect(find.text('I did not send it.'), findsOneWidget);
+
+    final approved = _task([
+      {'type': 'task_started', 'at': 0},
+      {'type': 'approval_needed', 'approval_id': 'a1', 'kind': 'send', 'label': 'Email the brief', 'input': {}, 'at': 1},
+      {'type': 'approval_resolved', 'approval_id': 'a1', 'approved': true, 'at': 2},
+      {'type': 'task_finished', 'status': 'done', 'text': 'Sent it.', 'at': 3},
+    ], status: 'done');
+    // A yes is already told by the action ledger; only a no needs its own mark.
+    await tester.pumpWidget(MaterialApp(
+      theme: compiiTheme(Brightness.light),
+      home: Scaffold(body: ThreadView(task: approved, core: CoreClient(), run: run)),
+    ));
+    expect(find.text('You declined'), findsNothing);
+  });
+
   test('save-as-skill and safety widgets build', () {
     expect(const SafetyNotes(events: []), isA<StatelessWidget>());
   });

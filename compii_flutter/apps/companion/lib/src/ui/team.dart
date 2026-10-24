@@ -23,6 +23,11 @@ class TeamPage extends StatefulWidget {
 
 class _TeamPageState extends State<TeamPage> {
   bool _loading = false;
+  bool _showArchived = false;
+  String _query = '';
+  String _category = '';
+  // Wide windows show one teammate beside the directory; this is which one.
+  String? _selected;
 
   @override
   void initState() {
@@ -44,6 +49,50 @@ class _TeamPageState extends State<TeamPage> {
 
   Future<void> _newTeammate() =>
       showBotEditor(context, core: widget.core, state: widget.state, run: widget.run);
+
+  void _clearFilters() => setState(() {
+        _query = '';
+        _category = '';
+        _showArchived = false;
+      });
+
+  /// Put a teammate away, keeping its role, its memory and every conversation it had.
+  Future<void> _archive(BotView bot) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Archive ${bot.name}?'),
+        content: Text('Nothing is thrown away: the role, what ${bot.name} learnt and your conversations stay, '
+            'and you can open them again. But ${bot.name} leaves the team — Compii stops handing work to it, its '
+            'errands stop firing, and a new conversation needs it brought back first.\n\n'
+            'Deleting a teammate is a different thing, and it does forget its memory.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep it on the team')),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Theme.of(context).colorScheme.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Archive'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await widget.core.editBot(bot.id, {'archived': true});
+      await _refresh();
+    } catch (e) {
+      widget.state.fail(e);
+    }
+  }
+
+  Future<void> _restore(BotView bot) async {
+    try {
+      await widget.core.editBot(bot.id, {'archived': false});
+      await _refresh();
+    } catch (e) {
+      widget.state.fail(e);
+    }
+  }
 
   Future<void> _trust(BotView bot, bool trusted) async {
     if (trusted) {
@@ -74,8 +123,30 @@ class _TeamPageState extends State<TeamPage> {
   Widget build(BuildContext context) {
     final c = context.c;
     final primary = widget.core.primaryBot;
-    final teammates = widget.core.bots.where((b) => !b.primary).toList();
+    final everyone = widget.core.bots.where((b) => !b.primary).toList();
+    // An archived teammate is off the page you work from, not off the roster: its conversations
+    // still name it, so the list keeps it and one switch decides whether you are looking at them.
+    final onTeam = [for (final b in everyone) if (!b.archived) b];
+    final putAway = [for (final b in everyone) if (b.archived) b];
+    final pool = _showArchived ? putAway : onTeam;
+    final kinds = <String>{for (final b in pool) if (b.category.isNotEmpty) b.category};
+    final categories = kinds.toList()..sort();
+    final q = _query.trim().toLowerCase();
+    final teammates = [
+      for (final b in pool)
+        if ((_category.isEmpty || b.category == _category) &&
+            (q.isEmpty ||
+                b.name.toLowerCase().contains(q) ||
+                b.job.toLowerCase().contains(q) ||
+                laneNames(widget.core, b).toLowerCase().contains(q)))
+          b,
+    ];
+    final filtering = q.isNotEmpty || _category.isNotEmpty || _showArchived;
     final jobs = widget.core.teamJobs.take(14).toList();
+    // A wide window works like the rest of the app: the directory on the left, the teammate you
+    // picked on the right, and its conversations under it. Narrow windows keep the card grid.
+    final wide = MediaQuery.sizeOf(context).width >= 1180;
+    final selected = teammates.where((b) => b.id == _selected).firstOrNull ?? teammates.firstOrNull;
     return PageScaffold(
       glyph: G.team,
       title: 'Team',
@@ -115,9 +186,68 @@ class _TeamPageState extends State<TeamPage> {
             ),
           const SizedBox(height: 20),
         ],
-        _Heading('TEAMMATES', teammates.length),
+        _Heading(_showArchived ? 'ARCHIVED TEAMMATES' : 'TEAMMATES', teammates.length),
         const SizedBox(height: 8),
-        if (teammates.isEmpty)
+        if (everyone.isNotEmpty) ...[
+          Row(
+            children: [
+              Expanded(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 340),
+                  child: TextField(
+                    onChanged: (v) => setState(() => _query = v),
+                    decoration: InputDecoration(
+                      hintText: _showArchived ? 'Search archived teammates' : 'Search by name, job or lane',
+                      prefixIcon: const Glyph(G.search, size: 15),
+                      isDense: true,
+                      suffixIcon: _query.isEmpty
+                          ? null
+                          : IconButton(
+                              tooltip: 'Clear the search',
+                              icon: const Glyph(G.close, size: 14),
+                              onPressed: () => setState(() => _query = ''),
+                            ),
+                    ),
+                  ),
+                ),
+              ),
+              if (putAway.isNotEmpty)
+                ChoiceChip(
+                  label: Text(_showArchived ? 'Archived (${putAway.length})' : 'Archive (${putAway.length})'),
+                  avatar: Glyph(G.box, size: 14, color: _showArchived ? c.accent : c.muted),
+                  selected: _showArchived,
+                  onSelected: (_) => setState(() {
+                    _showArchived = !_showArchived;
+                    _category = '';
+                  }),
+                ),
+              if (filtering)
+                TextButton(onPressed: _clearFilters, child: const Text('Clear')),
+            ],
+          ),
+          if (categories.length > 1) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                ChoiceChip(
+                  label: const Text('Every kind'),
+                  selected: _category.isEmpty,
+                  onSelected: (_) => setState(() => _category = ''),
+                ),
+                for (final cat in categories)
+                  ChoiceChip(
+                    label: Text(cat),
+                    selected: _category == cat,
+                    onSelected: (_) => setState(() => _category = _category == cat ? '' : cat),
+                  ),
+              ],
+            ),
+          ],
+          const SizedBox(height: 10),
+        ],
+        if (everyone.isEmpty)
           Panel(
             padding: const EdgeInsets.all(20),
             child: Column(
@@ -137,6 +267,78 @@ class _TeamPageState extends State<TeamPage> {
                 ),
               ],
             ),
+          )
+        else if (teammates.isEmpty)
+          Panel(
+            padding: const EdgeInsets.all(20),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    _showArchived
+                        ? (q.isEmpty
+                            ? 'Nothing is archived.'
+                            : 'No archived teammate matches “$_query”.')
+                        : _category.isEmpty
+                            ? 'No teammate matches “$_query”. There ${pool.length == 1 ? 'is 1' : 'are ${pool.length}'} '
+                                'in the team.'
+                            : 'No $_category teammate matches “$_query”.',
+                    style: context.type.bodySmall?.copyWith(color: c.muted),
+                  ),
+                ),
+                TextButton(onPressed: _clearFilters, child: const Text('Show everyone')),
+              ],
+            ),
+          )
+        else if (wide)
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SizedBox(
+                width: 320,
+                child: Column(
+                  children: [
+                    for (final bot in teammates)
+                      _DirectoryRow(
+                        bot: bot,
+                        core: widget.core,
+                        selected: selected?.id == bot.id,
+                        onTap: () => setState(() => _selected = bot.id),
+                      ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    if (selected != null)
+                      _TeammateCard(
+                        bot: selected,
+                        core: widget.core,
+                        state: widget.state,
+                        run: widget.run,
+                        onAssign: () => widget.state.pickBot(selected.id),
+                        onOpenThread: widget.state.open,
+                        onTrust: (v) => _trust(selected, v),
+                        onArchive: () => _archive(selected),
+                        onRestore: () => _restore(selected),
+                      ),
+                    if (selected != null) ...[
+                      const SizedBox(height: 18),
+                      _SelectedConversations(
+                        key: ValueKey(selected.id),
+                        bot: selected,
+                        core: widget.core,
+                        onOpen: widget.state.open,
+                        onOpenLane: () => widget.state.pickBot(selected.id),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ],
           )
         else
           LayoutBuilder(
@@ -158,6 +360,8 @@ class _TeamPageState extends State<TeamPage> {
                         onAssign: () => widget.state.pickBot(bot.id),
                         onOpenThread: widget.state.open,
                         onTrust: (v) => _trust(bot, v),
+                        onArchive: () => _archive(bot),
+                        onRestore: () => _restore(bot),
                       ),
                     ),
                 ],
@@ -365,6 +569,252 @@ class _CompiiBand extends StatelessWidget {
   }
 }
 
+/// One line in the directory when the window is wide enough to keep the teammate beside it.
+/// The full card on the right carries the rest; this is only who is who and how they stand.
+class _DirectoryRow extends StatelessWidget {
+  const _DirectoryRow({required this.bot, required this.core, required this.selected, required this.onTap});
+  final BotView bot;
+  final CoreClient core;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final color = botColor(bot, c.accent);
+    final (String state, Color tone) = bot.archived
+        ? ('Away', c.faint)
+        : bot.working.isNotEmpty
+            ? ('Working', color)
+            : bot.trust == 'trusted'
+                ? ('Trusted', c.success)
+                : ('Probation', c.warning);
+    return Keyable(
+      key: ValueKey('dir-${bot.id}'),
+      onTap: onTap,
+      selected: selected,
+      radius: Shapes.r12,
+      label: [
+        bot.name,
+        if (bot.archived) 'archived',
+        if (bot.job.isNotEmpty) bot.job,
+      ].join(', '),
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            curve: Motion.standard,
+            margin: const EdgeInsets.only(bottom: 4),
+            padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
+            decoration: BoxDecoration(
+              color: selected ? c.accentSoft : Colors.transparent,
+              borderRadius: Shapes.r12,
+              border: Border.all(color: selected ? c.accent.withValues(alpha: .35) : Colors.transparent),
+            ),
+            child: Row(
+              children: [
+                if (bot.archived)
+                  Opacity(opacity: .5, child: BotAvatar(bot: bot, size: 30))
+                else
+                  BotAvatar(bot: bot, size: 30),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(bot.name, maxLines: 1, overflow: TextOverflow.ellipsis,
+                          style: context.type.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w600, color: bot.archived ? c.faint : null)),
+                      const SizedBox(height: 1),
+                      Text(bot.job.isNotEmpty ? bot.job : laneShort(core, bot), maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: context.type.labelMedium?.copyWith(color: c.faint)),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Container(width: 6, height: 6, decoration: BoxDecoration(color: tone, shape: BoxShape.circle)),
+                const SizedBox(width: 5),
+                Text(state, style: context.type.labelSmall?.copyWith(color: tone)),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The third pane on a wide window: the conversations this teammate actually has, read from
+/// Core, so the directory can lead straight into one without leaving the page.
+class _SelectedConversations extends StatefulWidget {
+  const _SelectedConversations({
+    super.key,
+    required this.bot,
+    required this.core,
+    required this.onOpen,
+    required this.onOpenLane,
+  });
+  final BotView bot;
+  final CoreClient core;
+  final void Function(String taskId) onOpen;
+  final VoidCallback onOpenLane;
+
+  @override
+  State<_SelectedConversations> createState() => _SelectedConversationsState();
+}
+
+class _SelectedConversationsState extends State<_SelectedConversations> {
+  List<TaskView>? _threads;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _error = null);
+    try {
+      final threads = await widget.core.fetchConversations(widget.bot.id);
+      if (!mounted) return;
+      setState(() => _threads = threads);
+    } on Object catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _threads = const [];
+        _error = '$e';
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final color = botColor(widget.bot, c.accent);
+    final threads = _threads;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Text('CONVERSATIONS', style: context.type.labelSmall),
+            if (threads != null) ...[
+              const SizedBox(width: 7),
+              Text('${threads.length}', style: context.type.labelSmall?.copyWith(color: c.faint)),
+            ],
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: widget.onOpenLane,
+                  child: Text('Open ${widget.bot.name}’s lane',
+                      maxLines: 1, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        if (threads == null)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Row(
+              children: [
+                SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2, color: color)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text('Reading ${widget.bot.name}’s conversations…',
+                      maxLines: 2,
+                      style: context.type.labelMedium?.copyWith(color: c.faint)),
+                ),
+              ],
+            ),
+          )
+        else if (_error != null)
+          Panel(
+            padding: const EdgeInsets.all(18),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text('This window could not read ${widget.bot.name}’s conversations. $_error',
+                      style: context.type.bodySmall?.copyWith(color: c.warning)),
+                ),
+                TextButton(onPressed: _load, child: const Text('Try again')),
+              ],
+            ),
+          )
+        else if (threads.isEmpty)
+          Panel(
+            padding: const EdgeInsets.all(18),
+            child: Text(
+              'No conversations with ${widget.bot.name} yet. ${widget.bot.archived ? 'It is put away, so bring it back first.' : 'Ask for something from its lane and it stays here.'}',
+              style: context.type.bodySmall?.copyWith(color: c.faint),
+            ),
+          )
+        else
+          Panel(
+            padding: EdgeInsets.zero,
+            child: Column(
+              children: [
+                for (final (i, t) in threads.indexed) ...[
+                  if (i > 0) Divider(height: 1, indent: 14, endIndent: 14, color: c.border),
+                  _ConversationRow(task: t, color: color, onTap: () => widget.onOpen(t.id)),
+                ],
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _ConversationRow extends StatelessWidget {
+  const _ConversationRow({required this.task, required this.color, required this.onTap});
+  final TaskView task;
+  final Color color;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final waiting = task.pendingApproval != null;
+    final (String label, Color tone) = waiting
+        ? ('Needs you', c.warning)
+        : switch (task.status) {
+            'running' => ('Working', c.accent),
+            'failed' => ('Problem', c.danger),
+            'stopped' => ('Stopped', c.faint),
+            _ => ('Done', c.success),
+          };
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        child: Row(
+          children: [
+            Container(width: 3, height: 26, decoration: BoxDecoration(color: waiting || task.active ? color : c.border, borderRadius: Shapes.pill)),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.bodyMedium),
+            ),
+            const SizedBox(width: 8),
+            Text(label, style: context.type.labelMedium?.copyWith(color: tone, fontSize: 11.5)),
+            const SizedBox(width: 8),
+            Text(ago(task.last?['at'] as double? ?? 0), style: context.type.labelMedium?.copyWith(color: c.faint, fontSize: 11.5)),
+            const SizedBox(width: 4),
+            Glyph(G.chevronRight, size: 14, color: c.faint),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _TeammateCard extends StatelessWidget {
   const _TeammateCard({
     required this.bot,
@@ -374,6 +824,8 @@ class _TeammateCard extends StatelessWidget {
     required this.onAssign,
     required this.onOpenThread,
     required this.onTrust,
+    required this.onArchive,
+    required this.onRestore,
   });
   final BotView bot;
   final CoreClient core;
@@ -382,6 +834,8 @@ class _TeammateCard extends StatelessWidget {
   final VoidCallback onAssign;
   final void Function(String taskId) onOpenThread;
   final void Function(bool trusted) onTrust;
+  final VoidCallback onArchive;
+  final VoidCallback onRestore;
 
   @override
   Widget build(BuildContext context) {
@@ -432,15 +886,36 @@ class _TeammateCard extends StatelessWidget {
                         ),
                       ],
                     ),
+                    // Only its own AI is worth a line here; thinking with Compii's is the default.
+                    if (aiShort(bot).isNotEmpty) ...[
+                      const SizedBox(height: 3),
+                      Row(
+                        children: [
+                          Glyph(G.memory, size: 12, color: bot.modelNote.isEmpty ? c.faint : c.warning),
+                          const SizedBox(width: 6),
+                          Expanded(
+                            child: Text(
+                              aiShort(bot),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: context.type.labelMedium
+                                  ?.copyWith(color: bot.modelNote.isEmpty ? c.faint : c.warning),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ],
                 ),
               ),
               const SizedBox(width: 8),
-              Pill(
-                bot.trust == 'trusted' ? 'Trusted' : 'Probation',
-                color: bot.trust == 'trusted' ? c.success : c.warning,
-                glyph: bot.trust == 'trusted' ? G.shieldCheck : G.warning,
-              ),
+              bot.archived
+                  ? Pill('Archived', color: c.muted, glyph: G.box)
+                  : Pill(
+                      bot.trust == 'trusted' ? 'Trusted' : 'Probation',
+                      color: bot.trust == 'trusted' ? c.success : c.warning,
+                      glyph: bot.trust == 'trusted' ? G.shieldCheck : G.warning,
+                    ),
             ],
           ),
           const SizedBox(height: 10),
@@ -467,9 +942,17 @@ class _TeammateCard extends StatelessWidget {
           else
             Row(
               children: [
-                Glyph(G.checkCircle, size: 14, color: c.faint),
+                Glyph(bot.archived ? G.box : G.checkCircle, size: 14, color: c.faint),
                 const SizedBox(width: 7),
-                Text('Free — ready for a job', style: context.type.labelMedium?.copyWith(color: c.faint)),
+                Expanded(
+                  child: Text(
+                    bot.archived
+                        ? 'Put away — no new work reaches it until it comes back'
+                        : 'Free — ready for a job',
+                    maxLines: 2,
+                    style: context.type.labelMedium?.copyWith(color: c.faint),
+                  ),
+                ),
               ],
             ),
           const SizedBox(height: 8),
@@ -488,28 +971,49 @@ class _TeammateCard extends StatelessWidget {
           const SizedBox(height: 6),
           Row(
             children: [
-              TextButton.icon(
-                onPressed: onAssign,
-                icon: const Glyph(G.send, size: 14),
-                label: const Text('Give a job'),
-              ),
+              if (bot.archived)
+                TextButton.icon(
+                  onPressed: onRestore,
+                  icon: const Glyph(G.undo, size: 14),
+                  label: const Text('Bring back'),
+                )
+              else
+                TextButton.icon(
+                  onPressed: onAssign,
+                  icon: const Glyph(G.send, size: 14),
+                  label: const Text('Give a job'),
+                ),
               const Spacer(),
+              IconButton(
+                tooltip: 'Start another like this',
+                visualDensity: VisualDensity.compact,
+                onPressed: () => showBotEditor(context, core: core, state: state, run: run, copy: bot),
+                icon: const Glyph(G.copy, size: 16),
+              ),
               IconButton(
                 tooltip: 'Edit name, job and face',
                 visualDensity: VisualDensity.compact,
                 onPressed: () => showBotEditor(context, core: core, state: state, run: run, bot: bot),
                 icon: const Glyph(G.edit, size: 16),
               ),
-              IconButton(
-                tooltip: bot.trust == 'trusted' ? 'Back to probation' : 'Make trusted',
-                visualDensity: VisualDensity.compact,
-                onPressed: () => onTrust(bot.trust != 'trusted'),
-                icon: Glyph(
-                  bot.trust == 'trusted' ? G.shieldCheck : G.shield,
-                  size: 16,
-                  color: bot.trust == 'trusted' ? c.success : c.muted,
+              if (!bot.archived) ...[
+                IconButton(
+                  tooltip: bot.trust == 'trusted' ? 'Back to probation' : 'Make trusted',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: () => onTrust(bot.trust != 'trusted'),
+                  icon: Glyph(
+                    bot.trust == 'trusted' ? G.shieldCheck : G.shield,
+                    size: 16,
+                    color: bot.trust == 'trusted' ? c.success : c.muted,
+                  ),
                 ),
-              ),
+                IconButton(
+                  tooltip: 'Archive ${bot.name} — its conversations stay',
+                  visualDensity: VisualDensity.compact,
+                  onPressed: onArchive,
+                  icon: const Glyph(G.box, size: 16),
+                ),
+              ],
             ],
           ),
         ],

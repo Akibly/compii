@@ -732,7 +732,9 @@ class _Scrubber extends StatelessWidget {
                   if (moments.isEmpty) return;
                   final ordered = [...moments]..sort((a, b) => (a['started'] as num).compareTo(b['started'] as num));
                   final at = ordered.indexWhere((m) => m['id'] == selectedId);
-                  onPick(ordered[(at < 0 ? 0 : at + delta).clamp(0, ordered.length - 1)]);
+                  // Nothing highlighted yet: Home and End still mean opposite ends.
+                  final to = at < 0 ? (delta < 0 ? 0 : ordered.length - 1) : (at + delta).clamp(0, ordered.length - 1);
+                  onPick(ordered[to]);
                 }
 
                 return Focus(

@@ -374,86 +374,31 @@ class OptionRow extends StatelessWidget {
   );
 }
 
-/// A whole card or tile that answers the finger: it dips a hair on the way down
-/// and springs back, which reads as one solid object rather than a painted row.
-/// Hover tint is optional and stacks with the theme's own.
-class Pressable extends StatefulWidget {
-  const Pressable({super.key, required this.child, this.onTap, this.onLongPress,
-    this.radius = Shapes.r18, this.hoverFill, this.scale = .985, this.disabled = false});
-  final Widget child;
-  final VoidCallback? onTap;
-  final VoidCallback? onLongPress;
-  final BorderRadius radius;
-  final Color? hoverFill;
-  final double scale;
-  final bool disabled;
-
-  @override
-  State<Pressable> createState() => _PressableState();
-}
-
-class _PressableState extends State<Pressable> {
-  bool _down = false;
-  bool _over = false;
-
-  void _up() {
-    if (_down) setState(() => _down = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final live = !widget.disabled && widget.onTap != null;
-    return MouseRegion(
-      cursor: live ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      onEnter: (_) => setState(() => _over = true),
-      onExit: (_) {
-        _over = false;
-        _up();
-      },
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: live ? widget.onTap : null,
-        onLongPress: widget.disabled ? null : widget.onLongPress,
-        onTapDown: live ? (_) => setState(() => _down = true) : null,
-        onTapUp: (_) => _up(),
-        onTapCancel: _up,
-        child: AnimatedScale(
-          scale: _down ? widget.scale : 1,
-          duration: context.motion(_down ? Motion.tap : Motion.base),
-          curve: Motion.spring,
-          child: AnimatedContainer(
-            duration: context.motion(Motion.quick),
-            curve: Motion.standard,
-            decoration: BoxDecoration(
-              borderRadius: widget.radius,
-              color: _over && widget.hoverFill != null ? widget.hoverFill : null,
-            ),
-            child: widget.child,
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// The keyboard half of a control that draws itself. One tab stop, Enter or
 /// Space activates it, and the ring is the theme's own accent — so nothing a
 /// mouse can reach is out of reach for a keyboard or a screen reader. The child
 /// keeps its own look and its own pointer handling.
+///
+/// [minTarget] floors the height only: a wide-enough control sets its own width,
+/// and forcing a narrow one wider would draw the ring around empty space.
 class Keyable extends StatelessWidget {
   const Keyable({
     super.key,
     required this.child,
     required this.onTap,
     this.label,
-    this.selected = false,
+    this.selected,
     this.radius = Shapes.pill,
     this.minTarget = 44,
   });
   final Widget child;
   final VoidCallback? onTap;
   final String? label;
-  final bool selected;
+
+  /// Only for controls that really toggle — a nav row, a day chip. Left null on
+  /// a plain button, so a screen reader isn't told "not selected" about
+  /// something that was never a choice.
+  final bool? selected;
   final BorderRadius radius;
   final double minTarget;
 
@@ -466,7 +411,9 @@ class Keyable extends StatelessWidget {
       skipTraversal: !live,
       onKeyEvent: (node, event) {
         if (!live) return KeyEventResult.ignored;
-        if (event is! KeyDownEvent && event is! KeyUpEvent) return KeyEventResult.ignored;
+        if (event is! KeyDownEvent && event is! KeyUpEvent && event is! KeyRepeatEvent) {
+          return KeyEventResult.ignored;
+        }
         final key = event.logicalKey;
         if (key != LogicalKeyboardKey.enter &&
             key != LogicalKeyboardKey.numpadEnter &&
@@ -636,7 +583,18 @@ class _Breathing extends StatefulWidget {
 
 class _BreathingState extends State<_Breathing> with SingleTickerProviderStateMixin {
   late final AnimationController _a =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: Motion.breathe))..repeat(reverse: true);
+      AnimationController(vsync: this, duration: const Duration(milliseconds: Motion.breathe));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Nothing listens to a frozen breathe, so don't pay a vsync callback for it.
+    if (context.still) {
+      if (_a.isAnimating) _a.stop();
+    } else if (!_a.isAnimating) {
+      _a.repeat(reverse: true);
+    }
+  }
 
   @override
   void dispose() {
@@ -699,7 +657,18 @@ class SkeletonCards extends StatefulWidget {
 
 class _SkeletonCardsState extends State<SkeletonCards> with SingleTickerProviderStateMixin {
   late final AnimationController _sweep =
-      AnimationController(vsync: this, duration: const Duration(milliseconds: Motion.breathe))..repeat();
+      AnimationController(vsync: this, duration: const Duration(milliseconds: Motion.breathe));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // The sweep is not drawn when the platform asks for quiet, so don't run it.
+    if (context.still) {
+      if (_sweep.isAnimating) _sweep.stop();
+    } else if (!_sweep.isAnimating) {
+      _sweep.repeat();
+    }
+  }
 
   @override
   void dispose() {
@@ -877,6 +846,20 @@ class AdaptiveRow extends StatelessWidget {
               child: child is Flexible ? child.child : child),
       ]);
   });
+}
+
+/// A control whose own label can outgrow the row it sits in at enlarged text —
+/// a dropdown of voice names, say. The width is capped and the words scroll,
+/// instead of pushing the rest of the row off the window.
+class ScrollCapped extends StatelessWidget {
+  const ScrollCapped({super.key, this.maxWidth = 220, required this.child});
+  final double maxWidth;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) => ConstrainedBox(
+    constraints: BoxConstraints(maxWidth: maxWidth),
+    child: SingleChildScrollView(scrollDirection: Axis.horizontal, child: child),
+  );
 }
 
 /// A failed refresh never replaces successful content with an empty state.

@@ -437,16 +437,12 @@ class _FirstRunState extends State<FirstRun> {
               natural ? 'Choose how I sound, then tap Hear me.' : 'A one-time download of an open voice model.',
               natural
                   ? AdaptiveRow(mainAxisSize: MainAxisSize.min, breakpoint: 300, children: [
-                      ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 220),
-                        child: SingleChildScrollView(
-                          scrollDirection: Axis.horizontal,
-                          child: DropdownButton<String>(
-                            value: voices.containsKey(_settings['voice']) ? '${_settings['voice']}' : null,
-                            underline: const SizedBox.shrink(),
-                            items: [for (final e in voices.entries) DropdownMenuItem(value: e.key, child: Text('${e.value}'))],
-                            onChanged: (v) => _run(() async => widget.voice?.set({'voice': v})),
-                          ),
+                      ScrollCapped(
+                        child: DropdownButton<String>(
+                          value: voices.containsKey(_settings['voice']) ? '${_settings['voice']}' : null,
+                          underline: const SizedBox.shrink(),
+                          items: [for (final e in voices.entries) DropdownMenuItem(value: e.key, child: Text('${e.value}'))],
+                          onChanged: (v) => _run(() async => widget.voice?.set({'voice': v})),
                         ),
                       ),
                       const SizedBox(width: 8),

@@ -172,9 +172,13 @@ def test_an_offer_can_be_answered_only_once_and_a_time_can_be_chosen(tmp_path):
 def test_declining_keeps_the_offer_quiet_for_a_month(tmp_path):
     store = Suggestions(tmp_path / "suggestions.json")
     found = store.scan(MORNINGS, now=NOW)[0]
-    store.resolve(found.id, "declined")
-    assert store.scan(MORNINGS, now=NOW + 86400) == []
-    assert store.scan(MORNINGS, now=NOW + 32 * 86400)  # still a habit a month later: ask again
+    answered = store.resolve(found.id, "declined")
+    # The cooldown counts from when the answer was actually given, which resolve stamps
+    # with the real clock; measuring from the fixture's fake NOW makes this pass or fail
+    # depending on the hour the suite runs.
+    assert answered is not None
+    assert store.scan(MORNINGS, now=answered.resolved + 86400) == []
+    assert store.scan(MORNINGS, now=answered.resolved + 32 * 86400)  # still a habit a month later: ask again
 
 
 def test_only_the_strongest_offers_are_shown_and_answers_survive_a_restart(tmp_path):

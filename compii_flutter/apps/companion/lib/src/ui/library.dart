@@ -35,6 +35,7 @@ class _LibraryPageState extends State<LibraryPage> {
   void initState() {
     super.initState();
     _load();
+    _search(); // an empty box means "show me what is there": the registry's first page
   }
 
   @override
@@ -54,16 +55,16 @@ class _LibraryPageState extends State<LibraryPage> {
     }
   });
 
-  Future<void> _search() async {
+  Future<void> _search({bool fresh = false}) async {
     final words = _query.text.trim();
-    if (words.length < 2) {
-      _toast('Type at least two letters so Compii has something to look for.');
+    if (words.length == 1) {
+      _toast('One letter isn’t enough to search. Clear the box to browse, or type one more.');
       return;
     }
     if (_looking) return;
     setState(() => _looking = true);
     try {
-      final found = await TrustApi.catalogSearch(words, kind: _kind);
+      final found = await TrustApi.catalogSearch(words, kind: _kind, refresh: fresh);
       if (mounted) setState(() => _found = found);
     } on CoreError catch (e) {
       _toast(e.message);
@@ -398,6 +399,11 @@ class _LibraryPageState extends State<LibraryPage> {
     final browse = found == null
         ? <Map<String, dynamic>>[]
         : [for (final b in found['browse'] as List) Map<String, dynamic>.from(b as Map)];
+    final notes = found == null
+        ? <String>[]
+        : [for (final n in found['notes'] as List? ?? const []) '$n'];
+    final asked = '${found?['query'] ?? ''}'.trim();
+    final browsing = found != null && asked.isEmpty;
     return TrustCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -411,11 +417,13 @@ class _LibraryPageState extends State<LibraryPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text('Search what other people published', style: context.type.titleSmall),
+                    Text('Browse what other people published', style: context.type.titleSmall),
                     const SizedBox(height: 2),
                     Text(
-                      'Compii asks the official MCP registry and the skills index. Anything you pick lands in the '
-                      'review list below, scanned and switched off — a search result is never live until you approve it.',
+                      'Below is the official MCP registry’s current page — no search needed. Compii asks for it when '
+                      'this page opens and keeps the answer, so from then on it is here at once. Type a word to ask '
+                      'both catalogues, the registry and the skills index. Anything you pick lands in the review list '
+                      'below, scanned and switched off — a result is never live until you approve it.',
                       style: context.type.bodySmall?.copyWith(color: c.muted),
                     ),
                   ],
@@ -445,7 +453,7 @@ class _LibraryPageState extends State<LibraryPage> {
                 child: TextField(
                   controller: _query,
                   textInputAction: TextInputAction.search,
-                  onSubmitted: (_) => _search(),
+                  onSubmitted: (_) => _search(fresh: true),
                   decoration: InputDecoration(
                     isDense: true,
                     hintText: 'calendar, github, pdf, email…',
@@ -454,30 +462,68 @@ class _LibraryPageState extends State<LibraryPage> {
                 ),
               ),
               const SizedBox(width: 8),
-              FilledButton.icon(
-                onPressed: _looking ? null : _search,
-                icon: _looking
-                    ? const SizedBox.square(dimension: 15, child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Glyph(G.search, size: 18),
-                label: Text(found == null ? 'Search' : 'Search again'),
+              ValueListenableBuilder<TextEditingValue>(
+                valueListenable: _query,
+                builder: (context, value, _) => FilledButton.icon(
+                  onPressed: _looking ? null : () => _search(fresh: true),
+                  icon: _looking
+                      ? const SizedBox.square(dimension: 15, child: CircularProgressIndicator(strokeWidth: 2))
+                      : const Glyph(G.search, size: 18),
+                  label: Text(value.text.trim().isEmpty
+                      ? 'Browse'
+                      : found == null
+                          ? 'Search'
+                          : 'Search again'),
+                ),
               ),
             ],
           ),
+          if (_looking && found == null) ...[
+            const SizedBox(height: 12),
+            AdaptiveRow(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const SizedBox.square(dimension: 14, child: CircularProgressIndicator(strokeWidth: 2)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'Asking the MCP registry for its first page. Its own network is slow sometimes, so this can take '
+                    'half a minute.',
+                    style: context.type.bodySmall?.copyWith(color: c.muted),
+                  ),
+                ),
+              ],
+            ),
+          ],
           if (found != null) ...[
             const SizedBox(height: 14),
             for (final p in problems)
               _FlagRow({'level': 'warn', 'what': '${p['catalogue']} didn’t answer: ${p['problem']}'}),
-            if (rows.isEmpty && problems.length < 2) ...[
+            for (final n in notes)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4),
+                child: Text(n, style: context.type.bodySmall?.copyWith(color: c.muted)),
+              ),
+            if (rows.isEmpty && problems.length < 2 && !(browsing && _kind == 'skill')) ...[
               const SizedBox(height: 2),
               Text(
-                'Neither catalogue knows “${found['query']}”. Try a plainer word, or look in the places below and '
-                'paste the link in.',
+                browsing
+                    ? 'The registry answered, but its first page was empty. Type a word to search, or open one of the '
+                        'catalogues listed above and paste the link in.'
+                    : 'Neither catalogue knows “$asked”. Try a plainer word, or look in the places below and '
+                        'paste the link in.',
                 style: context.type.bodySmall?.copyWith(color: c.muted),
               ),
             ],
+            if (browsing && browse.isNotEmpty) ...[
+              _places(context, browse),
+              const SizedBox(height: 12),
+            ],
             if (rows.isNotEmpty) ...[
               Text(
-                '${rows.length} ${rows.length == 1 ? 'match' : 'matches'} · Compii has not fetched any of them yet',
+                browsing
+                    ? '${rows.length} from the MCP registry’s first page · Compii has not fetched any of them yet'
+                    : '${rows.length} ${rows.length == 1 ? 'match' : 'matches'} · Compii has not fetched any of them yet',
                 style: context.type.labelMedium,
               ),
               const SizedBox(height: 4),
@@ -492,31 +538,43 @@ class _LibraryPageState extends State<LibraryPage> {
                 ),
               ],
             ],
-            const SizedBox(height: 10),
-            Wrap(
-              spacing: 8,
-              runSpacing: 6,
-              crossAxisAlignment: WrapCrossAlignment.center,
-              children: [
-                Text('More places to look', style: context.type.labelMedium),
-                for (final b in browse)
-                  TextButton.icon(
-                    onPressed: () => _openUrl('${b['url']}'),
-                    icon: const Glyph(G.external, size: 15),
-                    label: Text('${b['name']}'),
-                    style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
-                  ),
-              ],
-            ),
-            if (browse.isNotEmpty)
-              Text(
-                'Those open in your browser. When you find one you like, copy its SKILL.md folder, link or server '
-                'address back to “From a link”.',
-                style: context.type.bodySmall?.copyWith(color: c.muted),
-              ),
+            if (!browsing) ...[
+              const SizedBox(height: 10),
+              _places(context, browse),
+            ],
           ],
         ],
       ),
+    );
+  }
+
+  Widget _places(BuildContext context, List<Map<String, dynamic>> browse) {
+    final c = context.c;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: [
+            Text('More places to look', style: context.type.labelMedium),
+            for (final b in browse)
+              TextButton.icon(
+                onPressed: () => _openUrl('${b['url']}'),
+                icon: const Glyph(G.external, size: 15),
+                label: Text('${b['name']}'),
+                style: TextButton.styleFrom(visualDensity: VisualDensity.compact),
+              ),
+          ],
+        ),
+        if (browse.isNotEmpty)
+          Text(
+            'Those open in your browser. When you find one you like, copy its SKILL.md folder, link or server '
+            'address back to “From a link”.',
+            style: context.type.bodySmall?.copyWith(color: c.muted),
+          ),
+      ],
     );
   }
 

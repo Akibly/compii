@@ -113,7 +113,7 @@ class Stage extends StatelessWidget {
                             : SizedBox.square(dimension: size, child: Ember(mood: mood, jobs: task.active ? 1 : 0)),
                       ),
                     ),
-                    if (bubble.isNotEmpty && pending == null && asked == null) _SpeechBubble(text: bubble, working: working, failed: turn?.status == 'failed'),
+                    if (bubble.isNotEmpty && pending == null && asked == null) _SpeechBubble(text: bubble, working: working, failed: turn?.status == 'failed', onOpen: (url) => run(() => core.openUrl(url))),
                     if (asked != null) ...[
                       const SizedBox(height: 18),
                       QuestionCard(question: asked, core: core, run: run),
@@ -161,10 +161,11 @@ class Stage extends StatelessWidget {
 
 /// A speech bubble with a little tail pointing up at the character.
 class _SpeechBubble extends StatelessWidget {
-  const _SpeechBubble({required this.text, required this.working, this.failed = false});
+  const _SpeechBubble({required this.text, required this.working, this.failed = false, this.onOpen});
   final String text;
   final bool working;
   final bool failed;
+  final OpenLink? onOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -195,7 +196,7 @@ class _SpeechBubble extends StatelessWidget {
                   ),
                 Expanded(
                   child: text.length > 220 || text.contains('\n')
-                      ? ReplyText(text, style: context.type.bodyLarge)
+                      ? ReplyText(text, style: context.type.bodyLarge, onOpen: onOpen)
                       : SelectableText(
                     plainMarkdown(text),
                     textAlign: working ? TextAlign.start : TextAlign.center,

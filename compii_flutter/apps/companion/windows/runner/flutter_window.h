@@ -34,6 +34,10 @@ class FlutterWindow : public Win32Window {
   // "compii/overlay": lets the overlay take clicks only while the mouse is
   // over its Yes / No card (the rest of the time clicks pass straight through).
   std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> overlay_channel_;
+
+  // "compii/island": physical-pixel geometry, displays, focus, foreground
+  // restore and click-through for the floating island.
+  std::unique_ptr<flutter::MethodChannel<flutter::EncodableValue>> island_channel_;
 };
 
 #endif  // RUNNER_FLUTTER_WINDOW_H_

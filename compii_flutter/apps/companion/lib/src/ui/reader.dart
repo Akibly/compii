@@ -15,21 +15,23 @@ Future<void> showAnswerReader(
   required String text,
   String title = 'Compii',
   String? subtitle,
+  OpenLink? onOpen,
 }) =>
     showDialog<void>(
       context: context,
       useSafeArea: true,
       barrierColor: Colors.black.withValues(alpha: .46),
-      builder: (_) => AnswerReader(text: text, title: title, subtitle: subtitle),
+      builder: (_) => AnswerReader(text: text, title: title, subtitle: subtitle, onOpen: onOpen),
     );
 
 /// A comfortable reading surface: 66-ish characters per line, generous
 /// leading, selectable text, and the full answer always in one place.
 class AnswerReader extends StatelessWidget {
-  const AnswerReader({super.key, required this.text, this.title = 'Compii', this.subtitle});
+  const AnswerReader({super.key, required this.text, this.title = 'Compii', this.subtitle, this.onOpen});
   final String text;
   final String title;
   final String? subtitle;
+  final OpenLink? onOpen;
 
   int get _words => text.trim().isEmpty ? 0 : text.trim().split(RegExp(r'\s+')).length;
 
@@ -112,6 +114,7 @@ class AnswerReader extends StatelessWidget {
                       child: ReplyText(
                         text,
                         style: context.type.bodyLarge?.copyWith(fontSize: 16.5, height: 1.62),
+                        onOpen: onOpen,
                       ),
                     ),
                   ),

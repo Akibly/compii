@@ -324,7 +324,7 @@ def test_save_a_conversation_as_a_skill_and_reuse_it(home):
             pass
         skill = c.post(f"/tasks/{tid}/skill", json={"name": "Invoice sort"}, headers=H).json()
         assert skill["name"] == "Invoice sort" and skill["steps"] and "sort my invoices" in skill["instruction"]
-        assert "Invoice sort" in agent.extra_context()
+        assert "Invoice sort" in agent.context_sources().as_prompt()
         out = agent.toolbox.execute("use_skill", {"name": "invoice sort"}).text
         assert "Steps that worked before" in out
         r = c.post(f"/skills/{skill['id']}/routine", json={"schedule": {"kind": "weekly", "days": ["mon"], "at": "09:00"}},
@@ -364,7 +364,7 @@ def test_saving_a_skill_offers_a_name_that_fits_the_conversation_and_warns_befor
         assert "put these in order" in brain.naming and d["steps"]
         c.post(f"/tasks/{tid}/skill", json={"name": d["name"], "about": d["about"]}, headers=H)
         assert c.post(f"/tasks/{tid}/skill/draft", headers=H).json()["taken"] == "Weekly invoice sort"
-        assert "(Sorts the invoices" in app.state.agent.extra_context()
+        assert "(Sorts the invoices" in app.state.agent.context_sources().as_prompt()
 
     tools = app.state.agent.toolbox
     args = {"name": "weekly invoice SORT", "instruction": "Sort invoices", "steps": ["List Downloads"]}

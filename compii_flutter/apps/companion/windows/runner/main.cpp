@@ -27,6 +27,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   const bool overlay =
       std::find(command_line_arguments.begin(), command_line_arguments.end(),
                 "--overlay") != command_line_arguments.end();
+  // The floating island is a third copy: transparent, always on top, but able
+  // to take keyboard focus (unlike the overlay), so it can be typed into.
+  const bool island =
+      std::find(command_line_arguments.begin(), command_line_arguments.end(),
+                "--island") != command_line_arguments.end();
 
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
@@ -40,8 +45,19 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     window.SetPopup(true);
     origin = Win32Window::Point(0, 0);
     size = Win32Window::Size(0, 0);  // 0 x 0 = cover the primary monitor
-  }
-  if (!window.Create(overlay ? L"Compii overlay" : L"Compii", origin, size)) {
+    if (!window.Create(L"Compii overlay", origin, size)) {
+      return EXIT_FAILURE;
+    }
+  } else if (island) {
+    // 0 x 0 = the fixed surface Win32Window sizes to the primary work area.
+    window.SetPopup(true);
+    window.SetIsland(true);
+    origin = Win32Window::Point(0, 0);
+    size = Win32Window::Size(0, 0);
+    if (!window.Create(L"Compii island", origin, size)) {
+      return EXIT_FAILURE;
+    }
+  } else if (!window.Create(L"Compii", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);
