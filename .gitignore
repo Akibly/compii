@@ -17,3 +17,8 @@ Secrets.xcconfig
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# Test runs leave their output behind at the repo root
+/.analyze.log
+/.coretest.log
+/.fluttest*.log
