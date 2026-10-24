@@ -223,7 +223,11 @@ class _FirstRunState extends State<FirstRun> {
   });
 
   void _open(String url) {
-    if (Platform.isWindows) Process.run('rundll32', ['url.dll,FileProtocolHandler', url]);
+    if (Platform.isWindows) {
+      Process.run('rundll32', ['url.dll,FileProtocolHandler', url]);
+    } else {
+      Process.run(Platform.isMacOS ? 'open' : 'xdg-open', [url]);
+    }
   }
 
   @override

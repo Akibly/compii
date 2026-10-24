@@ -125,7 +125,24 @@ cd ../compii_flutter/apps/companion
 flutter run -d windows
 ```
 
-The app finds Core on `127.0.0.1:8765`, connects and reconnects on its own. Without any key, set `$env:COMPII_BRAIN = "rehearsal"` and Core answers with a scripted task so you can drive the whole interface for free — the app labels that mode clearly as a rehearsal, not AI.
+### From source (macOS)
+
+```bash
+# 1. Core
+cd compii_core
+uv sync
+export ANTHROPIC_API_KEY="..."     # or pick a free local model (Ollama / LM Studio)
+uv run compii-core
+
+# 2. The companion app, in another terminal
+cd ../compii_flutter/apps/companion
+flutter run -d macos
+
+# Or build and launch the native Swift macOS companion:
+./scripts/build-mac.sh
+```
+
+The app finds Core on `127.0.0.1:8765`, connects and reconnects on its own. Without any key, set `COMPII_BRAIN="rehearsal"` and Core answers with a scripted task so you can drive the whole interface for free — the app labels that mode clearly as a rehearsal, not AI.
 
 Voice models download on first use into `~/Compii/models`. Email needs SMTP settings; without them Compii opens a ready draft in your mail app and says plainly that it was *not* sent.
 

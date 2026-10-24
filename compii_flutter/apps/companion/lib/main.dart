@@ -58,11 +58,13 @@ Future<void> main(List<String> args) async {
   final voice = VoiceController(core);
   state.voice = voice;
   QuickMode? quick;
-  if (Platform.isWindows) {
+  if (Platform.isWindows || Platform.isMacOS) {
     await windowManager.ensureInitialized();
     await windowManager.setMinimumSize(const Size(380, 120));
-    // Compii draws its own title bar (drag area and window buttons).
-    await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+    // Compii draws its own title bar on Windows.
+    if (Platform.isWindows) {
+      await windowManager.setTitleBarStyle(TitleBarStyle.hidden, windowButtonVisibility: false);
+    }
     if (!args.contains('--background')) {
       await windowManager.show();
       await windowManager.focus();
