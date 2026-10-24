@@ -231,8 +231,12 @@ class _IslandViewState extends State<IslandView> {
                   : Size(
                       maxW,
                       math.min(
+                        // The composer is the one card whose height is chosen rather
+                        // than taken from a thread, and 300 cut its own footer hint in
+                        // half. This clears header, field, toolbar, two rows of
+                        // suggestions and the two-line hint; anything more scrolls.
                         stage == IslandStage.ask
-                            ? 300 + grow * 70
+                            ? 360 + grow * 90
                             : maxH + grow * 160,
                         limit,
                       ),

@@ -1,3 +1,6 @@
+import 'dart:io';
+import 'dart:ui' as ui;
+
 import 'package:compii/src/console/core_client.dart';
 import 'package:compii/src/island/island_actions.dart';
 import 'package:compii/src/island/island_controller.dart';
@@ -8,7 +11,12 @@ import 'package:compii/src/island/island_ui.dart';
 import 'package:compii/src/ui/tokens.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+
+/// Set with --dart-define=CAPTURE=true to write the README's pictures.
+const _capture = bool.fromEnvironment('CAPTURE');
 
 /// A Core that never touches the network: the island only reads its state.
 class _Core extends CoreClient {
@@ -245,6 +253,95 @@ Future<void> _close(WidgetTester tester) async {
 Future<void> _grow(WidgetTester tester) async {
   await tester.pump();
   await tester.pump(const Duration(milliseconds: 420));
+}
+
+/// The pill on the dark of a desktop rather than on a test page, wrapped in a
+/// boundary that can be written out as a picture.
+Future<void> _showOnDesktop(
+  WidgetTester tester,
+  IslandController c,
+  GlobalKey boundary, {
+  Size size = const Size(1100, 620),
+}) async {
+  tester.view.physicalSize = size;
+  tester.view.devicePixelRatio = 1;
+  addTearDown(tester.view.reset);
+  await tester.pumpWidget(
+    MaterialApp(
+      theme: compiiTheme(Brightness.dark),
+      home: Builder(
+        builder: (context) {
+          final data = MediaQuery.of(context).copyWith(size: size);
+          return MediaQuery(
+            data: data,
+            child: Scaffold(
+              backgroundColor: const Color(0xFF070617),
+              body: RepaintBoundary(
+                key: boundary,
+                child: ColoredBox(
+                  color: const Color(0xFF070617),
+                  child: IslandView(
+                    controller: c,
+                    cardKey: GlobalKey(),
+                    shortcut: 'ctrl_alt_space',
+                    hotkeyError: null,
+                    onDock: (_) {},
+                    onResetLayout: () {},
+                    onShortcut: (_) {},
+                    onAttention: (_) {},
+                    onRevealMain: () {},
+                    onDragStart: () {},
+                    onDragUpdate: () {},
+                    onDragEnd: () {},
+                  ),
+                ),
+              ),
+            ),
+          );
+        },
+      ),
+    ),
+  );
+  await tester.pump();
+}
+
+/// A test run has no fonts, so words would come out as grey blocks. Loaded from
+/// Windows the way the other capture tests do it, for pictures only.
+Future<void> _loadIslandFonts(WidgetTester tester) async {
+  final icons = FontLoader('MaterialIcons')
+    ..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'));
+  await tester.runAsync(icons.load);
+  for (final family in [
+    'Segoe UI Variable Text',
+    'Segoe UI Variable Display',
+    'Roboto',
+  ]) {
+    final file = File('C:/Windows/Fonts/SegUIVar.ttf');
+    if (!file.existsSync()) continue;
+    await tester.runAsync(
+      (FontLoader(family)
+            ..addFont(
+              Future.value(ByteData.sublistView(file.readAsBytesSync())),
+            ))
+          .load,
+    );
+  }
+}
+
+/// One state as the pixels say it. Reached only from a CAPTURE run.
+Future<void> _writeOut(WidgetTester tester, GlobalKey boundary, String name) async {
+  final render = boundary.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+  final image = (await tester.runAsync(() => render.toImage(pixelRatio: 2)))!;
+  final bytes = await tester.runAsync(
+    () => image.toByteData(format: ui.ImageByteFormat.png),
+  );
+  final out = Directory('../../../docs/compii/build-previews')
+    ..createSync(recursive: true);
+  await tester.runAsync(
+    () => File('${out.path}/island-$name.png')
+        .writeAsBytes(bytes!.buffer.asUint8List()),
+  );
+  image.dispose();
 }
 
 void main() {
@@ -699,4 +796,136 @@ void main() {
       },
     );
   }
+
+  // The README shows the pill as it really draws, so these reuse the fakes and
+  // the pumps the rest of the suite already trusts. Nothing is written unless
+  // asked for with --dart-define=CAPTURE=true, so a normal run stays headless.
+  final sheet = GlobalKey();
+
+  Future<void> shoot(
+    WidgetTester tester,
+    String name, {
+    required Size size,
+    Future<void> Function()? drive,
+  }) async {
+    await _loadIslandFonts(tester);
+    await _showOnDesktop(tester, c, sheet, size: size);
+    if (drive != null) await drive();
+    // The card's height animates by a fraction of the surface, so let it land
+    // before writing: a shot taken mid-morph crops what it is meant to show.
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 900));
+    await _writeOut(tester, sheet, name);
+  }
+
+  testWidgets('writes the capsule for the README', (tester) async {
+    if (!_capture) return;
+    await shoot(tester, 'capsule', size: const Size(760, 130));
+  });
+
+  testWidgets('writes the capsule with something to say', (tester) async {
+    if (!_capture) return;
+    core.put(
+      _task(
+        id: 't1',
+        events: [
+          {'type': 'task_started'},
+          {
+            'type': 'approval_needed',
+            'approval_id': 'ap1',
+            'kind': 'send',
+            'label': 'Email Sam the sorted list',
+          },
+        ],
+      ),
+    );
+    await shoot(tester, 'capsule-busy', size: const Size(760, 130));
+  });
+
+  testWidgets('writes the composer for the README', (tester) async {
+    if (!_capture) return;
+    await shoot(
+      tester,
+      'ask',
+      size: const Size(1100, 1200),
+      drive: () async {
+        await c.openAsk(stealFocus: false);
+        await _grow(tester);
+      },
+    );
+  });
+
+  testWidgets('writes a running thread for the README', (tester) async {
+    if (!_capture) return;
+    core.put(
+      _task(
+        id: 't1',
+        events: [
+          {'type': 'task_started'},
+          {
+            'type': 'action_done',
+            'tool': 'find_files',
+            'label': 'Found 12 in Downloads',
+            'ok': true,
+          },
+          {
+            'type': 'action_started',
+            'tool': 'spreadsheet',
+            'label': 'Build the sheet',
+          },
+        ],
+      ),
+    );
+    await shoot(
+      tester,
+      'working',
+      size: const Size(1100, 1100),
+      drive: () async {
+        await c.openTask('t1', stealFocus: false);
+        await _grow(tester);
+      },
+    );
+  });
+
+  testWidgets('writes an approval for the README', (tester) async {
+    if (!_capture) return;
+    core.put(
+      _task(
+        id: 't1',
+        events: [
+          {'type': 'task_started'},
+          {
+            'type': 'approval_needed',
+            'approval_id': 'ap1',
+            'kind': 'send',
+            'label': 'Email Sam the sorted list',
+            'detail': {'to': 'sam@example.com', 'subject': 'Receipts'},
+          },
+        ],
+      ),
+    );
+    await shoot(
+      tester,
+      'approval',
+      size: const Size(1100, 1100),
+      drive: () async {
+        await c.openTask('t1', stealFocus: false);
+        await _grow(tester);
+      },
+    );
+  });
+
+  testWidgets('writes a finished answer for the README', (tester) async {
+    if (!_capture) return;
+    core.put(_task(id: 't1', status: 'done', events: _doneEvents));
+    await shoot(
+      tester,
+      'done',
+      size: const Size(1100, 1100),
+      drive: () async {
+        await c.openTask('t1', stealFocus: false);
+        await _grow(tester);
+      },
+    );
+  });
 }

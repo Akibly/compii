@@ -75,7 +75,7 @@ def test_replies_are_cleaned_up_before_speaking():
     reply = (
         "Your Downloads folder has three files:\n\n"
         "- **holiday.jpg** — 3 KB\n"
-        "- **invoice-sept-01.pdf** in C:\\Users\\badem\\Downloads\\invoice-sept-01.pdf\n"
+        "- **invoice-sept-01.pdf** in C:\\Users\\you\\Downloads\\invoice-sept-01.pdf\n"
         "See [the guide](https://example.com/docs) or https://example.com/x. Want me to `open` one?"
     )
     said = speakable(reply)

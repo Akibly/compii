@@ -22,3 +22,4 @@ __pycache__/
 /.analyze.log
 /.coretest.log
 /.fluttest*.log
+/.coretest*.log
