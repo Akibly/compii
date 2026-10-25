@@ -404,3 +404,13 @@ def test_the_same_question_is_not_asked_twice_in_a_turn(home):
     second = brain.seen[2][-1]["content"][0]["content"]
     assert "already asked this" in second and "use your judgement" in second
     assert _final(task) == "What is her email address? Then it can go out."
+
+
+def test_a_promise_that_waits_on_the_user_is_not_a_claim():
+    for line in ["Tell me her email address and once I have it I'll send it.",
+                 "If you give me the folder, I'll move those files.",
+                 "Want me to save that? I'll save it when you say so.",
+                 "Shall I write that into a file, or will you?"]:
+        assert unbacked_claims(line, set()) == [], line
+    assert unbacked_claims("I'll send it now.", set()) == ["sent an email"]
+    assert unbacked_claims("I've sent it. If you need more, ask.", set()) == ["sent an email"]

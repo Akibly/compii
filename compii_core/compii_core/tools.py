@@ -703,8 +703,12 @@ class Toolbox:
             dst = dst / src.name
         if dst.exists():
             raise ToolError(f"{dst} already exists; choose another name.")
-        dst.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(src), dst)
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), dst)
+        except OSError as e:  # a raw "[WinError 3]" told the model nothing it could act on
+            raise ToolError(f"Couldn't move {src.name} to {dst}: {e.strerror or e}. Check both paths "
+                            "with list_folder and try again.") from e
         return ToolResult(f"Moved {src} to {dst}", {"op": "move", "src": str(src), "dst": str(dst)},
                           files=[(str(dst), "moved")])
 

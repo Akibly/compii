@@ -36,7 +36,8 @@ QUICK_TOOLS = ["point_at", "draw_on_screen", "start_walkthrough", "search_web", 
                "type_into", "press_keys", "open_item", "focus_window", "remember", "recall", "use_skill",
                "start_lesson", "update_lesson", "search_in_files", "clipboard", "look_at_screen", "view_profile",
                "ask_my_files", "catch_me_up", "work_journal", "usage_report", "second_opinion", "undo_action",
-               "read_selection", "update_plan", "create_document"]
+               "read_selection", "update_plan", "create_document", "world_time", "weather", "forget_memory",
+               "activity_log"]
 MORE_TOOLS = {
     "name": "more_tools",
     "description": "Unlock all of Compii's tools (files and folders, spreadsheets, email, routines and reminders, "
@@ -245,7 +246,23 @@ def unbacked_claims(text: str, done: set[str], earlier: set[str] | frozenset[str
     """Things the reply says Compii did that no tool actually did — this turn, or for a lasting
     claim, earlier in the same conversation."""
     return [what for what, tools, pattern, _ in CLAIMS
-            if pattern.search(text) and not done & tools and not (what in LASTING and earlier & tools)]
+            if _claims(pattern, text) and not done & tools and not (what in LASTING and earlier & tools)]
+
+
+# "Tell me her address and I'll send it" or "Shall I save it?" offers, it doesn't claim. Treating
+# it as a claim challenged a good reply, then rewrote it to "I couldn't send it this time."
+_FUTURE = re.compile(r"'ll|\bwill\b", re.I)
+_CONDITIONAL = re.compile(r"\b(?:if|once|when|whenever|as soon as|after|unless|until)\b", re.I)
+
+
+def _claims(pattern: re.Pattern[str], text: str) -> bool:
+    """Whether some sentence really claims it: a promise that waits on the user doesn't."""
+    for sentence in re.split(r"(?<=[.!?])\s+", text):
+        for m in pattern.finditer(sentence):
+            if _FUTURE.search(m.group(0)) and (_CONDITIONAL.search(sentence) or sentence.rstrip().endswith("?")):
+                continue
+            return True
+    return False
 
 
 # An app that shows nothing after a click or a keystroke hasn't agreed that it worked, so the
@@ -285,9 +302,9 @@ def unbacked_words(missing: list[str]) -> str:
 
 def strip_claims(text: str) -> str:
     """Last resort: drop sentences and brackets that claim an action that didn't happen."""
-    text = re.sub(r"\s*\([^()]*\)", lambda m: "" if any(p.search(m.group(0)) for _, _, p, _ in CLAIMS) else m.group(0), text)
+    text = re.sub(r"\s*\([^()]*\)", lambda m: "" if any(_claims(p, m.group(0)) for _, _, p, _ in CLAIMS) else m.group(0), text)
     parts = re.split(r"(?<=[.!?])\s+", text)
-    return " ".join(p for p in parts if not any(pat.search(p) for _, _, pat, _ in CLAIMS)).strip()
+    return " ".join(p for p in parts if not any(_claims(pat, p) for _, _, pat, _ in CLAIMS)).strip()
 
 
 # Requests that clearly need the full toolbox start with it.
