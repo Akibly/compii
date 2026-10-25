@@ -1275,8 +1275,9 @@ class Toolbox:
                  ["path", "sheets"], ActionKind.CREATE, self.create_spreadsheet,
                  lambda a: f"Create spreadsheet {_short(a['path'])}"),
             Tool("run_python", "Run a Python script in Compii's workspace folder and return its output. Use for calculations, data processing and file conversions the other tools can't do.",
-                 {"code": s}, ["code"], ActionKind.CHANGE, self.run_python,
-                 lambda a: "Run a Python script"),
+                 {"code": s}, ["code"], _python_kind, self.run_python,
+                 lambda a: "Run a Python script that uses the internet" if _python_kind(a) is ActionKind.SEND
+                 else "Run a Python script"),
             Tool("open_item", "Open a file or folder in its default app, a web address in the browser, or a known app ("
                  + ", ".join(sorted(KNOWN_APPS)) + ").",
                  {"target": s}, ["target"], ActionKind.CREATE, self.open_item, lambda a: f"Open {a['target']}"),
@@ -1395,6 +1396,32 @@ KNOWN_APPS = {
 def _short(raw: str) -> str:
     """File or folder name for labels; full paths stay in the approval details."""
     return Path(raw).name or raw
+
+
+_NET_MODULES = {"socket", "urllib", "http", "requests", "httpx", "aiohttp", "ftplib", "smtplib", "poplib",
+                "imaplib", "telnetlib", "xmlrpc", "websocket", "websockets", "paramiko"}
+
+
+def _python_kind(args: dict[str, Any]) -> ActionKind:
+    """A script that can reach the network can send the user's files anywhere, so it is a send:
+    asked every time, never done on probation, fresh after a suspected injection. As a plain
+    change it rode on the task's first okay for any later script."""
+    import ast
+    import re
+
+    code = str(args.get("code", ""))
+    try:
+        tree = ast.parse(code)
+    except (SyntaxError, ValueError):
+        tree = None
+    if tree is None:  # unreadable: judge by the words rather than wave it through
+        return ActionKind.SEND if re.search(r"\b(?:%s)\b" % "|".join(_NET_MODULES), code) else ActionKind.CHANGE
+    for node in ast.walk(tree):
+        names = ([a.name for a in node.names] if isinstance(node, ast.Import) else
+                 [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
+        if any(n.split(".")[0] in _NET_MODULES for n in names):
+            return ActionKind.SEND
+    return ActionKind.CHANGE
 
 
 def _unescaped(text: Any) -> str:

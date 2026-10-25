@@ -1543,13 +1543,18 @@ class Agent:
                                                  task.warned_injection)
         if task.probation and kind is ActionKind.CHANGE:
             needs_approval = True
+        if task.warned_injection and call.name == "run_python":
+            # Arbitrary code is the easiest way for planted instructions to act. After the task has
+            # read text aimed at an AI, every script waits for a fresh okay, like a send or a delete.
+            needs_approval = True
         if needs_approval:
             approval_id = uuid.uuid4().hex[:10]
             fut: asyncio.Future[bool] = asyncio.get_running_loop().create_future()
             self.approvals[approval_id] = fut
             self._pending[approval_id] = (call.name, dict(call.input), kind, label)
             task.status = "waiting"
-            fresh = task.warned_injection and kind in (ActionKind.SEND, ActionKind.DELETE, ActionKind.SPEND)
+            fresh = task.warned_injection and (kind in (ActionKind.SEND, ActionKind.DELETE, ActionKind.SPEND)
+                                               or call.name == "run_python")
             why = ("Compii is in lockdown (kill switch), so it asks before everything." if self.gate.lockdown
                    else "This task read text that looked like instructions to an AI, so this needs a fresh okay."
                    if fresh else "")

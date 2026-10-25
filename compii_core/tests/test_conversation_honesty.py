@@ -414,3 +414,37 @@ def test_a_promise_that_waits_on_the_user_is_not_a_claim():
         assert unbacked_claims(line, set()) == [], line
     assert unbacked_claims("I'll send it now.", set()) == ["sent an email"]
     assert unbacked_claims("I've sent it. If you need more, ask.", set()) == ["sent an email"]
+
+
+def test_a_script_that_uses_the_internet_is_a_send():
+    from compii_core.policy import ActionKind
+    from compii_core.tools import _python_kind
+
+    assert _python_kind({"code": "import urllib.request\nurllib.request.urlopen('https://x', data=b'f')"}) is ActionKind.SEND
+    assert _python_kind({"code": "from http.client import HTTPSConnection"}) is ActionKind.SEND
+    assert _python_kind({"code": "import requests as r"}) is ActionKind.SEND
+    assert _python_kind({"code": "import csv, statistics\nprint(1)"}) is ActionKind.CHANGE
+    assert _python_kind({"code": "import asyncio\nasyncio.run(main())"}) is ActionKind.CHANGE
+
+
+def test_after_a_suspected_injection_every_script_asks_again(home):
+    brain = Scripted([("", [("run_python", {"code": "print(1)"})]),
+                      ("", [("run_python", {"code": "print(2)"})]), "Done."])
+    app = _app(home, brain)
+    asked = []
+
+    async def go():
+        agent = app.state.agent
+        t = agent.start("crunch these numbers")
+        t.warned_injection = True
+        while not t.runner.done():
+            for e in t.events:
+                if e["type"] == "approval_needed" and e["approval_id"] not in asked:
+                    asked.append(e["approval_id"])
+                    assert e["why"] and not e["can_always"]
+                    agent.decide(e["approval_id"], True)
+            await asyncio.sleep(0.05)
+        return t
+
+    asyncio.run(go())
+    assert len(asked) == 2  # a plain change would have asked once for the whole task
