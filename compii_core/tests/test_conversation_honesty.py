@@ -306,3 +306,51 @@ def test_a_job_report_names_pages_that_were_only_a_wall():
     ]
     assert _unread_pages(actions) == ["https://www.macrotrends.net/x (Just a moment...)",
                                       "https://wpr.com/a (404 - File Not Found)"]
+
+
+def test_a_rate_limited_page_counts_as_unread():
+    from compii_core.agent import _unread_pages
+
+    hit = {"tool": "browse", "ok": True,
+           "detail": "Page: Wikimedia Error\nAddress: https://en.wikipedia.org/wiki/Asante_Empire\n\nError\nToo many requests."}
+    assert _unread_pages([hit]) == ["https://en.wikipedia.org/wiki/Asante_Empire (Wikimedia Error)"]
+
+
+def test_a_schedule_without_a_time_says_the_time_it_will_use():
+    from compii_core.proactive import describe, validate_schedule
+
+    spec = validate_schedule({"kind": "weekdays"})
+    assert describe(spec) == "Every weekday at 09:00"
+    assert validate_schedule({"kind": "daily", "at": "7:5"})["at"] == "07:05"
+
+
+def test_a_spreadsheet_without_a_name_or_with_columns_still_lands(home):
+    from openpyxl import load_workbook
+
+    from compii_core.tools import ToolError, Toolbox
+
+    tb = Toolbox([home["downloads"]], home["workspace"])
+    p = home["downloads"] / "e.xlsx"
+    tb.execute("create_spreadsheet", {"path": str(p), "sheets": {"columns": ["Item", "Amount"],
+                                                                  "rows": [["Rent", 900], ["Total", "=SUM(B2:B2)"]]}})
+    rows = list(load_workbook(p).active.iter_rows(values_only=True))
+    assert rows == [("Item", "Amount"), ("Rent", 900), ("Total", "=SUM(B2:B2)")]
+    try:
+        tb.execute("create_spreadsheet", {"path": str(home["downloads"] / "f.xlsx"), "sheets": [{"name": "x"}]})
+    except ToolError as e:
+        assert "header row" in str(e)
+    else:
+        raise AssertionError("an empty sheet should be refused with a clear message")
+
+
+def test_spreadsheet_cells_as_objects_and_rows_as_data(home):
+    from openpyxl import load_workbook
+
+    from compii_core.tools import Toolbox
+
+    tb = Toolbox([home["downloads"]], home["workspace"])
+    p = home["downloads"] / "g.xlsx"
+    tb.execute("create_spreadsheet", {"path": str(p), "sheets": [{"name": "S", "data": [
+        ["Item", "Amount"], ["rent", 900], ["Total", {"formula": "=SUM(B2:B2)"}]]}]})
+    assert list(load_workbook(p).active.iter_rows(values_only=True)) == [
+        ("Item", "Amount"), ("rent", 900), ("Total", "=SUM(B2:B2)")]

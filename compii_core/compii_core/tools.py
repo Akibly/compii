@@ -718,14 +718,27 @@ class Toolbox:
             p = p.with_suffix(".xlsx")
         if p.exists():
             raise ToolError(f"{p} already exists; choose another name.")
+        sheets = a["sheets"]
+        if isinstance(sheets, dict):
+            sheets = [sheets]
         wb = Workbook()
         wb.remove(wb.active)
-        for sheet in a["sheets"]:
-            ws = wb.create_sheet(sheet["name"][:31])
-            ws.append(sheet["header"])
-            for row in sheet["rows"]:
-                ws.append(row)
+        for i, sheet in enumerate(sheets if isinstance(sheets, list) else []):
+            # Models leave out a name or the header row; a bare KeyError told them nothing.
+            if not isinstance(sheet, dict):
+                raise ToolError("Each sheet is {name, header: [column names], rows: [[cells], …]}.")
+            header = sheet.get("header") or sheet.get("columns") or []
+            rows = sheet.get("rows") or sheet.get("data") or []
+            if not header and not rows:
+                raise ToolError("Each sheet needs a header row (column names) and rows of cells.")
+            ws = wb.create_sheet(str(sheet.get("name") or f"Sheet{i + 1}")[:31])
+            if header:
+                ws.append(list(header))
+            for row in rows:
+                ws.append([_cell(c) for c in (row if isinstance(row, (list, tuple)) else [row])])
             style_worksheet(ws)
+        if not wb.worksheets:
+            raise ToolError("Give at least one sheet: {name, header, rows}.")
         p.parent.mkdir(parents=True, exist_ok=True)
         wb.save(p)
         return ToolResult(f"Saved spreadsheet {p}", {"op": "created", "path": str(p)}, files=[(str(p), "created")])
@@ -1378,6 +1391,16 @@ KNOWN_APPS = {
 def _short(raw: str) -> str:
     """File or folder name for labels; full paths stay in the approval details."""
     return Path(raw).name or raw
+
+
+def _cell(value: Any) -> Any:
+    """One spreadsheet cell. Models send {"formula": "=SUM(B2:B4)"} or {"value": 3} as often as the
+    bare value; openpyxl refuses a dict, and the retry wrote plain numbers as "=900" formulas."""
+    if isinstance(value, dict):
+        value = next((value[k] for k in ("formula", "value", "text") if value.get(k) is not None), "")
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(v) for v in value)
+    return value
 
 
 def _move_label(source: str, destination: str) -> str:

@@ -39,7 +39,9 @@ def validate_schedule(spec: dict[str, Any]) -> dict[str, Any]:
     if kind not in ("daily", "weekdays", "weekly", "every", "once"):
         raise ValueError("Schedule kind must be daily, weekdays, weekly, every or once.")
     if kind != "every":
-        _at(spec)  # raises on a bad time
+        # Raises on a bad time. Written back as HH:MM so a schedule the model sent without a
+        # time reads "Every weekday at 09:00", not "at ." with the default hidden.
+        spec = {**spec, "at": _at(spec).strftime("%H:%M")}
     if kind == "weekly":
         days = [d[:3].lower() for d in spec.get("days", [])]
         if not days or any(d not in DAYS for d in days):

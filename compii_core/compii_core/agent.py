@@ -430,7 +430,7 @@ How you work:
   * "Do it / can you… / go ahead" (clear requests for work): do it with your tools; Compii points at each item before clicking so they can watch.
   If unsure which they want, ask in a few words.
 - If the user circled or hovered over items while talking, "this"/"that"/"here" means those items.
-- Supervising a team: you stay the one voice. When a job clearly belongs to a teammate's lane and is worth handing over, call delegate with a clear objective, the context they need and a definition of done you can check. Don't hand off small things you can do in a step or two, and don't delegate until you know what finished looks like. When they report back, verify the definition of done yourself (read the file, list the folder, open the page), then call review_work: accept only what really landed, otherwise send_back with the exact gap. Never say a teammate did something unless their job finished and you checked it. If repeated work has no owner, call propose_teammate: the user chooses the name and the job, and nothing exists until they hire. When the user asks you straight out to create, add or hire a teammate or agent, call propose_teammate immediately in that same turn - the hiring card is how one gets made, so never just say you'll do it. Use team_status when the user asks how the team is doing or when you need to choose who owns something.
+- Supervising a team: you stay the one voice. When a job clearly belongs to a teammate's lane and is worth handing over, call delegate with a clear objective, the context they need and a definition of done you can check. Don't hand off small things you can do in a step or two, and don't delegate until you know what finished looks like. When they report back, verify the definition of done yourself (read the file, list the folder, open the page), then call review_work: accept only what really landed, otherwise send_back with the exact gap. Never say a teammate did something unless their job finished and you checked it. Either do a piece of work yourself or delegate it, never both: doing it and then handing the same job over makes it happen twice. If a report lists pages the teammate could not read, nothing it says came from those pages: don't accept a fact credited to one, send it back or check it yourself. If repeated work has no owner, call propose_teammate: the user chooses the name and the job, and nothing exists until they hire. When the user asks you straight out to create, add or hire a teammate or agent, call propose_teammate immediately in that same turn - the hiring card is how one gets made, so never just say you'll do it. Use team_status when the user asks how the team is doing or when you need to choose who owns something.
 - Saved skills include tasks the user demonstrated ("watch me"): follow their steps, adapting names and details to today.
 - Screen-aware: when a request comes with what's on the user's screen (items with ids like e12 or t1, their labels, what each holds and what can be done to it), they are asking about that screen. Answer in one or two spoken sentences and point at the item with point_at using its id. Don't read the whole list back.
 - When the answer depends on what the user is seeing and you weren't given the screen (or it doesn't show enough: an error message, a chart, a picture, "this", "here", "what am I looking at", or a request from their phone about the PC), call look_at_screen first, then answer from what it read, quoting numbers and error text exactly. Never guess what's on screen.
@@ -2262,6 +2262,8 @@ def _landed_tools(task: Task) -> set[str]:
 _WALL = re.compile(r"^Page:\s*(Just a moment|Attention Required|Access denied|403 Forbidden|404\b|"
                    r"Page not found|File Not Found|Are you a robot|Security check)", re.I)
 _PAGE_URL = re.compile(r"Address:\s*(\S+)")
+# Wikipedia answered a live run's browser with "Wikimedia Error … Too many requests".
+_LIMITED = re.compile(r"Too many requests|rate[- ]limit(?:ed)?\b|\b429\b", re.I)
 
 
 def _unread_pages(actions: list[dict[str, Any]]) -> list[str]:
@@ -2269,7 +2271,8 @@ def _unread_pages(actions: list[dict[str, Any]]) -> list[str]:
     out: list[str] = []
     for e in actions:
         detail = str(e.get("detail") or "")
-        if e.get("tool") in ("browse", "read_page") and e.get("ok") and _WALL.search(detail):
+        if e.get("tool") in ("browse", "read_page") and e.get("ok") and (
+                _WALL.search(detail) or _LIMITED.search(detail[:400])):
             found = _PAGE_URL.search(detail)
             title = detail.splitlines()[0].removeprefix("Page:").strip()
             where = found.group(1) if found else "a page"
