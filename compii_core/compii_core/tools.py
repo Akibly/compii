@@ -644,7 +644,7 @@ class Toolbox:
         existed = p.exists()
         if existed and not a.get("overwrite"):
             raise ToolError(f"{p} already exists. Set overwrite to true to replace it.")
-        content = a["content"]
+        content = _unescaped(a["content"])
         if p.suffix.lower() in (".md", ".markdown"):
             from .documents import tidy_markdown
             content = tidy_markdown(content)
@@ -664,7 +664,7 @@ class Toolbox:
             p = p.with_suffix(".docx")
         if p.exists():
             raise ToolError(f"{p} already exists; choose another name.")
-        md = a["content"]
+        md = _unescaped(a["content"])
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_bytes(docx_bytes(md, title=(a.get("title") or "").strip() or None))
         return ToolResult(f"Wrote {p}", {"op": "created", "path": str(p)}, files=[(str(p), "created")])
@@ -1391,6 +1391,16 @@ KNOWN_APPS = {
 def _short(raw: str) -> str:
     """File or folder name for labels; full paths stay in the approval details."""
     return Path(raw).name or raw
+
+
+def _unescaped(text: Any) -> str:
+    r"""Text a model escaped twice. gpt-oss sometimes sends "Title\n\n- item" with no real line
+    break at all, and the file came out as one line full of backslash-n. Only text with no real
+    newline and several escaped ones is touched, so a one-line string of code stays as written."""
+    text = str(text)
+    if "\n" not in text and text.count("\\n") >= 2:
+        return text.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "\t")
+    return text
 
 
 def _cell(value: Any) -> Any:

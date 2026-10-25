@@ -354,3 +354,53 @@ def test_spreadsheet_cells_as_objects_and_rows_as_data(home):
         ["Item", "Amount"], ["rent", 900], ["Total", {"formula": "=SUM(B2:B2)"}]]}]})
     assert list(load_workbook(p).active.iter_rows(values_only=True)) == [
         ("Item", "Amount"), ("rent", 900), ("Total", "=SUM(B2:B2)")]
+
+
+def test_a_walled_browser_page_points_to_the_reader(home):
+    from compii_core.policy import ActionKind
+    from compii_core.tools import Tool, ToolResult
+
+    brain = Scripted([("", [("browse", {"url": "https://en.wikipedia.org/wiki/X"})]), "It was blocked."])
+    app = _app(home, brain)
+    wall = "Page: Wikimedia Error\nAddress: https://en.wikipedia.org/wiki/X\n\nError\nToo many requests."
+    app.state.agent.toolbox.tools["browse"] = Tool("browse", "Open a page.", {"url": {"type": "string"}}, ["url"],
+                                                   ActionKind.READ, lambda a: ToolResult(wall), lambda a: "Open page")
+    asyncio.run(_run_plain(app, "read that article"))
+    result = brain.seen[1][-1]["content"][0]["content"]
+    assert "Try read_web_page on the same address" in result
+
+
+def test_double_escaped_text_is_written_with_real_line_breaks(home):
+    from compii_core.tools import Toolbox, _unescaped
+
+    tb = Toolbox([home["downloads"]], home["workspace"])
+    p = home["downloads"] / "list.txt"
+    tb.execute("write_text_file", {"path": str(p), "content": "Packing\n\n- hat\n- umbrella"})
+    assert p.read_text(encoding="utf-8") == "Packing\n\n- hat\n- umbrella"
+    code = 'print("a\nb")'  # one escaped newline in a one-line script stays as written
+    assert _unescaped(code) == code
+    mixed = "line one\nsays \n literally\n"
+    assert _unescaped(mixed) == mixed
+
+
+def test_the_same_question_is_not_asked_twice_in_a_turn(home):
+    ask = ("", [("ask_user", {"question": "Please provide your sister's email address so I can send the file."})])
+    again = ("", [("ask_user", {"question": "Could you share your sister's email address so I can send the file?"})])
+    brain = Scripted([ask, again, "What is her email address? Then it can go out."])
+    app = _app(home, brain)
+
+    async def go():
+        agent = app.state.agent
+        t = agent.start("send the file to my sister")
+        while not any(e["type"] == "question" for e in t.events):
+            await asyncio.sleep(0.05)
+        q = next(e for e in t.events if e["type"] == "question")
+        agent.answer(q["question_id"], "use your judgement")
+        await asyncio.wait_for(t.runner, 10)
+        return t
+
+    task = asyncio.run(go())
+    assert sum(1 for e in task.events if e["type"] == "question") == 1
+    second = brain.seen[2][-1]["content"][0]["content"]
+    assert "already asked this" in second and "use your judgement" in second
+    assert _final(task) == "What is her email address? Then it can go out."

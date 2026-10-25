@@ -160,8 +160,8 @@ PROPOSE_TEAMMATE = {
         "job": {"type": "string", "description": "One line: what this teammate owns, e.g. 'Keeps invoices filed and paid on time'."},
         "why": {"type": "string", "description": "Why the team needs it now, in one or two sentences."},
         "first_task": {"type": "string", "description": "The first job it would take, if the user hires it."},
-        "avatar": {"type": "string", "description": "Optional character token, 'a1.<shape>.<seed>' with shape in "
-                                                     "orb, gem, planet, gyro, capsule, comet. Leave empty to pick one."},
+        "avatar": {"type": "string", "description": "Optional character token, 'a2.<form>.<seed>' with form in "
+                                                     "puff, tuft, mop, horn, wisp, bean. Leave empty to pick one."},
     }, "required": ["name", "job", "why"]},
 }
 WATCH_TOOL = {
@@ -513,6 +513,8 @@ class Task:
     # Context items the user refused for this conversation. Ids are made from the source and
     # the words, so refusing one keeps working for every later turn that would attach it.
     context_off: list[str] = field(default_factory=list)
+    # Questions ask_user put to the user this turn, with their answers: one ask per thing.
+    asked: list[tuple[str, str]] = field(default_factory=list)
 
 
 class Stopped(Exception):
@@ -1077,6 +1079,7 @@ class Agent:
         earlier = _landed_tools(task)  # what already worked in this conversation, for lasting claims
         turn_began = time.time()
         streak = _FailureStreak()
+        task.asked = []
         checked = False
         asked_for_words = False
         try:
@@ -1596,6 +1599,12 @@ class Agent:
                 task.warned_injection = True
                 await self.emit(task, "injection_warning", tool=call.name, phrase=suspicious)
             text = guard.wrap_untrusted(call.name, text)
+        if call.name in ("browse", "read_page") and _unread_pages(
+                [{"tool": call.name, "ok": True, "detail": out.text}]):
+            # Outside the envelope: this is Compii speaking. Sites that wall off a browser (a bot
+            # check, Wikipedia's "Too many requests") often still serve the plain reader.
+            text += ("\n(Compii: this page showed a wall, not its content. Nothing above is a source. "
+                     "Try read_web_page on the same address, or another result.)")
         text, hidden = guard.redact(text)
         if hidden:
             await self.emit(task, "redacted", tool=call.name, count=len(hidden), kinds=sorted(set(hidden)))
@@ -1610,6 +1619,13 @@ class Agent:
         question = str(args.get("question", "")).strip()
         if not question:
             return result("Give the question you need answered.", True)
+        again = next(((q, a) for q, a in task.asked if _same_question(q, question)), None)
+        if again is not None:
+            # A live run asked for the same email address four times in one turn. The user has
+            # answered; asking again only nags. Name what is still missing in the reply instead.
+            return result(f"You already asked this ({again[0]}) and the user answered: {again[1]}. Don't ask "
+                          "again this turn: work with that answer, or say in your reply exactly what is still "
+                          "missing.", True)
         qid = uuid.uuid4().hex[:10]
         fut: asyncio.Future[str] = asyncio.get_running_loop().create_future()
         self.questions[qid] = fut
@@ -1622,6 +1638,7 @@ class Agent:
         try:
             answer = await asyncio.wait_for(self._until_stopped(task, fut), QUESTION_TIMEOUT)
             await self.emit(task, "question_answered", question_id=qid, text=answer, status="running")
+            task.asked.append((question, answer))
             return result(f"You asked: {question}\nTheir answer: {answer}")
         except Stopped:
             return result("The user stopped this before answering.")
@@ -2279,6 +2296,15 @@ def _unread_pages(actions: list[dict[str, Any]]) -> list[str]:
             if f"{where} ({title})" not in out:
                 out.append(f"{where} ({title})")
     return out
+
+
+def _same_question(a: str, b: str) -> bool:
+    """Two wordings of one question: most of their meaningful words are shared."""
+    def words(s: str) -> set[str]:
+        return {w for w in re.findall(r"[a-z']+", s.lower()) if len(w) > 3}
+
+    x, y = words(a), words(b)
+    return bool(x and y) and len(x & y) / len(x | y) >= 0.5
 
 
 def _landed_since(task: Task, since: float) -> list[str]:
