@@ -1,7 +1,8 @@
-// Compii is one face rig worn by five selectable bodies in six selectable coats,
+// Compii is one face rig worn by six selectable fur creatures in any colour,
 // and both choices are local taste kept on this PC. These cover the contracts
 // that make that true: every body and coat wears the rig, the global choices
 // repaint a character that asked for neither, and both survive a restart.
+import 'package:compii/src/art/halo.dart';
 import 'package:compii/src/console/character.dart';
 import 'package:compii/src/ui/shell.dart';
 import 'package:flutter/material.dart';
@@ -18,8 +19,8 @@ EmberPainter _painter(WidgetTester tester) {
 
 void main() {
   tearDown(() {
-    compiiBody.value = CompiiBody.plush;
-    compiiCoat.value = CompiiCoat.blue;
+    compiiBody.value = HaloForm.orb;
+    compiiColor.value = haloBlue;
   });
 
   testWidgets('every body wears the same face rig without complaint', (tester) async {
@@ -42,23 +43,23 @@ void main() {
     }
   });
 
-  testWidgets('every coat paints on the soft bodies and on the one made of light',
+  testWidgets('any colour paints on every creature, pale, dark and in between',
       (tester) async {
-    for (final k in CompiiCoat.values) {
-      for (final b in const [CompiiBody.plush, CompiiBody.moth, CompiiBody.spark]) {
+    for (final k in const [haloBlue, Color(0xFFFFFFFF), Color(0xFF000000), Color(0xFF12AB34), Color(0xFFEEE4D4)]) {
+      for (final b in HaloForm.values) {
         await tester.pumpWidget(
           MaterialApp(
             home: MediaQuery(
               data: const MediaQueryData(disableAnimations: true),
               child: SizedBox.square(
                 dimension: 200,
-                child: Ember(mood: Mood.acting, body: b, coat: k, animate: false, phase: .4),
+                child: Ember(mood: Mood.acting, body: b, color: k, animate: false, phase: .4),
               ),
             ),
           ),
         );
         await tester.pump();
-        expect(tester.takeException(), isNull, reason: '${k.name} coat on ${b.name}');
+        expect(tester.takeException(), isNull, reason: '${colorHex(k)} on ${b.name}');
       }
     }
   });
@@ -77,29 +78,36 @@ void main() {
       ),
     );
     await tester.pump();
-    expect(_painter(tester).body, CompiiBody.plush);
-    expect(_painter(tester).coat, CompiiCoat.blue);
+    expect(_painter(tester).body, HaloForm.orb);
+    expect(_painter(tester).color, haloBlue);
 
-    compiiBody.value = CompiiBody.shell;
-    compiiCoat.value = CompiiCoat.amber;
+    compiiBody.value = HaloForm.gem;
+    compiiColor.value = const Color(0xFFFF6FAE);
     await tester.pump();
-    expect(_painter(tester).body, CompiiBody.shell);
-    expect(_painter(tester).coat, CompiiCoat.amber);
+    expect(_painter(tester).body, HaloForm.gem);
+    expect(_painter(tester).color, const Color(0xFFFF6FAE));
   });
 
   test('the form is restored on load and saved when it changes', () async {
-    SharedPreferences.setMockInitialValues({'compii_form': 'drop', 'compii_coat': 'rose'});
+    SharedPreferences.setMockInitialValues({'compii_form': 'pill', 'compii_coat': '#12AB34'});
     final state = AppState();
     await state.load();
-    expect(compiiBody.value, CompiiBody.drop);
-    expect(compiiCoat.value, CompiiCoat.rose);
+    expect(compiiBody.value, HaloForm.pill);
+    expect(compiiColor.value, const Color(0xFF12AB34));
 
-    state.setBody(CompiiBody.moth);
-    state.setCoat(CompiiCoat.mint);
+    state.setBody(HaloForm.tower);
+    state.setColor(const Color(0xFFB45CFF));
     await Future<void>.delayed(Duration.zero);
     final p = await SharedPreferences.getInstance();
-    expect(p.getString('compii_form'), 'moth');
-    expect(p.getString('compii_coat'), 'mint');
+    expect(p.getString('compii_form'), 'tower');
+    expect(p.getString('compii_coat'), '#B45CFF');
+  });
+
+  test('a look saved by an earlier build carries over to the closest creature and colour', () async {
+    SharedPreferences.setMockInitialValues({'compii_form': 'moth', 'compii_coat': 'rose'});
+    await AppState().load();
+    expect(compiiBody.value, HaloForm.gem);
+    expect(compiiColor.value, const Color(0xFFFF6FAE));
   });
 
   test('a form name that no longer exists falls back to the default rather than throwing',
@@ -107,7 +115,7 @@ void main() {
     SharedPreferences.setMockInitialValues({'compii_form': 'butterfly', 'compii_coat': 'tartan'});
     final state = AppState();
     await state.load();
-    expect(compiiBody.value, CompiiBody.plush);
-    expect(compiiCoat.value, CompiiCoat.blue);
+    expect(compiiBody.value, HaloForm.orb);
+    expect(compiiColor.value, haloBlue);
   });
 }

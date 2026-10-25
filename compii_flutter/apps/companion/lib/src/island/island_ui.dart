@@ -12,6 +12,7 @@ import '../ui/glyphs.dart';
 import '../ui/thread.dart';
 import '../ui/tokens.dart';
 import 'island_controller.dart';
+import 'island_eyes.dart';
 import 'island_geometry.dart';
 import 'island_prefs.dart';
 
@@ -149,8 +150,8 @@ class _IslandViewState extends State<IslandView> {
       textDirection: TextDirection.ltr,
       textScaler: MediaQuery.textScalerOf(context),
     )..layout();
-    // Chrome = padding + mark + gap (or waveform, gaps and the two buttons).
-    final chrome = listening ? 131.0 : 59.0;
+    // Chrome = padding + eyes + gap (or eyes, waveform, gaps and the two buttons).
+    final chrome = listening ? 173.0 : 75.0;
     final width = math.min(
       maxW,
       math.max(listening ? 300.0 : 126.0, chrome + painter.width + 4),
@@ -350,27 +351,18 @@ Color _signalColor(CompiiColors c, IslandSignal signal) => switch (signal) {
   IslandSignal.none => c.accent,
 };
 
-/// Compii's abstract brand mark: the product's indigo spark, not a stock icon.
-/// Drawn straight on the black surface: Apple's island has no container around
-/// a logo, and a gradient badge on black reads as a sticker.
+/// Compii's mark in the island is its pair of eyes: the creature's own eyes,
+/// set into the black capsule, following the pointer and wearing the state.
 class _Mark extends StatelessWidget {
-  const _Mark({this.size = 18, this.signal = IslandSignal.none});
+  const _Mark({this.size = 18, this.signal = IslandSignal.none, this.level = 0, this.listening = false});
   final double size;
   final IslandSignal signal;
+  final double level;
+  final bool listening;
 
   @override
-  Widget build(BuildContext context) {
-    return Semantics(
-      label: 'Compii',
-      image: true,
-      child: Glyph(
-        G.memory,
-        size: size,
-        color: _signalColor(context.c, signal),
-        weight: 2.1,
-      ),
-    );
-  }
+  Widget build(BuildContext context) =>
+      IslandEyes(signal: signal, size: size, level: level, listening: listening);
 }
 
 // ------------------------------------------------------------- the capsule
@@ -429,6 +421,13 @@ class _Capsule extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (listening) ...[
+                _Mark(
+                  size: 18,
+                  signal: IslandSignal.listening,
+                  level: controller.voice?.level ?? 0,
+                  listening: true,
+                ),
+                const SizedBox(width: 8),
                 _Waveform(
                   level: controller.voice?.level ?? 0,
                   color: c.listen,

@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:compii/src/console/character.dart' show Mood, moodLabel;
+import 'package:compii/src/art/halo.dart';
 import 'package:compii/src/ui/agent_character.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -15,12 +16,11 @@ const _ink = Color(0xFF15122E);
 const _faint = Color(0xFF5E5A70);
 
 const _shapeColor = {
-  AgentShape.orb: Color(0xFF7C9CFF),
-  AgentShape.gem: Color(0xFFB49BFF),
-  AgentShape.planet: Color(0xFF59C3A6),
-  AgentShape.gyro: Color(0xFFF2B45C),
-  AgentShape.capsule: Color(0xFFE08BD0),
-  AgentShape.comet: Color(0xFF6FC9E8),
+  HaloForm.orb: Color(0xFF7C9CFF),
+  HaloForm.gem: Color(0xFFB49BFF),
+  HaloForm.tile: Color(0xFF59C3A6),
+  HaloForm.pill: Color(0xFFF2B45C),
+  HaloForm.tower: Color(0xFFE08BD0),
 };
 
 Future<void> _loadFonts(WidgetTester tester) async {
@@ -39,7 +39,7 @@ Future<void> _loadFonts(WidgetTester tester) async {
 class _CloseUp extends StatelessWidget {
   const _CloseUp({required this.mood, required this.shape, required this.color});
   final Mood mood;
-  final AgentShape shape;
+  final HaloForm shape;
   final Color color;
 
   @override
@@ -95,7 +95,7 @@ class _Sheet extends StatelessWidget {
             Row(
               crossAxisAlignment: CrossAxisAlignment.end,
               children: [
-                for (final shape in AgentShape.values)
+                for (final shape in HaloForm.values)
                   Expanded(
                     child: Column(
                       children: [
@@ -106,24 +106,22 @@ class _Sheet extends StatelessWidget {
                           size: 122,
                           backgroundDisc: false,
                           mood: switch (shape) {
-                            AgentShape.orb => Mood.idle,
-                            AgentShape.gem => Mood.listening,
-                            AgentShape.planet => Mood.thinking,
-                            AgentShape.gyro => Mood.acting,
-                            AgentShape.capsule => Mood.waiting,
-                            AgentShape.comet => Mood.happy,
+                            HaloForm.orb => Mood.idle,
+                            HaloForm.gem => Mood.listening,
+                            HaloForm.tile => Mood.thinking,
+                            HaloForm.pill => Mood.acting,
+                            HaloForm.tower => Mood.happy,
                           },
                         ),
                         const SizedBox(height: 8),
-                        Text(shape.label, style: label),
-                        Text(shape.note, textAlign: TextAlign.center, style: note.copyWith(fontSize: 13)),
+                        Text(shape.desc, textAlign: TextAlign.center, style: note.copyWith(fontSize: 13)),
                       ],
                     ),
                   ),
               ],
             ),
             const SizedBox(height: 26),
-            Text('ONE FACE, EVERY STATE — the same Orb, drawn still', style: label),
+            Text('ONE FACE, EVERY STATE — the same creature, drawn still', style: label),
             const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -133,8 +131,8 @@ class _Sheet extends StatelessWidget {
                     child: Column(
                       children: [
                         AgentFace(
-                          color: _shapeColor[AgentShape.orb]!,
-                          shape: AgentShape.orb,
+                          color: _shapeColor[HaloForm.orb]!,
+                          shape: HaloForm.orb,
                           seed: 12,
                           size: 96,
                           backgroundDisc: false,
@@ -156,8 +154,8 @@ class _Sheet extends StatelessWidget {
                     child: Column(
                       children: [
                         AgentFace(
-                          color: _shapeColor[AgentShape.capsule]!,
-                          shape: AgentShape.capsule,
+                          color: _shapeColor[HaloForm.tower]!,
+                          shape: HaloForm.tower,
                           seed: 31,
                           size: 96,
                           backgroundDisc: false,
@@ -181,8 +179,8 @@ class _Sheet extends StatelessWidget {
                     child: Column(
                       children: [
                         AgentFace(
-                          color: const Color(0xFF7C9CFF),
-                          shape: AgentShape.orb,
+                          color: haloBlue,
+                          shape: HaloForm.orb,
                           seed: 12,
                           size: d,
                           backgroundDisc: false,
@@ -199,7 +197,7 @@ class _Sheet extends StatelessWidget {
                       children: [
                         AgentFace(
                           color: const Color(0xFFE08BD0),
-                          shape: AgentShape.capsule,
+                          shape: HaloForm.tower,
                           seed: 31,
                           size: d,
                           backgroundDisc: false,
@@ -245,8 +243,8 @@ void main() {
                           for (var col = 0; col < 3; col++)
                             _CloseUp(
                               mood: Mood.values[row * 3 + col],
-                              shape: AgentShape.orb,
-                              color: const Color(0xFF7C9CFF),
+                              shape: HaloForm.orb,
+                              color: haloBlue,
                             ),
                         ],
                       ),

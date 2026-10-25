@@ -28,6 +28,7 @@ dependencies = [
   "winrt-windows-globalization>=3.2.1 ; sys_platform == 'win32'",
   "python-pptx>=1.0.2",
   "piper-tts>=1.8.0",
+  "tzdata>=2025.2 ; sys_platform == 'win32'",
 ]
 
 [dependency-groups]

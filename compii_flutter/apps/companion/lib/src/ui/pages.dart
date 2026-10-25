@@ -13,6 +13,7 @@ import '../app_control.dart';
 import '../console/character.dart';
 import '../updates.dart';
 import 'first_run.dart';
+import 'color_chooser.dart';
 
 /// One of Compii's bodies, shown wearing the face it will actually use. No name
 /// under it: the shape is the choice, and a screen reader gets a description.
@@ -51,46 +52,6 @@ class _FormTile extends StatelessWidget {
                 phase: .3,
                 followPointer: false,
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The coat, as the three tones the fur is actually brushed with.
-class _CoatTile extends StatelessWidget {
-  const _CoatTile({required this.coat, required this.selected, required this.onTap});
-  final CompiiCoat coat;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    return Semantics(
-      button: true,
-      selected: selected,
-      label: '${coat.desc} coat',
-      child: InkWell(
-        onTap: onTap,
-        customBorder: const CircleBorder(),
-        child: AnimatedContainer(
-          duration: context.motion(180),
-          curve: Curves.easeOut,
-          width: 42,
-          height: 42,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: coat.chip,
-            ),
-            border: Border.all(
-              color: selected ? c.accent : c.border,
-              width: selected ? 2.6 : 1,
             ),
           ),
         ),
@@ -431,8 +392,8 @@ class _SettingsPageState extends State<SettingsPage> {
                           Text('Compii’s form', style: context.type.titleSmall),
                           const SizedBox(height: 3),
                           Text(
-                            'The same face and the same moods in every body. Pick the shape and '
-                            'the colour of its coat. Kept on this PC.',
+                            'The same eyes and the same moods in every creature. Pick the shape and '
+                            'any colour for its fur. Kept on this PC.',
                             style: context.type.bodySmall?.copyWith(color: c.muted),
                           ),
                         ],
@@ -464,17 +425,9 @@ class _SettingsPageState extends State<SettingsPage> {
                   },
                 ),
                 const SizedBox(height: 16),
-                Wrap(
-                  spacing: 12,
-                  runSpacing: 12,
-                  children: [
-                    for (final k in CompiiCoat.values)
-                      _CoatTile(
-                        coat: k,
-                        selected: k == widget.state.coat,
-                        onTap: () => widget.state.setCoat(k),
-                      ),
-                  ],
+                ColorChooser(
+                  color: widget.state.color,
+                  onChanged: widget.state.setColor,
                 ),
               ],
             ),

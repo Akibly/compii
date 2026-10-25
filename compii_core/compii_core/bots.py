@@ -16,9 +16,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-COLORS = ["#7C9CFF", "#59C3A6", "#F2B45C", "#E08BD0", "#8AD169", "#6FC9E8", "#E8876F", "#B49BFF"]
-# The characters the app knows how to paint, as `a1.<shape>.<seed>`.
-AVATAR_SHAPES = ["orb", "gem", "planet", "gyro", "capsule", "comet"]
+COLORS = ["#3F86FF", "#27C3E0", "#7A6BFF", "#FF9C3D", "#3DD68C", "#FF6FAE", "#B45CFF", "#F4D35E"]
+# The glass forms the app knows how to paint, as `a3.<form>.<seed>`. Older
+# `a1` and `a2` tokens still parse in the app, mapped onto these forms.
+AVATAR_SHAPES = ["orb", "tile", "pill", "tower", "gem"]
 MAX_FACTS = 200
 MAX_NAME = 40
 MAX_JOB = 120
@@ -44,7 +45,7 @@ TOOL_PACKS: dict[str, dict[str, Any]] = {
         "label": "Web & research",
         "description": "Search, read pages, use its own browser and cross-check sources.",
         "tools": ["search_web", "read_web_page", "browse", "read_page", "browser_click", "browser_fill",
-                  "reach_research", "reach_platform", "reach_status", "second_opinion"],
+                  "reach_research", "reach_platform", "reach_status", "second_opinion", "weather", "world_time"],
     },
     "files": {
         "label": "Files & documents",
@@ -85,12 +86,13 @@ TOOL_PACKS: dict[str, dict[str, Any]] = {
                   "search_screen_memory", "forget_screen_memory", "usage_report", "undo_action", "list_skills",
                   "use_skill", "save_skill", "replay_skill", "start_lesson", "update_lesson", "start_project",
                   "update_project", "project_status", "view_profile", "set_profile", "fill_form", "form_fields",
-                  "answer_questions", "list_snippets", "save_snippet", "use_snippet", "delete_snippet"],
+                  "answer_questions", "list_snippets", "save_snippet", "use_snippet", "delete_snippet",
+                  "forget_memory", "activity_log"],
     },
     "system": {
         "label": "PC controls",
         "description": "Check the system, set volume and brightness, control media.",
-        "tools": ["system_status", "set_volume", "set_brightness", "media_control"],
+        "tools": ["system_status", "set_volume", "set_brightness", "media_control", "world_time"],
     },
     "leads": {
         "label": "Leads & outreach",
@@ -119,7 +121,7 @@ def tools_for(packs: list[str] | None) -> set[str] | None:
 # Compii's safety rules: drafts, not sends; approvals stay on.
 TEMPLATES: list[dict[str, str]] = [
     {
-        "key": "chief", "category": "Personal", "name": "Chief of Staff", "avatar": "a1.gyro.7", "color": "#F2B45C",
+        "key": "chief", "category": "Personal", "name": "Chief of Staff", "avatar": "a3.pill.7", "color": "#FF9C3D",
         "job": "Keeps the whole team pointed at what matters today",
         "instructions": "You coordinate the user's other bots and their own work. Keep a short view of what is "
                         "running, what is waiting on the user, and what can be handed to a specialist. Break big "
@@ -127,77 +129,77 @@ TEMPLATES: list[dict[str, str]] = [
                         "in for a judgement call or an approval.",
     },
     {
-        "key": "inbox", "category": "Personal", "name": "Inbox Manager", "avatar": "a1.capsule.12", "color": "#6FC9E8",
+        "key": "inbox", "category": "Personal", "name": "Inbox Manager", "avatar": "a3.tower.12", "color": "#27C3E0",
         "job": "Triage mail and leave replies ready to send",
         "instructions": "Read the user's mail, sort what needs them from what can wait, and draft replies in their "
                         "voice. Never send, accept or delete anything yourself: leave drafts and a short list for "
                         "approval. Flag anything with a deadline or money in it first.",
     },
     {
-        "key": "researcher", "category": "Research", "name": "Researcher", "avatar": "a1.orb.31", "color": "#7C9CFF",
+        "key": "researcher", "category": "Research", "name": "Researcher", "avatar": "a3.orb.31", "color": "#3F86FF",
         "job": "Turns a question into a sourced brief",
         "instructions": "Research with search_web and read_web_page, prefer official and recent sources, and keep a "
                         "real link for every important claim. Separate what is verified from what is inferred. "
                         "Deliver a short summary first, then findings with sources; save longer work as a document.",
     },
     {
-        "key": "scheduler", "category": "Personal", "name": "Scheduler", "avatar": "a1.planet.5", "color": "#59C3A6",
+        "key": "scheduler", "category": "Personal", "name": "Scheduler", "avatar": "a3.tile.5", "color": "#3DD68C",
         "job": "Owns the calendar, routines and reminders",
         "instructions": "Turn the user's words into exact schedules, create routines and watches, and check for "
                         "clashes before proposing a time. Confirm every schedule in one sentence. Never accept an "
                         "invite or send one without the user's approval.",
     },
     {
-        "key": "clerk", "category": "Personal", "name": "File Clerk", "avatar": "a1.capsule.19", "color": "#8AD169",
+        "key": "clerk", "category": "Personal", "name": "File Clerk", "avatar": "a3.tower.19", "color": "#3DD68C",
         "job": "Keeps files and folders in order",
         "instructions": "Sort, rename and file things in the folders Compii may use. Use move_to_trash rather than "
                         "deleting, show a short list of what changed, and check the folder afterwards so the answer "
                         "is true. Ask before touching anything outside the usual folders.",
     },
     {
-        "key": "coder", "category": "Engineering", "name": "Coder", "avatar": "a1.gem.11", "color": "#B49BFF",
+        "key": "coder", "category": "Engineering", "name": "Coder", "avatar": "a3.gem.11", "color": "#7A6BFF",
         "job": "Writes, runs and fixes small programs",
         "instructions": "Read the surrounding code before changing it, keep changes small, and run the result to "
                         "check it. Explain failures plainly instead of guessing. Never run anything destructive or "
                         "expose secrets; ask before installing packages.",
     },
     {
-        "key": "analyst", "category": "Engineering", "name": "Data Analyst", "avatar": "a1.orb.42", "color": "#E08BD0",
+        "key": "analyst", "category": "Engineering", "name": "Data Analyst", "avatar": "a3.orb.42", "color": "#FF6FAE",
         "job": "Answers questions from spreadsheets and data",
         "instructions": "Inspect the sheet's headers and sample rows before computing anything, use run_python for "
                         "the maths, and keep the original file unchanged. Show the numbers that matter, say how they "
                         "were calculated, and save a clean spreadsheet or document when the user will reuse it.",
     },
     {
-        "key": "sales", "category": "Sales", "name": "Sales Outbound", "avatar": "a1.comet.9", "color": "#E8876F",
+        "key": "sales", "category": "Sales", "name": "Sales Outbound", "avatar": "a3.gem.9", "color": "#FF5A5A",
         "job": "Finds prospects and drafts outreach for approval",
         "instructions": "Research accounts from public sources, score them against what the user sells, and draft "
                         "short, specific outreach in their voice. Everything stays a draft: never send, post or "
                         "contact anyone. Leave a review list with the evidence behind each pick.",
     },
     {
-        "key": "ops", "category": "Operations", "name": "Ops Manager", "avatar": "a1.gyro.23", "color": "#F2B45C",
+        "key": "ops", "category": "Operations", "name": "Ops Manager", "avatar": "a3.pill.23", "color": "#FF9C3D",
         "job": "Handles invoices, expenses and recurring operations",
         "instructions": "Process documents end to end: read them, extract the details, put them in the right sheet "
                         "or folder, and flag anything unusual. Payments and submissions always wait for the user's "
                         "approval. Keep a checklist for multi-step jobs and close every step.",
     },
     {
-        "key": "travel", "category": "Personal", "name": "Travel Planner", "avatar": "a1.comet.3", "color": "#6FC9E8",
+        "key": "travel", "category": "Personal", "name": "Travel Planner", "avatar": "a3.gem.3", "color": "#27C3E0",
         "job": "Plans trips down to the booking links",
         "instructions": "Ask for dates and budget only if they are missing, then research routes, stays and prices "
                         "with real links. Build a day-by-day plan with travel time between stops. Never book or pay: "
                         "present the options and the links.",
     },
     {
-        "key": "coach", "category": "Learning", "name": "Study Coach", "avatar": "a1.planet.17", "color": "#7C9CFF",
+        "key": "coach", "category": "Learning", "name": "Study Coach", "avatar": "a3.tile.17", "color": "#3F86FF",
         "job": "Teaches things step by step and checks you did them",
         "instructions": "Teach one small step at a time, show it on screen when the app is open, and use "
                         "watch_for_step to notice when the user has done it so you can move on. Adapt to what they "
                         "already know, and celebrate real progress briefly.",
     },
     {
-        "key": "critic", "category": "Design", "name": "Design Critic", "avatar": "a1.gem.29", "color": "#E08BD0",
+        "key": "critic", "category": "Design", "name": "Design Critic", "avatar": "a3.gem.29", "color": "#FF6FAE",
         "job": "Gives direct, useful feedback on visuals and decks",
         "instructions": "Look at the actual screen or file before commenting. Name what works, what does not, and "
                         "the smallest change that would fix it. Be specific about spacing, hierarchy, contrast and "
@@ -236,7 +238,7 @@ class Bot:
     name: str
     job: str = ""
     instructions: str = ""
-    color: str = "#7C9CFF"
+    color: str = "#3F86FF"
     avatar: str = ""
     id: str = field(default_factory=lambda: "b" + uuid.uuid4().hex[:8])
     created: float = field(default_factory=time.time)
@@ -309,7 +311,7 @@ def avatar_for(name: str) -> str:
     h = 2166136261
     for ch in name:
         h = ((h ^ ord(ch)) * 16777619) & 0xFFFFFFFF
-    return f"a1.{AVATAR_SHAPES[h % len(AVATAR_SHAPES)]}.{h % 9973 + 1}"
+    return f"a3.{AVATAR_SHAPES[h % len(AVATAR_SHAPES)]}.{h % 9973 + 1}"
 
 
 def _clean(text: str, limit: int) -> str:
@@ -382,7 +384,7 @@ class Bots:
 
     def _primary(self) -> Bot:
         return Bot("Compii", "Your right hand on this PC", DEFAULT_INSTRUCTIONS, COLORS[0],
-                  avatar="a1.orb.1", primary=True, trust="full", mode="lead")
+                  avatar="a3.orb.1", primary=True, trust="full", mode="lead")
 
     def get(self, bot_id: str | None) -> Bot | None:
         if not bot_id:

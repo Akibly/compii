@@ -161,8 +161,8 @@ PROPOSE_TEAMMATE = {
         "job": {"type": "string", "description": "One line: what this teammate owns, e.g. 'Keeps invoices filed and paid on time'."},
         "why": {"type": "string", "description": "Why the team needs it now, in one or two sentences."},
         "first_task": {"type": "string", "description": "The first job it would take, if the user hires it."},
-        "avatar": {"type": "string", "description": "Optional character token, 'a2.<form>.<seed>' with form in "
-                                                     "puff, tuft, mop, horn, wisp, bean. Leave empty to pick one."},
+        "avatar": {"type": "string", "description": "Optional character token, 'a3.<form>.<seed>' with form in "
+                                                     "orb, tile, pill, tower, gem. Leave empty to pick one."},
     }, "required": ["name", "job", "why"]},
 }
 WATCH_TOOL = {

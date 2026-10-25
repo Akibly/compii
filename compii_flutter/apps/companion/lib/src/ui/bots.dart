@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 
 import '../console/character.dart' show Mood;
 import '../console/core_client.dart';
+import '../art/halo.dart' show colorHex;
 import 'agent_character.dart';
+import 'color_chooser.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
 import 'proactive.dart' show BotRoutines;
@@ -11,7 +13,7 @@ import 'thread.dart' show Run;
 import 'tokens.dart';
 import 'voice_dock.dart';
 
-const _colors = ['#7C9CFF', '#59C3A6', '#F2B45C', '#E08BD0', '#8AD169', '#6FC9E8', '#E8876F', '#B49BFF'];
+const _defaultColor = '#3F86FF';
 
 Color hexColor(String hex, Color fallback) {
   final v = int.tryParse(hex.replaceFirst('#', ''), radix: 16);
@@ -895,7 +897,7 @@ class _BotEditorState extends State<_BotEditor> {
   late final _instructions = TextEditingController(text: _src?.instructions ?? '');
   final _fact = TextEditingController();
   late String _avatar = _src?.avatar ?? '';
-  late String _color = _src?.color ?? _colors.first;
+  late String _color = _src?.color ?? _defaultColor;
   String _template = '';
   bool _pinned = false;
   late String _trust = widget.bot?.trust ?? 'probation';
@@ -979,7 +981,12 @@ class _BotEditorState extends State<_BotEditor> {
 
   Future<void> _chooseFace() async {
     final picked = await showAgentPicker(context, color: _tint, look: _look);
-    if (picked != null && mounted) setState(() => _avatar = picked.encode());
+    if (picked != null && mounted) {
+      setState(() {
+        _avatar = picked.look.encode();
+        _color = colorHex(picked.color);
+      });
+    }
   }
 
   Future<void> _save() async {
@@ -1170,24 +1177,15 @@ class _BotEditorState extends State<_BotEditor> {
                   ],
                 ),
                 Text(
-                  '${_look.shape.label}: a live character that turns, blinks and breathes in this teammate’s colour.',
+                  'A live furry character that breathes, blinks and follows your pointer, in this teammate’s colour.',
                   style: context.type.bodySmall?.copyWith(color: c.faint),
                 ),
                 const SizedBox(height: 12),
-                Text('Accent', style: context.type.labelSmall),
+                Text('Colour', style: context.type.labelSmall),
                 const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  children: [
-                    for (final hex in _colors)
-                      _Swatch(
-                        on: hex == _color,
-                        color: Color(0xFF000000 | int.parse(hex.replaceFirst('#', ''), radix: 16)),
-                        onTap: () => setState(() => _color = hex),
-                        solid: true,
-                        child: const SizedBox.shrink(),
-                      ),
-                  ],
+                ColorChooser(
+                  color: _tint,
+                  onChanged: (v) => setState(() => _color = colorHex(v)),
                 ),
                 const SizedBox(height: 14),
                 TextField(
@@ -1386,37 +1384,6 @@ class _BotEditorState extends State<_BotEditor> {
           child: Text(_creating ? 'Create' : 'Save'),
         ),
       ],
-    );
-  }
-}
-
-class _Swatch extends StatelessWidget {
-  const _Swatch({required this.on, required this.color, required this.onTap, required this.child, this.solid = false});
-  final bool on;
-  final Color color;
-  final VoidCallback onTap;
-  final Widget child;
-
-  /// Colour dots are shown in full; characters sit on a soft tint of the colour.
-  final bool solid;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    return InkWell(
-      onTap: onTap,
-      borderRadius: Shapes.pill,
-      child: Container(
-        width: 30,
-        height: 30,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: solid ? color : color.withValues(alpha: .16),
-          shape: BoxShape.circle,
-          border: Border.all(color: on ? c.text : c.border, width: on ? 2 : 1),
-        ),
-        child: child,
-      ),
     );
   }
 }

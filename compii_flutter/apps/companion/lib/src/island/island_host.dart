@@ -7,6 +7,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
+import '../console/character.dart' show restoreCompiiLook;
 import '../console/core_client.dart';
 import '../diagnostics.dart';
 import '../ui/tokens.dart';
@@ -36,6 +37,7 @@ Future<void> runIsland() async {
   final core = CoreClient()..start();
   final voice = VoiceController(core);
   final themeMode = await _themeMode();
+  _followLook();
   runApp(
     IslandApp(
       core: core,
@@ -47,6 +49,24 @@ Future<void> runIsland() async {
       themeMode: themeMode,
     ),
   );
+}
+
+/// The island is its own process, so Compii's colour and form chosen in the
+/// main window reach it through the saved preferences: read now and re-read
+/// every few seconds, which is cheap and keeps the eyes in the chosen colour.
+void _followLook() {
+  Future<void> read() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.reload();
+      restoreCompiiLook(p);
+    } on Object {
+      // Preferences unreadable: the eyes keep the default colour.
+    }
+  }
+
+  read();
+  Timer.periodic(const Duration(seconds: 4), (_) => read());
 }
 
 Future<ThemeMode> _themeMode() async {

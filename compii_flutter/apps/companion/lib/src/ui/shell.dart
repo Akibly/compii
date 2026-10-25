@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../art/halo.dart';
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'bots.dart';
@@ -87,20 +88,7 @@ class AppState extends ChangeNotifier {
       final p = await SharedPreferences.getInstance();
       chatView = p.getBool('chat_view') ?? false;
       themeMode = ThemeMode.values.byName(p.getString('theme') ?? 'system');
-      final form = p.getString('compii_form');
-      if (form != null) {
-        compiiBody.value = CompiiBody.values.firstWhere(
-          (b) => b.name == form,
-          orElse: () => CompiiBody.plush,
-        );
-      }
-      final coat = p.getString('compii_coat');
-      if (coat != null) {
-        compiiCoat.value = CompiiCoat.values.firstWhere(
-          (c) => c.name == coat,
-          orElse: () => CompiiCoat.blue,
-        );
-      }
+      restoreCompiiLook(p);
       final seen = p.getString('bot_seen');
       if (seen != null) {
         final decoded = jsonDecode(seen);
@@ -209,14 +197,14 @@ class AppState extends ChangeNotifier {
     SharedPreferences.getInstance().then((p) => p.setString('compii_form', b.name)).ignore();
   }
 
-  /// The coat Compii is brushed in. Same reasoning as the body: taste, not state.
-  CompiiCoat get coat => compiiCoat.value;
+  /// The colour Compii's fur is brushed in: any colour at all. Taste, not state.
+  Color get color => compiiColor.value;
 
-  void setCoat(CompiiCoat c) {
-    if (compiiCoat.value == c) return;
-    compiiCoat.value = c;
+  void setColor(Color c) {
+    if (compiiColor.value == c) return;
+    compiiColor.value = c;
     notifyListeners();
-    SharedPreferences.getInstance().then((p) => p.setString('compii_coat', c.name)).ignore();
+    SharedPreferences.getInstance().then((p) => p.setString('compii_coat', colorHex(c))).ignore();
   }
 
   void fail(Object? e) {

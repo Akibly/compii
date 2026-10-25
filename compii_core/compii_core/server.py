@@ -787,6 +787,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     from .system import system_tools
     from .timeline import Timeline, timeline_tools
     from .clips import Clips, clip_tools
+    from .everyday import everyday_tools
 
     profile = Profile(workspace / "profile.json")
     projects = Projects(workspace / "projects.json")
@@ -828,7 +829,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     for t in [*skill_tools(skills, toolbox), *lesson_tools(lessons), *profile_form_tools(profile, lambda: toolbox.browser),
               *project_tools(projects), *lead_tools(workspace, toolbox.path), *outlook_tools_list,
               *system_tools(), *timeline_tools(timeline), *clip_tools(clips), *knowledge_tools(knowledge),
-              *reach_tools(research), usage_tool(ledger),
+              *reach_tools(research), *everyday_tools(toolbox, audit), usage_tool(ledger),
               second_opinion_tool(keys, ledger=ledger,
                                   current=lambda: str(getattr(agent.brain, "provider", "") or "")),
               daybook_tool(lambda: list(agent.tasks.values()), agent.journal, timeline),
