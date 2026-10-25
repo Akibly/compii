@@ -215,7 +215,7 @@ def test_compact_history_drops_tool_details_and_keeps_roles_alternating():
     ]
     out = compact_history(msgs)
     assert out == [{"role": "user", "content": "find my invoice"},
-                   {"role": "assistant", "content": "Looking.\nFound it in Downloads."}]
+                   {"role": "assistant", "content": "Looking. (Compii ran: find_files)\nFound it in Downloads."}]
 
 
 def test_buddy_continues_the_last_conversation_until_new_topic():

@@ -1108,7 +1108,8 @@ class Agent:
                         continue
                     return await self._finish(task, "failed", "That got too long for me to finish in one go.")
                 if not reply.tool_calls:
-                    final = reply.text.strip()
+                    # The history note is for the model; a model that copies it must not say it aloud.
+                    final = _RAN_NOTE.sub("", reply.text).strip()
                     if not final and not asked_for_words:
                         # Models often go quiet right after the last tool call. Ask once for the words
                         # before deciding anything: the work itself may well have landed.
@@ -1830,6 +1831,11 @@ class Agent:
             lines.append("Actions that failed: " + "; ".join(failed[:6]) + ".")
         if files:
             lines.append("Files touched: " + ", ".join(files) + ".")
+        walled = _unread_pages(actions)
+        if walled:
+            # A live run had a teammate cite a page that only ever showed a bot check. The
+            # supervisor can only catch that if the report says which pages never opened.
+            lines.append("Pages it opened but could not read (so not a source): " + "; ".join(walled[:6]) + ".")
         if not ok and not files and not text:
             lines.append("They reported nothing and no actions ran. Treat this job as not done.")
         return lines, status
@@ -2253,6 +2259,25 @@ def _landed_tools(task: Task) -> set[str]:
             and not UNCONFIRMED.search(str(e.get("detail") or ""))}
 
 
+_WALL = re.compile(r"^Page:\s*(Just a moment|Attention Required|Access denied|403 Forbidden|404\b|"
+                   r"Page not found|File Not Found|Are you a robot|Security check)", re.I)
+_PAGE_URL = re.compile(r"Address:\s*(\S+)")
+
+
+def _unread_pages(actions: list[dict[str, Any]]) -> list[str]:
+    """Pages a browsing step landed on that showed a wall (bot check, 404) instead of content."""
+    out: list[str] = []
+    for e in actions:
+        detail = str(e.get("detail") or "")
+        if e.get("tool") in ("browse", "read_page") and e.get("ok") and _WALL.search(detail):
+            found = _PAGE_URL.search(detail)
+            title = detail.splitlines()[0].removeprefix("Page:").strip()
+            where = found.group(1) if found else "a page"
+            if f"{where} ({title})" not in out:
+                out.append(f"{where} ({title})")
+    return out
+
+
 def _landed_since(task: Task, since: float) -> list[str]:
     """What actually ran since `since`, as the labels the user saw on screen."""
     return [str(e.get("label") or e.get("tool")) for e in task.events
@@ -2393,6 +2418,23 @@ def shrink_old_results(sent: list[dict[str, Any]]) -> list[dict[str, Any]]:
 HISTORY_TURNS = 12  # earlier messages kept (compact) when a conversation goes on
 
 
+_RAN_KEYS = ("path", "destination", "url", "query", "target", "name", "title", "to")
+_RAN_NOTE = re.compile(r"\s*\(Compii ran:[^)]*\)")
+
+
+def _ran_summary(content: list[Any]) -> str:
+    """The tools an assistant turn called, as one short line: name plus what it was aimed at."""
+    parts = []
+    for b in content:
+        if _part(b, "type") != "tool_use":
+            continue
+        args = _part(b, "input", {}) or {}
+        aim = next((str(args[k]) for k in _RAN_KEYS if isinstance(args, dict) and args.get(k)), "")
+        aim = Path(aim).name if ("\\" in aim or "/" in aim) and not aim.startswith("http") else aim
+        parts.append(f"{_part(b, 'name')} {aim[:60]}".strip())
+    return f"(Compii ran: {'; '.join(parts[:6])})" if parts else ""
+
+
 def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Earlier turns of a conversation, small: what the user said and what Compii answered,
     without tool details or old screen readings. Keeps follow-ups in context while
@@ -2406,6 +2448,15 @@ def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
             # Claude's replies are SDK objects, not dicts: reading only dicts dropped every answer
             # Compii gave, so a follow-up reached Claude with no earlier conversation at all.
             texts = [str(_part(b, "text", "") or "") for b in content if _part(b, "type") == "text"]
+            if m["role"] == "user":
+                # "(Check from Compii: …)", handoff notes: Compii talking to the model, not the user.
+                texts = [t for t in texts if not t.lstrip().startswith("(")]
+            else:
+                ran = _ran_summary(content)
+                if ran:
+                    # A follow-up must know what was already done, or it redoes it: "where did you save
+                    # it?" used to rewrite the file just written, because only the words survived.
+                    texts.append(ran)
         text = " ".join(t for t in texts if t.strip()).strip()
         if m["role"] == "user":
             text = text.split("\n\n")[0][:600]  # drop screen readings and notes

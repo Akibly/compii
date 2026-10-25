@@ -699,7 +699,7 @@ class Toolbox:
         src, dst = self.path(a["source"]), self.path(a["destination"])
         if not src.exists():
             raise ToolError(f"{src} does not exist.")
-        if dst.is_dir():
+        if dst.is_dir():  # _move_label names it the same way
             dst = dst / src.name
         if dst.exists():
             raise ToolError(f"{dst} already exists; choose another name.")
@@ -1189,7 +1189,7 @@ class Toolbox:
                  self.create_folder, lambda a: f"Create folder {_short(a['path'])}"),
             Tool("move_file", "Move or rename a file or folder. Can be undone.",
                  {"source": s, "destination": s}, ["source", "destination"], ActionKind.CHANGE,
-                 self.move_file, lambda a: f"Move {_short(a['source'])} to {_short(a['destination'])}"),
+                 self.move_file, lambda a: _move_label(a["source"], a["destination"])),
             Tool("move_to_trash", "Put one file or folder in the Recycle Bin, where the user can still restore it. "
                  "This is how Compii clears something away; it never deletes for good.",
                  {"path": s}, ["path"], ActionKind.DELETE, self.move_to_trash,
@@ -1378,6 +1378,23 @@ KNOWN_APPS = {
 def _short(raw: str) -> str:
     """File or folder name for labels; full paths stay in the approval details."""
     return Path(raw).name or raw
+
+
+def _move_label(source: str, destination: str) -> str:
+    """Say where a move goes. "Move budget.csv to budget.csv" told the user nothing about the
+    folder it was going into, which is the part they are being asked to approve."""
+    src, dst = Path(source), Path(destination)
+    try:
+        if dst.is_dir():  # move_file puts it inside an existing folder
+            dst = dst / src.name
+    except OSError:
+        pass
+    if src.parent == dst.parent:
+        return f"Rename {src.name} to {dst.name}"
+    where = dst.parent.name or str(dst.parent)
+    if src.name == dst.name:
+        return f"Move {src.name} into {where}"
+    return f"Move {src.name} to {where}/{dst.name}"
 
 
 def _check_pdf(p: Path) -> None:

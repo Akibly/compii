@@ -26,7 +26,7 @@ def test_compact_history_reads_claude_sdk_blocks():
         {"role": "assistant", "content": [BetaTextBlock(text="Done - notes.txt is in Documents.", type="text")]},
     ]
     assert compact_history(msgs) == [{"role": "user", "content": "make notes.txt"},
-                                     {"role": "assistant", "content": "Done - notes.txt is in Documents."}]
+                                     {"role": "assistant", "content": "(Compii ran: write_text_file)\nDone - notes.txt is in Documents."}]
 
 
 class ClaudeShaped(Scripted):
@@ -262,3 +262,47 @@ def test_an_empty_plain_reply_is_asked_again():
     brain = providers.OpenAICompatBrain("https://example.test/v1", "m", "k", transport=httpx.MockTransport(handler))
     reply = asyncio.run(brain.step("s", [{"role": "user", "content": "hi"}], []))
     assert len(sent) == 2 and reply.text == "Hello."
+
+
+def test_compact_history_says_what_ran_and_drops_compii_notes():
+    msgs = [
+        {"role": "user", "content": "make notes.txt"},
+        {"role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "write_text_file",
+                                           "input": {"path": "C:/Users/me/Documents/notes.txt"}}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "ok"},
+                                     {"type": "text", "text": "(Check from Compii: your reply was empty.)"}]},
+        {"role": "assistant", "content": [{"type": "text", "text": "Saved."}]},
+    ]
+    assert compact_history(msgs) == [
+        {"role": "user", "content": "make notes.txt"},
+        {"role": "assistant", "content": "(Compii ran: write_text_file notes.txt)\nSaved."}]
+
+
+def test_a_copied_history_note_is_not_spoken(home):
+    brain = Scripted(["Saved it. (Compii ran: write_text_file notes.txt)"])
+    task = asyncio.run(_run_plain(_app(home, brain), "thanks"))
+    assert _final(task) == "Saved it."
+
+
+def test_move_labels_name_the_folder(home):
+    from compii_core.tools import _move_label
+
+    (home["downloads"] / "data").mkdir()
+    d = home["downloads"]
+    assert _move_label(str(d / "budget.csv"), str(d / "data" / "budget.csv")) == "Move budget.csv into data"
+    assert _move_label(str(d / "budget.csv"), str(d / "data")) == "Move budget.csv into data"
+    assert _move_label(str(d / "a.txt"), str(d / "b.txt")) == "Rename a.txt to b.txt"
+    assert _move_label(str(d / "a.txt"), str(d / "data" / "b.txt")) == "Move a.txt to data/b.txt"
+
+
+def test_a_job_report_names_pages_that_were_only_a_wall():
+    from compii_core.agent import _unread_pages
+
+    actions = [
+        {"tool": "browse", "ok": True, "detail": "Page: Just a moment...\nAddress: https://www.macrotrends.net/x\n\nwww."},
+        {"tool": "browse", "ok": True, "detail": "Page: 404 - File Not Found\nAddress: https://wpr.com/a\n\n404"},
+        {"tool": "browse", "ok": True, "detail": "Page: Accra Population 2026\nAddress: https://wpr.com/b\n\nWORLD"},
+        {"tool": "search_web", "ok": True, "detail": "1. Just a moment — https://x"},
+    ]
+    assert _unread_pages(actions) == ["https://www.macrotrends.net/x (Just a moment...)",
+                                      "https://wpr.com/a (404 - File Not Found)"]
