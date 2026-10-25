@@ -173,3 +173,42 @@ _real_sleep = asyncio.sleep
 
 async def _no_wait(seconds, *a, **kw):
     await _real_sleep(0)
+
+
+def test_a_tool_that_keeps_failing_is_switched_off_for_the_turn(home):
+    missing = str(home["downloads"] / "nope")
+    calls = [("", [("list_folder", {"path": f"{missing}{i}"})]) for i in range(4)]
+    brain = Scripted([*calls, "That folder isn't there."])
+    task = asyncio.run(_run_plain(_app(home, brain), "list it"))
+    results = [b for m in brain.seen[-1] if isinstance(m["content"], list) for b in m["content"]
+               if isinstance(b, dict) and b.get("type") == "tool_result"]
+    assert "failed 3 times in a row" in results[-1]["content"]
+    ran = [e for e in task.events if e["type"] == "action_started" and e["tool"] == "list_folder"]
+    assert len(ran) == 3
+
+
+def test_web_tools_stop_when_the_pc_is_offline():
+    from compii_core.agent import ToolCall, _FailureStreak
+
+    streak = _FailureStreak()
+    offline = {"is_error": True, "content": "ConnectError: [Errno 11001] getaddrinfo failed"}
+    streak.saw(ToolCall("1", "read_web_page", {"url": "https://a"}), offline)
+    streak.saw(ToolCall("2", "reach_platform", {"url": "https://b"}), offline)
+    assert "can't reach the internet" in streak.refuse(ToolCall("3", "search_web", {"query": "x"}))
+    assert streak.refuse(ToolCall("4", "list_folder", {"path": "C:/"})) == ""
+
+
+def test_old_tool_results_shrink_for_small_models_only():
+    from compii_core.agent import RECENT_RESULTS, shrink_old_results
+
+    big = "x" * 15_000
+    sent = [{"role": "user", "content": "go"}]
+    for i in range(6):
+        sent += [{"role": "assistant", "content": [{"type": "tool_use", "id": f"c{i}", "name": "t", "input": {}}]},
+                 {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"c{i}", "content": big}]}]
+    out = shrink_old_results(sent)
+    sizes = [len(m["content"][0]["content"]) for m in out if m["role"] == "user" and isinstance(m["content"], list)]
+    assert all(s < 1000 for s in sizes[:-RECENT_RESULTS]) and all(s == 15_000 for s in sizes[-RECENT_RESULTS:])
+    assert len(sent[2]["content"][0]["content"]) == 15_000  # the conversation itself is untouched
+    small = sent[:3]
+    assert shrink_old_results(small) is small

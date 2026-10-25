@@ -1076,12 +1076,15 @@ class Agent:
         done_tools: set[str] = set()  # tools that worked this turn: what Compii may say it did
         earlier = _landed_tools(task)  # what already worked in this conversation, for lasting claims
         turn_began = time.time()
+        streak = _FailureStreak()
         checked = False
         asked_for_words = False
         try:
             for _ in range(task.max_steps):
                 await self.emit(task, "thinking")
                 sent = messages if turn_start <= 0 else compact_history(messages[:turn_start]) + messages[turn_start:]
+                if not _keeps_history(self.brain_of(task)):
+                    sent = shrink_old_results(sent)
                 schemas = self._schemas(task)
                 started = time.monotonic()
                 reply = await self._think(task, system, sent, schemas)
@@ -1154,8 +1157,12 @@ class Agent:
                 ran: list[dict[str, Any]] = []
                 messages.append({"role": "user", "content": ran})
                 for c in reply.tool_calls:
-                    one = await self._call(task, c)
+                    refused = streak.refuse(c)
+                    one = ({"type": "tool_result", "tool_use_id": c.id, "content": refused, "is_error": True}
+                           if refused else await self._call(task, c))
                     ran.append(one)
+                    if not refused:
+                        streak.saw(c, one)
                     if not one.get("is_error") and not UNCONFIRMED.search(str(one.get("content", ""))):
                         done_tools.add(c.name)
                 if task.pending_handoff is not None:
@@ -2300,6 +2307,85 @@ def _close_open_calls(messages: list[dict[str, Any]]) -> None:
         last["content"].extend(hanging)
     else:
         messages.append({"role": "user", "content": hanging})
+
+
+TOOL_FAIL_LIMIT = 3  # failures in a row before a tool is off for the rest of the turn
+WEB_TOOLS = {"search_web", "read_web_page", "browse", "read_page", "reach_platform", "reach_research"}
+_OFFLINE = re.compile(r"getaddrinfo failed|Name or service not known|nodename nor servname|"
+                      r"No address associated|Network is unreachable|Temporary failure in name resolution", re.I)
+
+
+class _FailureStreak:
+    """Stops one turn spending its steps on a tool that keeps failing.
+
+    A delegated job once used all 16 of its steps on news pages while the PC had no
+    connection, one web tool after another, and came back with nothing. Each check
+    here answers instead of the tool, with an error the model can act on."""
+
+    def __init__(self) -> None:
+        self.in_a_row: dict[str, int] = {}
+        self.failed_calls: dict[str, int] = {}
+        self.offline = 0
+
+    @staticmethod
+    def _key(call: ToolCall) -> str:
+        return call.name + json.dumps(call.input, sort_keys=True, ensure_ascii=False, default=str)
+
+    def refuse(self, call: ToolCall) -> str:
+        if call.name in WEB_TOOLS and self.offline >= 2:
+            return ("Not run: this PC can't reach the internet right now (names don't resolve). Stop using web "
+                    "tools this turn; tell the user what you have and that the connection is down.")
+        if self.failed_calls.get(self._key(call), 0) >= 2:
+            return ("Not run: this exact call already failed twice. Change the input, use another tool, or tell "
+                    "the user what is blocking it.")
+        if self.in_a_row.get(call.name, 0) >= TOOL_FAIL_LIMIT:
+            return (f"Not run: {call.name} has failed {TOOL_FAIL_LIMIT} times in a row this turn. Stop using it; "
+                    "work with what you have or tell the user what failed.")
+        return ""
+
+    def saw(self, call: ToolCall, result: dict[str, Any]) -> None:
+        if not result.get("is_error"):
+            self.in_a_row[call.name] = 0
+            return
+        self.in_a_row[call.name] = self.in_a_row.get(call.name, 0) + 1
+        key = self._key(call)
+        self.failed_calls[key] = self.failed_calls.get(key, 0) + 1
+        if call.name in WEB_TOOLS and _OFFLINE.search(str(result.get("content", ""))):
+            self.offline += 1
+
+
+def _keeps_history(brain: Any) -> bool:
+    """Whether to send this brain the turn exactly as it happened. Claude reads its own earlier
+    thinking and caches the prefix, and an edited tool result breaks both; it also has room."""
+    seen = [brain, getattr(brain, "primary", None), getattr(brain, "backup", None)]
+    return any(isinstance(b, ClaudeBrain) for b in seen if b is not None)
+
+
+RESULTS_BUDGET = 40_000  # characters of tool output a long turn may resend before old ones shrink
+RECENT_RESULTS = 3  # the newest tool-result messages always go in full
+SHRUNK_TO = 600
+
+
+def shrink_old_results(sent: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A long turn resends every tool result at every step. Over the budget, the older results go
+    as a short head instead, so a free model's context is spent on what matters now. Only the copy
+    that is sent changes; the conversation keeps every result in full."""
+    holders = [i for i, m in enumerate(sent) if m["role"] == "user" and isinstance(m["content"], list)
+               and any(isinstance(b, dict) and b.get("type") == "tool_result" for b in m["content"])]
+    size = sum(len(str(b.get("content", ""))) for i in holders for b in sent[i]["content"]
+               if isinstance(b, dict) and b.get("type") == "tool_result")
+    if size <= RESULTS_BUDGET:
+        return sent
+    out = list(sent)
+    for i in holders[:-RECENT_RESULTS]:
+        blocks = []
+        for b in out[i]["content"]:
+            text = str(b.get("content", "")) if isinstance(b, dict) and b.get("type") == "tool_result" else ""
+            if len(text) > SHRUNK_TO:
+                b = {**b, "content": text[:SHRUNK_TO] + f"\n[older result shortened from {len(text)} characters]"}
+            blocks.append(b)
+        out[i] = {**out[i], "content": blocks}
+    return out
 
 
 HISTORY_TURNS = 12  # earlier messages kept (compact) when a conversation goes on
