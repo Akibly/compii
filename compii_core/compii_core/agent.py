@@ -207,7 +207,7 @@ CLAIMS = [
      re.compile(r"\bI(?:'ve| have)?\s+(?:just\s+)?(?:scheduled|set up|reminded you|watched for|put a reminder)|"
                 r"\bI(?:'ll| will)\s+(?:keep )?(?:remind|watch|check back|follow up|ping|nag)\b", re.I),
      "set that up"),
-    ("searched the web", {"search_web", "read_web_page", "browse", "read_page"},
+    ("searched the web", {"search_web", "read_web_page", "browse", "read_page", "web_search"},
      re.compile(r"\bI(?:'ve| have)?\s+(?:just\s+)?(?:searched|googled|looked it up|looked online)\b|"
                 r"\bI(?:'ll| will)\s+search\b|\bonline sources (?:say|show)\b|\bthe (?:top |search )?results? (?:say|show)\b", re.I),
      "check that online"),
@@ -233,9 +233,19 @@ CLAIMS = [
 ]
 
 
-def unbacked_claims(text: str, done: set[str]) -> list[str]:
-    """Things the reply says Compii did that no tool actually did this turn."""
-    return [what for what, tools, pattern, _ in CLAIMS if pattern.search(text) and not done & tools]
+# Claims about something that stays done: a file written, an email sent, a search made. In a
+# follow-up ("where did you save it?") the tool that backs them ran in an earlier turn, and the
+# answer must not be wiped for repeating a fact. Pointing, clicking, typing and opening are about
+# the screen right now, so only this turn's tools back those.
+LASTING = {"saved a file", "moved files", "sent an email", "promised to follow up", "put something back",
+           "searched the web", "read what a platform says"}
+
+
+def unbacked_claims(text: str, done: set[str], earlier: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """Things the reply says Compii did that no tool actually did — this turn, or for a lasting
+    claim, earlier in the same conversation."""
+    return [what for what, tools, pattern, _ in CLAIMS
+            if pattern.search(text) and not done & tools and not (what in LASTING and earlier & tools)]
 
 
 # An app that shows nothing after a click or a keystroke hasn't agreed that it worked, so the
@@ -244,7 +254,8 @@ UNCONFIRMED = re.compile(r"can't confirm|can't read the result back", re.I)
 
 # "I'll open Notepad and type your address in." with no tool call behind it: the shape of an
 # answer that describes the work instead of doing it. Checked only when nothing ran this turn.
-_INTENT = re.compile(r"\b(?:I(?:'ll| will|'m going to| am going to)|we'll|let me|i can do that)\b[^.]{0,70}"
+# "Let me know if you want more" is an offer, not a plan: it closes most ordinary answers.
+_INTENT = re.compile(r"\b(?:I(?:'ll| will|'m going to| am going to)|we'll|let me(?! know\b)|i can do that)\b[^.]{0,70}"
                      r"\b(?:open|click|type|write|save|create|make|search|check|look at|look up|send|move|rename|"
                      r"download|install|fill|run|set up|organi[sz]e|read|find|add|start|go and|head over|take care)\b",
                      re.I)
@@ -257,7 +268,11 @@ _GATEWAY_NO = re.compile(r"prevent abuse of free resources|violates? our (?:usag
 
 # What an AI endpoint says when it is merely busy or down, as opposed to refusing the request:
 # only these are worth trying again a moment later.
-_BRAIN_RETRY = re.compile(r"said (429|5\d\d)\b|ConnectError|ReadError|TimeoutError|timed out", re.I)
+# A dropped connection mid-answer ("Server disconnected without sending a response") was the most
+# common way real tasks died, and it was never retried.
+_BRAIN_RETRY = re.compile(r"said (429|5\d\d)\b|ConnectError|ReadError|WriteError|TimeoutError|ReadTimeout|"
+                          r"ConnectTimeout|PoolTimeout|timed out|RemoteProtocolError|Server disconnected|"
+                          r"RemoteDisconnected|IncompleteRead|APIConnectionError|Overloaded", re.I)
 
 
 def unbacked_words(missing: list[str]) -> str:
@@ -1059,7 +1074,10 @@ class Agent:
                 messages.append({"role": "user", "content": text + _attachment_note(files)})
                 turn_start = len(messages) - 1
         done_tools: set[str] = set()  # tools that worked this turn: what Compii may say it did
+        earlier = _landed_tools(task)  # what already worked in this conversation, for lasting claims
+        turn_began = time.time()
         checked = False
+        asked_for_words = False
         try:
             for _ in range(task.max_steps):
                 await self.emit(task, "thinking")
@@ -1069,6 +1087,9 @@ class Agent:
                 reply = await self._think(task, system, sent, schemas)
                 self._count(task, reply, system, sent, started)
                 messages.append({"role": "assistant", "content": reply.content})
+                # Claude's own web search runs on the provider's side and never reaches _call, but it
+                # really happened: it backs "I searched" just as search_web would.
+                done_tools |= _server_tools(reply.content)
                 if reply.stop_reason == "refusal":
                     return await self._finish(task, "failed", "I can't help with that one.")
                 if reply.stop_reason == "pause_turn":
@@ -1085,12 +1106,27 @@ class Agent:
                     return await self._finish(task, "failed", "That got too long for me to finish in one go.")
                 if not reply.tool_calls:
                     final = reply.text.strip()
+                    if not final and not asked_for_words:
+                        # Models often go quiet right after the last tool call. Ask once for the words
+                        # before deciding anything: the work itself may well have landed.
+                        asked_for_words = True
+                        if not reply.content:
+                            messages.pop()  # an empty assistant turn is not valid history
+                        messages.append({"role": "user", "content": [{"type": "text", "text": (
+                            "(Check from Compii: your reply was empty. In one to three sentences, tell the user "
+                            "what you did and what happened, or do the next step with a tool.)")}]})
+                        continue
                     if not final:
+                        landed = _landed_since(task, turn_began)
+                        if landed:
+                            # "Nothing happened" would be false: the actions ran. Say what they were.
+                            return await self._finish(task, "done", "I did this but didn't put it into words. "
+                                                      "What ran: " + "; ".join(landed[:8]) + ".")
                         return await self._finish(task, "failed", self._no_answer(task))
                     if not done_tools and _GATEWAY_NO.search(final):
                         return await self._finish(task, "failed",
                                                   f"The AI service behind me said no to that: {final[:200]}")
-                    missing = unbacked_claims(final, done_tools)
+                    missing = unbacked_claims(final, done_tools, earlier)
                     talks = not done_tools and bool(_INTENT.search(final))
                     if (missing or talks) and not checked:
                         # Never say "I pointed / clicked" without having done it, and never stop at describing
@@ -1103,8 +1139,11 @@ class Agent:
                         messages.append({"role": "user", "content": [{"type": "text",
                                                                       "text": f"(Check from Compii: {gap})"}]})
                         continue
-                    if talks:
+                    if talks and self.can_call_tools is False:
                         return await self._finish(task, "failed", self._no_answer(task))
+                    # Still only words after being asked once to act: that is its answer (often what
+                    # stopped it, or a question back). Throwing it away for "no words and no action"
+                    # turned plain answers into failures.
                     if missing:
                         final = strip_claims(final) or f"I couldn't {unbacked_words(missing)} this time."
                     return await self._finish(task, "done", final)
@@ -1133,15 +1172,45 @@ class Agent:
                 # Said it and pointed in one go: that's the answer; skip a second round trip.
                 if (reply.text.strip() and all(c.name in SHOW_ONLY_TOOLS for c in reply.tool_calls)
                         and not any(r.get("is_error") for r in ran)
-                        and not unbacked_claims(reply.text.strip(), done_tools)):
+                        and not unbacked_claims(reply.text.strip(), done_tools, earlier)):
                     return await self._finish(task, "done", reply.text.strip())
-            await self._finish(task, "failed", f"I stopped after {task.max_steps} steps without finishing.")
+            await self._finish(task, "failed", await self._out_of_steps(task, system, messages, turn_start,
+                                                                        done_tools, earlier, turn_began))
         except Stopped:
             await self._finish(task, "stopped", "Stopped. Nothing else will run for this task.")
         except Exception as e:  # noqa: BLE001 - surface any failure to the user instead of dying silently
             await self._finish(task, "failed", f"Something went wrong: {type(e).__name__}: {e}{_landed_note(task)}")
         finally:
             _close_open_calls(messages)
+
+    async def _out_of_steps(self, task: Task, system: str, messages: list[dict[str, Any]], turn_start: int,
+                            done_tools: set[str], earlier: set[str], turn_began: float) -> str:
+        """The step budget ran out: get a real report of what landed instead of a canned line.
+
+        A delegated job that hits its limit used to come back as "I stopped after 16 steps", so the
+        supervisor had nothing to check and the user nothing to act on, however much had worked."""
+        landed = _landed_since(task, turn_began)
+        canned = f"I stopped after {task.max_steps} steps without finishing." + (
+            " What ran: " + "; ".join(landed[:8]) + "." if landed else "")
+        _close_open_calls(messages)
+        messages.append({"role": "user", "content": [{"type": "text", "text": (
+            "(Check from Compii: this task is out of steps. Call no more tools. In two or three sentences tell "
+            "the user what you finished, where any results are, and exactly what is still left.)")}]})
+        try:
+            await self.emit(task, "thinking", step="Writing up where it got to")
+            sent = messages if turn_start <= 0 else compact_history(messages[:turn_start]) + messages[turn_start:]
+            reply = await self._think(task, system, sent, self._schemas(task))
+        except Stopped:
+            raise
+        except Exception:  # noqa: BLE001 - the canned line still says what ran
+            return canned
+        messages.append({"role": "assistant", "content": reply.content})
+        said = reply.text.strip()
+        if not said:
+            return canned
+        if unbacked_claims(said, done_tools, earlier):
+            said = strip_claims(said)
+        return f"{said} (I ran out of steps before finishing.)" if said else canned
 
     async def _until_stopped(self, task: Task, aw: Awaitable[Any]) -> Any:
         work = asyncio.ensure_future(aw)
@@ -2168,6 +2237,29 @@ def _attachment_note(files: list[dict[str, Any]]) -> str:
     return "\n\n" + guard.wrap_untrusted("attachments", "\n".join(lines))
 
 
+def _landed_tools(task: Task) -> set[str]:
+    """Tools that really worked earlier in this conversation (and the app agreed they did)."""
+    return {str(e.get("tool")) for e in task.events
+            if e.get("type") == "action_done" and e.get("ok") and e.get("tool")
+            and not UNCONFIRMED.search(str(e.get("detail") or ""))}
+
+
+def _landed_since(task: Task, since: float) -> list[str]:
+    """What actually ran since `since`, as the labels the user saw on screen."""
+    return [str(e.get("label") or e.get("tool")) for e in task.events
+            if e.get("type") == "action_done" and e.get("ok") and float(e.get("at") or 0) >= since]
+
+
+def _part(block: Any, key: str, default: Any = None) -> Any:
+    """A field of a content block, whether it is a plain dict or an SDK object (Claude's replies)."""
+    return block.get(key, default) if isinstance(block, dict) else getattr(block, key, default)
+
+
+def _server_tools(content: list[Any]) -> set[str]:
+    """Provider-side tools that ran inside this reply, e.g. Claude's web_search."""
+    return {str(_part(b, "name")) for b in content or [] if _part(b, "type") == "server_tool_use" and _part(b, "name")}
+
+
 def _landed_note(task: Task) -> str:
     """Half a job that died is not 'nothing happened': say how much really landed."""
     ran = sum(1 for e in task.events if e.get("type") == "action_done" and e.get("ok"))
@@ -2223,7 +2315,9 @@ def compact_history(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         if isinstance(content, str):
             texts = [content]
         else:
-            texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("type") == "text"]
+            # Claude's replies are SDK objects, not dicts: reading only dicts dropped every answer
+            # Compii gave, so a follow-up reached Claude with no earlier conversation at all.
+            texts = [str(_part(b, "text", "") or "") for b in content if _part(b, "type") == "text"]
         text = " ".join(t for t in texts if t.strip()).strip()
         if m["role"] == "user":
             text = text.split("\n\n")[0][:600]  # drop screen readings and notes

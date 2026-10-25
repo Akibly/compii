@@ -190,10 +190,11 @@ def test_talking_about_the_work_gets_sent_back_to_do_it(home):
 def test_a_turn_with_no_words_and_no_action_is_not_reported_as_done(home):
     """A model that answers with nothing used to end the task as 'Done.' - the worst possible
     answer to a job that never started."""
-    brain = Scripted([""])
+    brain = Scripted(["", ""])  # asked once for words, still nothing
     app = build_app(brain=brain, workspace=home["workspace"], roots=[home["downloads"]], token="t",
                     keys=MemoryKeyStore(), voice=quiet_voice(home["workspace"]))
     task = _run(app, "rename my screenshots folder")
+    assert len(brain.seen) == 2
     assert task.status == "failed"
     assert "nothing happened" in _final(task)
 
