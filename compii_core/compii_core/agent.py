@@ -1123,8 +1123,10 @@ class Agent:
                         landed = _landed_since(task, turn_began)
                         if landed:
                             # "Nothing happened" would be false: the actions ran. Say what they were.
-                            return await self._finish(task, "done", "I did this but didn't put it into words. "
-                                                      "What ran: " + "; ".join(landed[:8]) + ".")
+                            # Nor can it say "done": in live runs this silence came mid-job, with files
+                            # still unsorted. Say what ran and that it may not be finished.
+                            return await self._finish(task, "done", "I stopped without saying whether this is "
+                                                      "finished, so check it. What ran: " + "; ".join(landed[:8]) + ".")
                         return await self._finish(task, "failed", self._no_answer(task))
                     if not done_tools and _GATEWAY_NO.search(final):
                         return await self._finish(task, "failed",

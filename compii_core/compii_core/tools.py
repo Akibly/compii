@@ -1037,12 +1037,24 @@ class Toolbox:
             return []
 
     def update_plan(self, a: dict[str, Any]) -> ToolResult:
+        raw = a["steps"]
+        if isinstance(raw, str):  # some models send the list as JSON text, or one line per step
+            try:
+                raw = json.loads(raw)
+            except ValueError:
+                raw = raw.splitlines()
+        if not isinstance(raw, list):
+            raise ToolError("steps must be a list of {title, status}.")
+        # Models also send bare titles ("Make folders"); those used to crash the turn's plan.
+        rows = [st if isinstance(st, dict) else {"title": st} for st in raw]
         steps = [
-            {"title": str(st.get("title", "")).strip(), "status": st.get("status", "pending")}
-            for st in a["steps"]
+            {"title": str(st.get("title", "")).strip(), "status": str(st.get("status") or "pending")}
+            for st in rows
             if str(st.get("title", "")).strip()
         ]
+        same = {"in_progress": "active", "running": "active", "completed": "done", "complete": "done"}
         for st in steps:
+            st["status"] = same.get(st["status"], st["status"])
             if st["status"] not in ("pending", "active", "done", "skipped"):
                 st["status"] = "pending"
         return ToolResult("Plan shown to the user.", plan=steps)

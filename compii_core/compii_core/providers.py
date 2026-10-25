@@ -178,6 +178,13 @@ class OpenAICompatBrain:
         return out
 
     async def step(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> BrainReply:
+        reply = await self._step_once(system, messages, tools)
+        if not reply.text and not reply.tool_calls:
+            # Same as the stream: an empty answer is a dropped reply, worth one more ask.
+            reply = await self._step_once(system, messages, tools)
+        return reply
+
+    async def _step_once(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> BrainReply:
         import httpx
 
         body: dict[str, Any] = {"model": self.model, "messages": to_openai(system, messages), "stream": False, **self.extra}
@@ -289,7 +296,15 @@ class OpenAICompatBrain:
                             finish = choice["finish_reason"]
                 finally:
                     await r.aclose()
-                break
+                if strip_thinking("".join(text_parts)) or pieces or attempt == 2:
+                    break
+                # A stream with no words and no tool call is the gateway dropping the answer, not the
+                # model choosing silence (Ollama Cloud does this mid-job): ask again rather than
+                # letting the task stop half-done.
+                text_parts.clear()
+                pieces.clear()
+                finish = "stop"
+                await asyncio.sleep(0.5 * (attempt + 1))
         text = strip_thinking("".join(text_parts))
         blocks: list[dict[str, Any]] = [{"type": "text", "text": text}] if text else []
         calls: list[ToolCall] = []

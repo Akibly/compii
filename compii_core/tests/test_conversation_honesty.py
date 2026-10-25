@@ -132,7 +132,7 @@ def test_silence_after_real_work_reports_what_ran_not_nothing(home):
     brain = Scripted([("", [("write_text_file", {"path": str(target), "content": "x"})]), "", ""])
     task = asyncio.run(_run_plain(_app(home, brain), "write a file"))
     assert task.status == "done"
-    assert _final(task).startswith("I did this but didn't put it into words. What ran:")
+    assert _final(task).startswith("I stopped without saying whether this is finished, so check it. What ran:")
     assert target.exists()
 
 
@@ -212,3 +212,53 @@ def test_old_tool_results_shrink_for_small_models_only():
     assert len(sent[2]["content"][0]["content"]) == 15_000  # the conversation itself is untouched
     small = sent[:3]
     assert shrink_old_results(small) is small
+
+
+def test_update_plan_takes_bare_titles_and_common_status_words(home):
+    from compii_core.tools import Toolbox
+
+    tb = Toolbox([home["downloads"]], home["workspace"])
+    out = tb.execute("update_plan", {"steps": ["Make folders", {"title": "Move files", "status": "in_progress"}]})
+    assert out.plan == [{"title": "Make folders", "status": "pending"}, {"title": "Move files", "status": "active"}]
+    out = tb.execute("update_plan", {"steps": '[{"title": "Check", "status": "completed"}]'})
+    assert out.plan == [{"title": "Check", "status": "done"}]
+
+
+def test_an_empty_stream_from_the_gateway_is_asked_again(monkeypatch):
+    import httpx
+
+    from compii_core import providers
+
+    monkeypatch.setattr(providers.asyncio, "sleep", _no_wait)
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        body = (b"data: [DONE]\n\n" if len(sent) == 1 else
+                b'data: {"choices":[{"delta":{"content":"Sorted."},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n')
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body)
+
+    brain = providers.OpenAICompatBrain("https://example.test/v1", "m", "k", transport=httpx.MockTransport(handler))
+
+    async def noop(_):
+        pass
+
+    reply = asyncio.run(brain.step_stream("s", [{"role": "user", "content": "hi"}], [], noop))
+    assert len(sent) == 2 and reply.text == "Sorted."
+
+
+def test_an_empty_plain_reply_is_asked_again():
+    import httpx
+
+    from compii_core import providers
+
+    sent = []
+
+    def handler(request):
+        sent.append(request)
+        msg = {"content": ""} if len(sent) == 1 else {"content": "Hello."}
+        return httpx.Response(200, json={"choices": [{"message": msg, "finish_reason": "stop"}]})
+
+    brain = providers.OpenAICompatBrain("https://example.test/v1", "m", "k", transport=httpx.MockTransport(handler))
+    reply = asyncio.run(brain.step("s", [{"role": "user", "content": "hi"}], []))
+    assert len(sent) == 2 and reply.text == "Hello."
