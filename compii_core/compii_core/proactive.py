@@ -155,6 +155,12 @@ class Proactive:
         self.brief = {"enabled": True, "at": "08:00", "last": None}
         # Off by default: unlike the rolling stores it reads from, this keeps a day on disk for good.
         self.journal = {"enabled": False, "at": "21:00", "last": None}
+        # The other end of the day: what landed, what didn't, what still waits on the user.
+        self.recap = {"enabled": True, "at": "18:00", "last": None}
+        # A look every few hours while the user is up, posting only when something really waits on
+        # them; `told` keeps one nudge per thing instead of one per look.
+        self.checkin = {"enabled": True, "every_hours": 3, "from": "08:00", "to": "21:00", "last": None,
+                        "told": []}
         self._load()
 
     # ---- persistence ---------------------------------------------------------
@@ -173,6 +179,8 @@ class Proactive:
         self.inbox = [Update(**u) for u in d.get("inbox", [])]
         self.brief.update(d.get("brief", {}))
         self.journal.update(d.get("journal", {}))
+        self.recap.update(d.get("recap", {}))
+        self.checkin.update(d.get("checkin", {}))
 
     def save(self) -> None:
         with self._lock:
@@ -182,6 +190,8 @@ class Proactive:
                 "inbox": [asdict(u) for u in self.inbox[-MAX_INBOX:]],
                 "brief": self.brief,
                 "journal": self.journal,
+                "recap": self.recap,
+                "checkin": self.checkin,
             }
             tmp = self.path.with_suffix(".tmp")
             tmp.write_text(json.dumps(d, indent=1), encoding="utf-8")
@@ -328,7 +338,43 @@ class Proactive:
                 "unread": sum(1 for u in self.inbox if not u.read),
                 "brief": dict(self.brief),
                 "journal": dict(self.journal),
+                "recap": dict(self.recap),
+                "checkin": {k: v for k, v in self.checkin.items() if k != "told"},
             }
+
+    def due_digests(self, now: dt.datetime, tasks: list[Any]) -> list[tuple[Update, bool]]:
+        """The end-of-day recap and the "needs you" check, when either is due, as (update, speak).
+        Built locally from the threads Compii already holds, so neither costs a model call. The
+        caller announces them; they are already in the inbox."""
+        out: list[tuple[Update, bool]] = []
+        looked = False
+        with self._lock:
+            r = self.recap
+            if r.get("enabled") and r.get("last") != now.date().isoformat() and now.time() >= _at(r):
+                r["last"] = now.date().isoformat()
+                out.append((compose_recap(tasks=tasks, proactive=self, now=now), False))
+            c = self.checkin
+            if c.get("enabled") and _checkin_due(c, now):
+                c["last"] = now.isoformat()
+                looked = True
+                update = compose_checkin(tasks=tasks, told=c.setdefault("told", []), now=now)
+                if update is not None:
+                    out.append((update, True))
+            for update, _ in out:
+                self.inbox.append(update)
+            self.inbox = self.inbox[-MAX_INBOX:]
+            if out or looked:
+                self.save()
+        return out
+
+
+def _checkin_due(c: dict[str, Any], now: dt.datetime) -> bool:
+    start, end = _at({"at": c.get("from") or "08:00"}), _at({"at": c.get("to") or "21:00"})
+    if not start <= now.time() <= end:
+        return False  # never at night: a nudge at 3am is worse than one in the morning
+    last = c.get("last")
+    hours = max(1, min(12, int(c.get("every_hours") or 3)))
+    return not last or now - dt.datetime.fromisoformat(last) >= dt.timedelta(hours=hours)
 
 
 # ---- free, local watch checks -------------------------------------------------------------
@@ -396,6 +442,92 @@ def check_web(w: Watch, fetch=page_text) -> str | None:
     before = w.state.get("hash")
     w.state["hash"] = digest
     return "The page changed." if before and before != digest else None
+
+
+# ---- end of the day, and checking in ----------------------------------------------------
+
+
+def _finished_at(task: Any) -> float:
+    return next((float(e.get("at") or 0) for e in reversed(task.events) if e.get("type") == "task_finished"), 0.0)
+
+
+def _waiting_since(task: Any) -> float:
+    asks = ("approval_needed", "question", "takeover", "hiring")
+    return next((float(e.get("at") or 0) for e in reversed(task.events) if e.get("type") in asks),
+                float(getattr(task, "active", 0) or 0))
+
+
+def _what(task: Any) -> str:
+    return " ".join(str(task.request).split())[:90] or "A task"
+
+
+def _join(bits: list[str]) -> str:
+    return ", ".join(bits[:-1]) + (" and " if len(bits) > 1 else "") + bits[-1]
+
+
+def compose_recap(*, tasks: list[Any], proactive: "Proactive", now: dt.datetime) -> Update:
+    """What happened today, from the threads themselves: what landed, what stopped short, what still
+    waits on the user, and what runs first tomorrow."""
+    start = dt.datetime.combine(now.date(), dt.time(0, 0)).timestamp()
+    today = [t for t in tasks if _finished_at(t) >= start]
+    done = [t for t in today if t.status == "done"]
+    short = [t for t in today if t.status in ("failed", "stopped")]
+    waiting = [t for t in tasks if t.status == "waiting"]
+    actions = sum(1 for t in tasks for e in t.events
+                  if e.get("type") == "action_done" and e.get("ok") and float(e.get("at") or 0) >= start)
+    caught = [u for u in proactive.inbox if u.kind == "watch" and u.at >= start]
+    sections: list[dict[str, Any]] = []
+    if done:
+        sections.append({"title": "Finished today", "items": [_what(t) for t in done][:8]})
+    if short:
+        sections.append({"title": "Didn't finish", "items": [f"{_what(t)} ({t.status})" for t in short][:6]})
+    if waiting:
+        sections.append({"title": "Still waiting on you", "items": [_what(t) for t in waiting][:6]})
+    if caught:
+        sections.append({"title": "Your watches caught", "items": [f"{u.title}: {u.body}" for u in caught][:6]})
+    tomorrow = now.date() + dt.timedelta(days=1)
+    first = sorted((dt.datetime.fromisoformat(r.next_run), r.title) for r in proactive.routines.values()
+                   if r.enabled and r.next_run and dt.datetime.fromisoformat(r.next_run).date() == tomorrow)
+    if first:
+        sections.append({"title": "Tomorrow", "items": [f"{w:%H:%M} · {t}" for w, t in first[:5]]})
+    bits = []
+    if done:
+        bits.append(f"{len(done)} {'task' if len(done) == 1 else 'tasks'} finished")
+    if actions:
+        bits.append(f"{actions} {'action' if actions == 1 else 'actions'} taken")
+    if short:
+        bits.append(f"{len(short)} didn't finish")
+    if waiting:
+        bits.append(f"{len(waiting)} still {'waits' if len(waiting) == 1 else 'wait'} on you")
+    summary = (_join(bits) + ".").capitalize() if bits else "A quiet day: Compii didn't do anything for you today."
+    return Update("brief", "Your day, wrapped up", summary, sections=sections)
+
+
+def compose_checkin(*, tasks: list[Any], told: list[str], now: dt.datetime) -> Update | None:
+    """One nudge for what has waited on the user a while, or stopped short today, that they have not
+    been told about yet. None when there is nothing: a check-in that finds nothing stays silent."""
+    settle = now.timestamp() - 20 * 60  # an ask under 20 minutes old is still on their screen
+    start = dt.datetime.combine(now.date(), dt.time(0, 0)).timestamp()
+    seen = set(told)
+    waiting = [t for t in tasks if t.status == "waiting" and _waiting_since(t) <= settle and t.id not in seen]
+    short = [t for t in tasks if t.status == "failed" and _finished_at(t) >= start and t.id not in seen]
+    if not waiting and not short:
+        return None
+    told.extend(t.id for t in waiting + short)
+    del told[:-200]
+    sections = []
+    bits = []
+    if waiting:
+        sections.append({"title": "Waiting on you", "items": [_what(t) for t in waiting][:6]})
+        bits.append(f"{len(waiting)} {'thing has' if len(waiting) == 1 else 'things have'} waited on you a while")
+    if short:
+        sections.append({"title": "Stopped short today", "items": [_what(t) for t in short][:6]})
+        bits.append(f"{len(short)} {'task' if len(short) == 1 else 'tasks'} stopped short today")
+    n = len(waiting) + len(short)
+    body = _join(bits) + "."
+    return Update("needs_you", "One thing needs you" if n == 1 else f"{n} things need you",
+                  body[0].upper() + body[1:], task_id=(waiting or short)[0].id if n == 1 else None,
+                  sections=sections)
 
 
 # ---- daily brief --------------------------------------------------------------------------

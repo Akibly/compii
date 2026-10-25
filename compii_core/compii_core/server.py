@@ -272,6 +272,13 @@ class BriefBody(BaseModel):
     at: str | None = None
 
 
+class CheckinBody(BaseModel):
+    enabled: bool | None = None
+    every_hours: int | None = None
+    start: str | None = None  # "from" in the settings: the first time of day it may nudge
+    end: str | None = None
+
+
 class ReadBody(BaseModel):
     id: str | None = None
 
@@ -483,6 +490,10 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
 
     async def post(update: pro.Update, speak: bool = True) -> None:
         plans.post(update)
+        await announce(update, speak)
+
+    async def announce(update: pro.Update, speak: bool = True) -> None:
+        """Tell the app (and say it, if Compii announces) about an update already in the inbox."""
         await hub.emit({"type": "update", "task_id": "", "at": time.time(), **pro.asdict(update)})
         if speak and voice.announces:
             body = update.body if update.kind == "brief" else f"{update.title}. {update.body}"
@@ -574,6 +585,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
                                           "so Compii can look back through it.",
                                           sections=[{"title": "Where it is", "items": [made["path"]]}]),
                                speak=False)
+        # The end-of-day recap and the every-few-hours "needs you" check; already in the inbox.
+        for update, speak in plans.due_digests(now, list(agent.tasks.values())):
+            await announce(update, speak)
         for r in plans.due_routines(now):
             bot = bots.get(r.bot_id) if r.bot_id else None
             if bot is not None and bot.archived:
@@ -2155,6 +2169,39 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             plans.brief["at"] = body.at
         if body.enabled is not None:
             plans.brief["enabled"] = body.enabled
+        plans.save()
+        return plans.view()
+
+    def _clock(at: str) -> str:
+        try:
+            h, m = at.split(":")
+            return pro.dt.time(int(h), int(m)).strftime("%H:%M")
+        except ValueError as e:
+            raise HTTPException(400, "Use a time like 18:00") from e
+
+    @app.put("/recap", dependencies=[Depends(auth)])
+    def recap_settings(body: BriefBody) -> dict[str, Any]:
+        """The end-of-day recap: on or off, and when."""
+        if body.at is not None:
+            plans.recap["at"] = _clock(body.at)
+        if body.enabled is not None:
+            plans.recap["enabled"] = body.enabled
+        plans.save()
+        return plans.view()
+
+    @app.put("/checkin", dependencies=[Depends(auth)])
+    def checkin_settings(body: CheckinBody) -> dict[str, Any]:
+        """The "needs you" check: on or off, how often, and the hours it may nudge in."""
+        if body.every_hours is not None:
+            if not 1 <= body.every_hours <= 12:
+                raise HTTPException(400, "Check in every 1 to 12 hours.")
+            plans.checkin["every_hours"] = body.every_hours
+        if body.start is not None:
+            plans.checkin["from"] = _clock(body.start)
+        if body.end is not None:
+            plans.checkin["to"] = _clock(body.end)
+        if body.enabled is not None:
+            plans.checkin["enabled"] = body.enabled
         plans.save()
         return plans.view()
 
