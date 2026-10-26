@@ -89,6 +89,8 @@ def test_recap_and_checkin_settings_routes(home):
         view = c.put("/recap", json={"at": "19:5", "enabled": False}, headers=h).json()
         assert view["recap"]["at"] == "19:05" and view["recap"]["enabled"] is False
         view = c.put("/checkin", json={"every_hours": 2, "start": "9:00", "end": "20:30"}, headers=h).json()
-        assert view["checkin"] == {"enabled": True, "every_hours": 2, "from": "09:00", "to": "20:30", "last": None}
+        # `last` is left out: the app's own loop may already have checked in during the day.
+        got = {k: v for k, v in view["checkin"].items() if k != "last"}
+        assert got == {"enabled": True, "every_hours": 2, "from": "09:00", "to": "20:30"}
         assert c.put("/checkin", json={"every_hours": 30}, headers=h).status_code == 400
         assert c.put("/recap", json={"at": "late"}, headers=h).status_code == 400

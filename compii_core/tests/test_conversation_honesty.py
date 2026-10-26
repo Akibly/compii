@@ -448,3 +448,26 @@ def test_after_a_suspected_injection_every_script_asks_again(home):
 
     asyncio.run(go())
     assert len(asked) == 2  # a plain change would have asked once for the whole task
+
+
+def test_the_screen_is_background_unless_the_words_point_at_it():
+    from compii_core.agent import _screen_note
+
+    for said in ["Don't worry.", "I know that.", "Hello there, how are we?", "Thank you.", "Is Ebola only in Congo?"]:
+        assert "not about it" in _screen_note(said), said
+    for said in ["What is this?", "Where do I click to export?", "Summarize this page", "what's that button"]:
+        assert "Their words are about it" in _screen_note(said), said
+
+
+def test_a_browser_that_hides_its_page_gets_a_picture():
+    from compii_core.vision import needs_picture
+
+    frame = [{"role": "Button", "name": n} for n in ("Minimize", "Maximize", "Restore", "Close", "Back", "Forward",
+                                                     "Reload", "New Tab", "Extensions")]
+    frame += [{"role": "TabItem", "name": f"Tab {i}"} for i in range(30)]
+    frame += [{"role": "Text", "name": "Untitled - Brave"}, {"role": "Edit", "name": "Address and search bar"}]
+    assert needs_picture({"app": "brave.exe", "title": "Google News - Brave", "elements": frame})
+    page = frame + [{"role": "Hyperlink", "name": f"Story {i}"} for i in range(20)]
+    assert not needs_picture({"app": "brave.exe", "title": "Google News - Brave", "elements": page})
+    notepad = [{"role": "Text", "name": f"line {i}"} for i in range(20)]
+    assert not needs_picture({"app": "notepad.exe", "title": "notes - Notepad", "elements": notepad})

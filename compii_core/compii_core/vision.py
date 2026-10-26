@@ -35,11 +35,31 @@ DRAWN_APPS = ("blender", "unity", "unreal", "godot", "krita", "gimp", "figma", "
               "filmora", "wondershare", "capcut", "canva", "audacity", "fl studio", "ableton")
 
 
+BROWSERS = ("brave", "chrome", "msedge", "microsoft edge", "firefox", "opera", "vivaldi", "arc")
+# The browser's own frame: what a Chromium window reports when it keeps the page to itself.
+_FRAME = re.compile(r"^(?:minimi[sz]e|maximi[sz]e|restore|close|back|forward|reload|refresh|home|new tab|"
+                    r"address and search bar|search tabs|extensions|bookmarks?|downloads|side ?panel|"
+                    r"customi[sz]e and control.*|view site information|untitled\b.*|.*\bchrome legacy window)$", re.I)
+_FRAME_ROLES = {"button", "tabitem", "tab", "pane", "titlebar", "menubar", "toolbar", "window", "group", "menuitem"}
+
+
+def _page_items(elements: list[dict[str, Any]]) -> int:
+    """How many things a browser reported from the page itself, not its frame."""
+    return sum(1 for e in elements
+               if str(e.get("role", "")).replace(" ", "").lower() not in _FRAME_ROLES
+               and not _FRAME.match(str(e.get("name", "")).strip()))
+
+
 def needs_picture(snap: dict[str, Any] | None) -> bool:
     if not snap or snap.get("blocked"):
         return False
     app = f"{snap.get('app', '')} {snap.get('title', '')}".lower()
     elements = snap.get("elements", [])
+    # Chromium browsers don't hand their pages to UI Automation unless a screen reader asks, so
+    # a Brave window read as 57 items was all frame: Minimize, tabs, the address bar. Counting
+    # every item called that "readable" and the page went unseen.
+    if any(b in app for b in BROWSERS) and _page_items(elements) < THIN:
+        return True
     return len(elements) < THIN or any(a in app for a in DRAWN_APPS) or _mostly_code_names(elements)
 
 

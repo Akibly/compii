@@ -127,13 +127,20 @@ def _main() -> int:
     return 0
 
 
-async def _read(png: bytes) -> str:
-    from winrt.windows.graphics.imaging import BitmapDecoder
+# Windows' OCR misreads screen-sized text: a synthetic test of 11-15 px lines scored 0.85-0.98 at
+# the picture's own size and 0.96-0.99 read from a copy twice as large. Reads use that copy; the
+# word boxes are mapped back, so pointing still lands on the real pixels.
+SCALE = 2.0
+MAX_SIDE = 9600  # under the engine's own limit (OcrEngine.max_image_dimension, 10000)
+
+
+async def _bitmap(png: bytes):
+    """The picture as an OCR-ready bitmap, enlarged where that fits; (bitmap, decoder, scale)."""
+    from winrt.windows.graphics.imaging import (BitmapAlphaMode, BitmapDecoder, BitmapInterpolationMode,
+                                                BitmapPixelFormat, BitmapTransform, ColorManagementMode,
+                                                ExifOrientationMode)
     from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
 
-    engine = _engine()
-    if engine is None:
-        return ""
     stream = InMemoryRandomAccessStream()
     writer = DataWriter(stream)
     writer.write_bytes(png)
@@ -141,26 +148,33 @@ async def _read(png: bytes) -> str:
     await writer.flush_async()
     stream.seek(0)
     decoder = await BitmapDecoder.create_async(stream)
-    bitmap = await decoder.get_software_bitmap_async()
+    w, h = int(decoder.pixel_width), int(decoder.pixel_height)
+    scale = min(SCALE, MAX_SIDE / max(w, h, 1))
+    if scale <= 1.05:
+        return await decoder.get_software_bitmap_async(), decoder, 1.0
+    t = BitmapTransform()
+    t.scaled_width, t.scaled_height = int(w * scale), int(h * scale)
+    t.interpolation_mode = BitmapInterpolationMode.FANT
+    bitmap = await decoder.get_software_bitmap_transformed_async(
+        BitmapPixelFormat.BGRA8, BitmapAlphaMode.PREMULTIPLIED, t,
+        ExifOrientationMode.IGNORE_EXIF_ORIENTATION, ColorManagementMode.DO_NOT_COLOR_MANAGE)
+    return bitmap, decoder, scale
+
+
+async def _read(png: bytes) -> str:
+    engine = _engine()
+    if engine is None:
+        return ""
+    bitmap, _, _ = await _bitmap(png)
     result = await engine.recognize_async(bitmap)
     return result.text or ""
 
 
 async def _read_boxes(png: bytes) -> dict:
-    from winrt.windows.graphics.imaging import BitmapDecoder
-    from winrt.windows.storage.streams import DataWriter, InMemoryRandomAccessStream
-
     engine = _engine()
     if engine is None:
         return {"width": 0, "height": 0, "lines": []}
-    stream = InMemoryRandomAccessStream()
-    writer = DataWriter(stream)
-    writer.write_bytes(png)
-    await writer.store_async()
-    await writer.flush_async()
-    stream.seek(0)
-    decoder = await BitmapDecoder.create_async(stream)
-    bitmap = await decoder.get_software_bitmap_async()
+    bitmap, decoder, k = await _bitmap(png)
     result = await engine.recognize_async(bitmap)
 
     lines: list[dict] = []
@@ -175,10 +189,10 @@ async def _read_boxes(png: bytes) -> dict:
         bottom = max(b.y + b.height for b in boxes)
         lines.append({
             "text": " ".join(w.text.strip() for w in words if w.text and w.text.strip()),
-            "x": round(x), "y": round(y), "w": round(right - x), "h": round(bottom - y),
+            "x": round(x / k), "y": round(y / k), "w": round((right - x) / k), "h": round((bottom - y) / k),
             "words": [
-                {"text": w.text.strip(), "x": round(w.bounding_rect.x), "y": round(w.bounding_rect.y),
-                 "w": round(w.bounding_rect.width), "h": round(w.bounding_rect.height)}
+                {"text": w.text.strip(), "x": round(w.bounding_rect.x / k), "y": round(w.bounding_rect.y / k),
+                 "w": round(w.bounding_rect.width / k), "h": round(w.bounding_rect.height / k)}
                 for w in words if w.text and w.text.strip()
             ],
         })

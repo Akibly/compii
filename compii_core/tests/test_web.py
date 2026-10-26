@@ -68,3 +68,57 @@ async def test_web_sources_reach_the_conversation_as_events(toolbox, home, tmp_p
     await asyncio.wait_for(task.runner, 5)
     sources = [e for e in events if e["type"] == "sources"]
     assert sources and sources[0]["items"][0]["url"] == "https://example.com/laptops"
+
+
+LITE = """<table><tr><td><a rel="nofollow" href="https://kumasi.example/weather" class='result-link'>Kumasi weather</a></td></tr>
+<tr><td class='result-snippet'>Warm and dry in December.</td></tr></table>"""
+BING = """<rss><channel><item><title>Kumasi in December</title><link>https://bing.example/k</link>
+<description>33°C by day.</description></item></channel></rss>"""
+
+
+def _engines(answers):
+    """A web where each engine answers as given: (status, body) by host."""
+    asked = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        asked.append(host)
+        status, body = answers.get(host, (404, ""))
+        return httpx.Response(status, text=body)
+
+    return httpx.Client(transport=httpx.MockTransport(handle)), asked
+
+
+def test_a_refusing_duckduckgo_falls_through_to_lite():
+    c, asked = _engines({"html.duckduckgo.com": (202, ""), "lite.duckduckgo.com": (200, LITE)})
+    assert search("kumasi", client=c) == [
+        {"title": "Kumasi weather", "url": "https://kumasi.example/weather", "snippet": "Warm and dry in December."}]
+    assert asked == ["html.duckduckgo.com", "lite.duckduckgo.com"]
+
+
+def test_when_both_duckduckgos_refuse_bing_answers():
+    c, _ = _engines({"html.duckduckgo.com": (202, ""), "lite.duckduckgo.com": (202, ""), "www.bing.com": (200, BING)})
+    assert search("kumasi", client=c) == [
+        {"title": "Kumasi in December", "url": "https://bing.example/k", "snippet": "33°C by day."}]
+
+
+def test_only_when_every_engine_refuses_is_it_an_error():
+    import pytest
+
+    from compii_core.tools import ToolError
+
+    c, _ = _engines({"html.duckduckgo.com": (202, ""), "lite.duckduckgo.com": (503, ""), "www.bing.com": (429, "")})
+    with pytest.raises(ToolError) as e:
+        search("kumasi", client=c)
+    assert "DuckDuckGo: 202" in str(e.value) and "Bing: 429" in str(e.value)
+
+
+def test_a_blocked_page_says_what_to_do_instead():
+    import pytest
+
+    from compii_core.tools import ToolError
+
+    c, _ = _engines({"blocked.example": (403, "")})
+    with pytest.raises(ToolError) as e:
+        page_text("https://blocked.example/x", client=c)
+    assert "use another result" in str(e.value)
