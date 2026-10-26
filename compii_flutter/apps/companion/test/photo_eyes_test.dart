@@ -6,6 +6,8 @@ import 'dart:ui' as ui;
 import 'package:compii/src/art/halo.dart';
 import 'package:compii/src/art/photo_eyes.dart';
 import 'package:compii/src/console/character.dart' show Mood;
+import 'package:compii/src/ui/eye_photo.dart';
+import 'package:compii/src/ui/tokens.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -31,6 +33,9 @@ class _Sheet extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = const Color(0xFF050507));
     final moods = Mood.values;
+    // One large, to judge the band up close.
+    Halo.paint(canvas, centre: const Offset(1340, 150), span: 280, form: HaloForm.orb, color: haloBlue,
+        pose: const HaloPose(mood: Mood.idle), photo: photo);
     for (final (i, m) in moods.indexed) {
       Halo.paint(
         canvas,
@@ -89,12 +94,12 @@ void main() {
       right: Rect.fromCircle(center: const Offset(260, 130), radius: 40),
       path: '',
     );
-    tester.view.physicalSize = const Size(1200, 170);
+    tester.view.physicalSize = const Size(1500, 300);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.reset);
     final key = GlobalKey();
     await tester.pumpWidget(
-      RepaintBoundary(key: key, child: CustomPaint(size: const Size(1200, 170), painter: _Sheet(photo))),
+      RepaintBoundary(key: key, child: CustomPaint(size: const Size(1500, 300), painter: _Sheet(photo))),
     );
     expect(tester.takeException(), isNull);
     if (const bool.fromEnvironment('CAPTURE')) {
@@ -104,5 +109,30 @@ void main() {
       final out = Directory('../../../docs/compii/build-previews/halo')..createSync(recursive: true);
       await tester.runAsync(() => File('${out.path}/photo-eyes.png').writeAsBytes(bytes!.buffer.asUint8List()));
     }
+  });
+
+  testWidgets('the setup shows the photo with one band to slide, and Compii wearing it', (tester) async {
+    final face = (await tester.runAsync(_face))!;
+    tester.view.physicalSize = const Size(1000, 760);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+    final key = GlobalKey();
+    await tester.pumpWidget(MaterialApp(
+      theme: compiiTheme(Brightness.dark),
+      home: RepaintBoundary(key: key, child: Scaffold(backgroundColor: Colors.black, body: eyePhotoDialogWith(face))),
+    ));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.text('Your eyes, on Compii'), findsOneWidget);
+    expect(find.text('Use my eyes'), findsOneWidget);
+    expect(find.bySemanticsLabel('Eye band. Drag it over your eyes.'), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    if (const bool.fromEnvironment('CAPTURE')) {
+      final boundary = key.currentContext!.findRenderObject()! as RenderRepaintBoundary;
+      final image = (await tester.runAsync(() => boundary.toImage()))!;
+      final bytes = await tester.runAsync(() => image.toByteData(format: ui.ImageByteFormat.png));
+      final out = Directory('../../../docs/compii/build-previews/halo')..createSync(recursive: true);
+      await tester.runAsync(() => File('${out.path}/eyes-setup.png').writeAsBytes(bytes!.buffer.asUint8List()));
+    }
+    await tester.pumpWidget(const SizedBox());
   });
 }

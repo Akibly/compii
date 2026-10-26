@@ -298,6 +298,7 @@ class Halo {
       reflect: true,
       photo: photo,
       gaze: gaze,
+      t: pose.still ? .2 : pose.t,
     );
     canvas.restore();
     canvas.restore();
@@ -432,9 +433,10 @@ void paintHaloEyes(
   bool reflect = false,
   PhotoEyes? photo,
   Offset gaze = Offset.zero,
+  double t = 0,
 }) {
   if (photo != null && !dim) {
-    _photoEyes(canvas, centre, gap, h, color, rig, blink, bounce, unit, photo, gaze);
+    _photoEyes(canvas, centre, gap, h, color, rig, blink, bounce, unit, photo, gaze, t);
     return;
   }
   final core = Color.lerp(color, Colors.white, dim ? .1 : .62)!;
@@ -496,68 +498,28 @@ void paintHaloEyes(
   }
 }
 
-/// The user's own eyes in place of the eyes of light: the same rig moves them.
-/// Opening and blinking close the lids (the shape's height), happy squints them
-/// into a smile, a mood's tilt slants their tops, and the gaze pans the photo.
+/// The user's own eyes in place of the eyes of light, as one EyeSight band
+/// across the glass. The same rig drives it.
 void _photoEyes(Canvas canvas, Offset centre, double gap, double h, Color color, EyeRig rig, double blink,
-    double bounce, double unit, PhotoEyes photo, Offset gaze) {
-  // Real eyes need more room than eyes of light to read as eyes: set them wider
-  // apart and larger, the band EyeSight shows across the glass.
-  final g = gap * 1.3;
-  final pw = math.min(h * 1.6, g * 1.85);
-  for (final side in const [-1.0, 1.0]) {
-    var open = (rig.open * (1 - blink)).clamp(0.0, 1.25);
-    if (side > 0) open *= 1 - rig.wink;
-    final happy = rig.joy > .5;
-    var ph = pw * .62 * (happy ? .42 : open);
-    var at = centre + Offset(side * g, -bounce * h * .3 - (happy ? pw * .06 : 0));
-    if (ph < pw * .07) {
-      // Shut: just the line where the lids meet, in Compii's colour.
-      canvas.drawLine(
-        at - Offset(pw * .42, 0),
-        at + Offset(pw * .42, 0),
-        Paint()
-          ..strokeCap = StrokeCap.round
-          ..strokeWidth = math.max(unit * 1.4, pw * .07)
-          ..color = Color.lerp(color, Colors.white, .5)!,
-      );
-      continue;
-    }
-    ph = math.max(ph, pw * .12);
-    final rect = Rect.fromCenter(center: at, width: pw, height: ph);
-    var clip = Path()..addOval(rect);
-    if (happy) {
-      // A smiling squint: the lower lid rises into an arc.
-      final smile = Path()
-        ..addOval(Rect.fromCenter(center: at + Offset(0, ph * .55), width: pw * 1.1, height: ph * 1.1));
-      clip = Path.combine(PathOperation.difference, clip, smile);
-    } else if (rig.tilt.abs() > .02) {
-      final k = rig.tilt.clamp(-1.0, 1.0) * ph * .45;
-      final inner = rect.top + (k < 0 ? -k : 0);
-      final outer = rect.top + (k > 0 ? k : 0);
-      final xi = at.dx - side * pw, xo = at.dx + side * pw;
-      final keep = Path()
-        ..moveTo(xi, inner)
-        ..lineTo(xo, outer)
-        ..lineTo(xo, rect.bottom + 1)
-        ..lineTo(xi, rect.bottom + 1)
-        ..close();
-      clip = Path.combine(PathOperation.intersect, clip, keep);
-    }
-    // The photo's eye shows at its full height however far the lids are open,
-    // so closing reads as lids coming down, not the eye being squashed.
-    final full = Rect.fromCenter(center: at, width: pw, height: pw * .62);
-    paintPhotoEye(
-      canvas,
-      clip: clip,
-      dest: full,
-      image: photo.image,
-      source: side < 0 ? photo.left : photo.right,
-      tint: color,
-      gaze: gaze,
-      unit: unit,
-    );
-  }
+    double bounce, double unit, PhotoEyes photo, Offset gaze, double t) {
+  final w = gap * 5.4;
+  var open = (rig.open * (1 - blink)).clamp(0.0, 1.0);
+  if (rig.wink > 0) open *= 1 - rig.wink * .4;
+  paintEyeBand(
+    canvas,
+    centre: centre + Offset(0, -bounce * h * .3),
+    width: w,
+    height: w * .36,
+    photo: photo,
+    color: color,
+    open: rig.joy > .5 ? .85 : open,
+    joy: rig.joy.clamp(0.0, 1.0),
+    tilt: rig.tilt,
+    busy: ((rig.spin - .8) / .8).clamp(0.0, 1.0),
+    t: t,
+    gaze: gaze,
+    unit: unit,
+  );
 }
 
 /// A happy eye: an arc of light, like a smile closed over the eye.

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -11,9 +12,9 @@ import '../console/character.dart' show Mood, compiiBody, compiiColor;
 import 'glyphs.dart';
 import 'tokens.dart';
 
-/// Give Compii your own eyes: choose a photo of your face, drag the two rings
-/// onto your eyes, and see Compii wear them before you keep it. Returns true
-/// when the eyes were saved.
+/// Give Compii your own eyes: choose a photo of your face, slide one band over
+/// your eyes, and watch Compii wear them before you keep it. Returns true when
+/// the eyes were saved.
 Future<bool> showEyePhotoPicker(BuildContext context) async =>
     await showDialog<bool>(context: context, builder: (_) => const _EyePhotoDialog()) ?? false;
 
@@ -25,30 +26,46 @@ Future<void> clearEyePhoto() async {
   await applyPhotoEyes(null);
   if (raw == null) return;
   try {
-    final path = RegExp(r'"path":"([^"]+)"').firstMatch(raw)?.group(1)?.replaceAll(r'\\', '\\');
+    final path = (jsonDecode(raw) as Map)['path'] as String?;
     if (path != null && File(path).existsSync()) File(path).deleteSync();
   } on Object {
     // Already gone, or in use: nothing that matters to the user.
   }
 }
 
+/// The dialog already holding a photo, for tests and previews.
+@visibleForTesting
+Widget eyePhotoDialogWith(ui.Image image) => _EyePhotoDialog(initial: image);
+
 class _EyePhotoDialog extends StatefulWidget {
-  const _EyePhotoDialog();
+  const _EyePhotoDialog({this.initial});
+  final ui.Image? initial;
 
   @override
   State<_EyePhotoDialog> createState() => _EyePhotoDialogState();
 }
 
-class _EyePhotoDialogState extends State<_EyePhotoDialog> {
+class _EyePhotoDialogState extends State<_EyePhotoDialog> with SingleTickerProviderStateMixin {
   String? _path;
-  ui.Image? _image;
+  late ui.Image? _image = widget.initial;
   String? _problem;
   bool _saving = false;
 
-  // Each eye as a circle in 0..1 of the photo's width (radius) and size.
-  Offset _left = const Offset(.38, .42);
-  Offset _right = const Offset(.62, .42);
-  double _r = .07;
+  /// The band over both eyes: its centre in 0..1 of the photo, and its width as
+  /// a share of the photo's width. Its height follows the visor's proportions.
+  Offset _centre = const Offset(.5, .42);
+  double _width = .5;
+
+  // The preview breathes through Compii's moods so you see the eyes alive.
+  late final AnimationController _clock = AnimationController(vsync: this, duration: const Duration(seconds: 8))
+    ..repeat();
+  static const _moods = [Mood.idle, Mood.listening, Mood.happy, Mood.thinking];
+
+  @override
+  void dispose() {
+    _clock.dispose();
+    super.dispose();
+  }
 
   Future<void> _choose() async {
     try {
@@ -73,24 +90,31 @@ class _EyePhotoDialogState extends State<_EyePhotoDialog> {
     try {
       await Process.start('explorer.exe', ['microsoft.windows.camera:']);
       if (mounted) {
-        setState(
-          () => _problem =
-              'Take a photo looking at the camera, then choose it here — '
-              'the Camera app saves to Pictures › Camera Roll.',
-        );
+        setState(() => _problem = 'Look straight at the camera in good light, then choose the photo here. '
+            'The Camera app saves to Pictures › Camera Roll.');
       }
     } on Object {
       if (mounted) setState(() => _problem = 'The Camera app didn’t open. Choose a photo you already have.');
     }
   }
 
-  ({Offset c, double r}) _eye(Offset at) => (c: at, r: _r);
+  /// The band as the two eye circles the saved format keeps.
+  /// Each eye sits a little in from its end of the band.
+  (({Offset c, double r}), ({Offset c, double r})) get _eyes {
+    final dx = _width * .28;
+    return (
+      (c: Offset(_centre.dx - dx, _centre.dy), r: _width * .2),
+      (c: Offset(_centre.dx + dx, _centre.dy), r: _width * .2),
+    );
+  }
 
   PhotoEyes? get _preview {
     final img = _image;
     if (img == null) return null;
-    Rect r(Offset at) => Rect.fromCircle(center: Offset(at.dx * img.width, at.dy * img.height), radius: _r * img.width);
-    return PhotoEyes(image: img, left: r(_left), right: r(_right), path: _path ?? '');
+    final (l, r) = _eyes;
+    Rect at(({Offset c, double r}) e) =>
+        Rect.fromCircle(center: Offset(e.c.dx * img.width, e.c.dy * img.height), radius: e.r * img.width);
+    return PhotoEyes(image: img, left: at(l), right: at(r), path: _path ?? '');
   }
 
   Future<void> _save() async {
@@ -102,7 +126,8 @@ class _EyePhotoDialogState extends State<_EyePhotoDialog> {
       final ext = path.contains('.') ? path.split('.').last.toLowerCase() : 'png';
       final kept = '${home.path}${Platform.pathSeparator}my-eyes.$ext';
       await File(path).copy(kept);
-      final raw = encodePhotoEyes(kept, _eye(_left), _eye(_right));
+      final (l, r) = _eyes;
+      final raw = encodePhotoEyes(kept, l, r);
       final p = await SharedPreferences.getInstance();
       await p.setString('compii_eyes', raw);
       await applyPhotoEyes(raw);
@@ -121,208 +146,316 @@ class _EyePhotoDialogState extends State<_EyePhotoDialog> {
   Widget build(BuildContext context) {
     final c = context.c;
     final img = _image;
-    return AlertDialog(
-      title: const Text('Give Compii your eyes'),
-      content: SizedBox(
-        width: 640,
-        child: SingleChildScrollView(
+    final photo = _preview;
+    final preview = AnimatedBuilder(
+      animation: _clock,
+      builder: (context, _) {
+        final slot = (_clock.value * _moods.length).floor() % _moods.length;
+        return CustomPaint(
+          painter: _PreviewPainter(
+            form: compiiBody.value,
+            color: compiiColor.value,
+            photo: photo,
+            mood: _moods[slot],
+            t: _clock.value,
+          ),
+        );
+      },
+    );
+    return Dialog(
+      backgroundColor: const Color(0xFF0B0B0F),
+      insetPadding: const EdgeInsets.all(24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(28)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 860, maxHeight: 640),
+        child: Padding(
+          padding: const EdgeInsets.all(28),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
             children: [
+              Text('Your eyes, on Compii', style: context.type.headlineSmall?.copyWith(fontWeight: FontWeight.w600)),
+              const SizedBox(height: 6),
               Text(
-                'Compii wears your eyes behind its glass: they still blink, look at your pointer and show its '
-                'moods. The photo stays on this PC, in your Compii folder, and is never sent anywhere.',
-                style: context.type.bodySmall?.copyWith(color: c.muted),
+                'Like EyeSight: your eyes appear behind Compii’s glass, tinted in its colour. They blink, '
+                'follow your pointer and change with its moods. The photo stays on this PC.',
+                style: context.type.bodyMedium?.copyWith(color: c.muted),
               ),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: [
-                  FilledButton.tonalIcon(
-                    onPressed: _choose,
-                    icon: const Glyph(G.image, size: 16),
-                    label: Text(img == null ? 'Choose a photo' : 'Choose another'),
-                  ),
-                  if (Platform.isWindows)
-                    OutlinedButton.icon(
-                      onPressed: _camera,
-                      icon: const Glyph(G.eye, size: 16),
-                      label: const Text('Take one with Camera'),
-                    ),
-                ],
+              const SizedBox(height: 20),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final wide = box.maxWidth > 640;
+                    final left = img == null
+                        ? _Empty(onChoose: _choose, onCamera: Platform.isWindows ? _camera : null)
+                        : _BandMarker(
+                            image: img,
+                            centre: _centre,
+                            width: _width,
+                            onMove: (v) => setState(() => _centre = v),
+                            onResize: (v) => setState(() => _width = v),
+                          );
+                    final right = Container(
+                      decoration: BoxDecoration(color: const Color(0xFF050507), borderRadius: BorderRadius.circular(20)),
+                      child: Stack(
+                        children: [
+                          Positioned.fill(child: preview),
+                          Positioned(
+                            left: 0,
+                            right: 0,
+                            bottom: 14,
+                            child: Text(
+                              img == null ? 'Eyes of light, for now' : 'How Compii will look',
+                              textAlign: TextAlign.center,
+                              style: context.type.labelMedium?.copyWith(color: c.faint),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                    return wide
+                        ? Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              Expanded(flex: 3, child: left),
+                              const SizedBox(width: 18),
+                              Expanded(flex: 2, child: right),
+                            ],
+                          )
+                        : Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [Expanded(child: left), const SizedBox(height: 14), SizedBox(height: 200, child: right)],
+                          );
+                  },
+                ),
               ),
               if (_problem != null) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: 12),
                 Text(_problem!, style: context.type.bodySmall?.copyWith(color: c.warning)),
               ],
               if (img != null) ...[
-                const SizedBox(height: 16),
-                Text('Drag the two rings onto your eyes', style: context.type.labelLarge),
-                const SizedBox(height: 8),
-                _Marker(
-                  image: img,
-                  left: _left,
-                  right: _right,
-                  r: _r,
-                  onLeft: (v) => setState(() => _left = v),
-                  onRight: (v) => setState(() => _right = v),
-                ),
+                const SizedBox(height: 12),
                 Row(
                   children: [
-                    Text('Ring size', style: context.type.labelMedium?.copyWith(color: c.muted)),
+                    Glyph(G.hand, size: 15, color: c.faint),
+                    const SizedBox(width: 6),
                     Expanded(
-                      child: Slider(
-                        value: _r,
-                        min: .02,
-                        max: .2,
-                        label: 'Ring size',
-                        onChanged: (v) => setState(() => _r = v),
+                      child: Text(
+                        'Drag the band over your eyes. Drag its edge to fit.',
+                        style: context.type.labelMedium?.copyWith(color: c.faint),
                       ),
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
-                Text('How Compii will look', style: context.type.labelLarge),
-                const SizedBox(height: 8),
-                Container(
-                  height: 150,
-                  decoration: BoxDecoration(color: const Color(0xFF050507), borderRadius: BorderRadius.circular(16)),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      for (final m in const [Mood.idle, Mood.listening, Mood.happy, Mood.waiting])
-                        SizedBox.square(
-                          dimension: 120,
-                          child: CustomPaint(
-                            painter: _PreviewPainter(
-                              form: compiiBody.value,
-                              color: compiiColor.value,
-                              photo: _preview!,
-                              mood: m,
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
               ],
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  if (img != null) TextButton(onPressed: _choose, child: const Text('Another photo')),
+                  const Spacer(),
+                  TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+                  const SizedBox(width: 8),
+                  FilledButton(
+                    style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF2F2F5), foregroundColor: const Color(0xFF0A0A0D)),
+                    onPressed: img == null || _saving ? null : _save,
+                    child: Text(_saving ? 'Keeping…' : 'Use my eyes'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
       ),
-      actions: [
-        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: img == null || _saving ? null : _save,
-          child: Text(_saving ? 'Keeping…' : 'Use my eyes'),
-        ),
-      ],
     );
   }
 }
 
-/// The photo with two draggable rings; positions are in 0..1 of the photo.
-class _Marker extends StatelessWidget {
-  const _Marker({
+/// Before a photo: what to do, and why it is safe.
+class _Empty extends StatelessWidget {
+  const _Empty({required this.onChoose, this.onCamera});
+  final VoidCallback onChoose;
+  final VoidCallback? onCamera;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF111116),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: c.border),
+      ),
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Glyph(G.image, size: 34, color: c.faint),
+          const SizedBox(height: 14),
+          Text('A clear, front-facing photo', style: context.type.titleMedium),
+          const SizedBox(height: 6),
+          Text(
+            'Good light, eyes open, looking at the camera. Only the band across your eyes is used.',
+            textAlign: TextAlign.center,
+            style: context.type.bodySmall?.copyWith(color: c.muted),
+          ),
+          const SizedBox(height: 20),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: const Color(0xFFF2F2F5), foregroundColor: const Color(0xFF0A0A0D)),
+                onPressed: onChoose,
+                child: const Text('Choose a photo'),
+              ),
+              if (onCamera != null) OutlinedButton(onPressed: onCamera, child: const Text('Take one with Camera')),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// The photo, dimmed everywhere except a visor-shaped band you slide over your
+/// eyes; dragging the band's right edge resizes it.
+class _BandMarker extends StatelessWidget {
+  const _BandMarker({
     required this.image,
-    required this.left,
-    required this.right,
-    required this.r,
-    required this.onLeft,
-    required this.onRight,
+    required this.centre,
+    required this.width,
+    required this.onMove,
+    required this.onResize,
   });
   final ui.Image image;
-  final Offset left, right;
-  final double r;
-  final ValueChanged<Offset> onLeft, onRight;
+  final Offset centre;
+  final double width;
+  final ValueChanged<Offset> onMove;
+  final ValueChanged<double> onResize;
 
   @override
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, box) {
-        final w = box.maxWidth;
-        final h = (w * image.height / image.width).clamp(120.0, 420.0);
-        final scale = h / image.height;
-        final shown = Size(image.width * scale, h);
-        final ox = (w - shown.width) / 2;
-        Widget ring(Offset at, String label, ValueChanged<Offset> moved) {
-          final d = r * shown.width * 2;
-          return Positioned(
-            left: ox + at.dx * shown.width - d / 2,
-            top: at.dy * shown.height - d / 2,
-            child: Semantics(
-              label: '$label ring, drag onto your eye',
-              child: GestureDetector(
-                onPanUpdate: (u) => moved(
-                  Offset(
-                    (at.dx + u.delta.dx / shown.width).clamp(0.0, 1.0),
-                    (at.dy + u.delta.dy / shown.height).clamp(0.0, 1.0),
-                  ),
-                ),
+        final scale = (box.maxWidth / image.width).clamp(0.0, box.maxHeight / image.height);
+        final shown = Size(image.width * scale, image.height * scale);
+        final origin = Offset((box.maxWidth - shown.width) / 2, (box.maxHeight - shown.height) / 2);
+        final bw = width * shown.width;
+        final band = Rect.fromCenter(
+          center: origin + Offset(centre.dx * shown.width, centre.dy * shown.height),
+          width: bw,
+          height: bw * .36,
+        );
+        return Stack(
+          children: [
+            Positioned(
+              left: origin.dx,
+              top: origin.dy,
+              width: shown.width,
+              height: shown.height,
+              child: ClipRRect(borderRadius: BorderRadius.circular(16), child: RawImage(image: image, fit: BoxFit.fill)),
+            ),
+            Positioned.fill(
+              child: IgnorePointer(child: CustomPaint(painter: _DimOutside(band: band, color: compiiColor.value))),
+            ),
+            Positioned.fromRect(
+              rect: band,
+              child: Semantics(
+                label: 'Eye band. Drag it over your eyes.',
                 child: MouseRegion(
                   cursor: SystemMouseCursors.move,
-                  child: Container(
-                    width: d,
-                    height: d,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      border: Border.all(color: Colors.white, width: 2),
-                      boxShadow: [BoxShadow(color: compiiColor.value.withValues(alpha: .8), blurRadius: 10)],
+                  child: GestureDetector(
+                    onPanUpdate: (u) => onMove(Offset(
+                      (centre.dx + u.delta.dx / shown.width).clamp(0.0, 1.0),
+                      (centre.dy + u.delta.dy / shown.height).clamp(0.0, 1.0),
+                    )),
+                  ),
+                ),
+              ),
+            ),
+            Positioned(
+              left: band.right - 10,
+              top: band.center.dy - 14,
+              width: 20,
+              height: 28,
+              child: Semantics(
+                label: 'Resize the eye band',
+                child: MouseRegion(
+                  cursor: SystemMouseCursors.resizeLeftRight,
+                  child: GestureDetector(
+                    onPanUpdate: (u) => onResize((width + u.delta.dx * 2 / shown.width).clamp(.15, .95)),
+                    child: Center(
+                      child: Container(
+                        width: 6,
+                        height: 22,
+                        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(3)),
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-          );
-        }
-
-        return SizedBox(
-          width: w,
-          height: h,
-          child: Stack(
-            children: [
-              Positioned(
-                left: ox,
-                top: 0,
-                width: shown.width,
-                height: shown.height,
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: RawImage(image: image, fit: BoxFit.fill),
-                ),
-              ),
-              ring(left, 'Left', onLeft),
-              ring(right, 'Right', onRight),
-            ],
-          ),
+          ],
         );
       },
     );
   }
 }
 
+class _DimOutside extends CustomPainter {
+  _DimOutside({required this.band, required this.color});
+  final Rect band;
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final visor = RRect.fromRectAndRadius(band, Radius.circular(band.height / 2));
+    canvas.drawPath(
+      Path.combine(PathOperation.difference, Path()..addRect(Offset.zero & size), Path()..addRRect(visor)),
+      Paint()..color = const Color(0xA6000000),
+    );
+    canvas.drawRRect(
+      visor,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 6
+        ..color = color.withValues(alpha: .5)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    canvas.drawRRect(
+      visor,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.5
+        ..color = Colors.white.withValues(alpha: .9),
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _DimOutside o) => o.band != band || o.color != color;
+}
+
 class _PreviewPainter extends CustomPainter {
-  _PreviewPainter({required this.form, required this.color, required this.photo, required this.mood});
+  _PreviewPainter({required this.form, required this.color, required this.photo, required this.mood, required this.t});
   final HaloForm form;
   final Color color;
-  final PhotoEyes photo;
+  final PhotoEyes? photo;
   final Mood mood;
+  final double t;
 
   @override
   void paint(Canvas canvas, Size size) => Halo.paint(
     canvas,
-    centre: size.center(Offset.zero),
-    span: size.shortestSide * .9,
+    centre: size.center(Offset.zero) - const Offset(0, 10),
+    span: size.shortestSide * .78,
     form: form,
     color: color,
-    pose: HaloPose(mood: mood),
+    pose: HaloPose(mood: mood, t: t, s: (t * 4.6) % 1, still: false),
     photo: photo,
     shadow: false,
   );
 
   @override
   bool shouldRepaint(covariant _PreviewPainter o) =>
-      o.photo.left != photo.left || o.photo.right != photo.right || o.photo.image != photo.image || o.mood != mood;
+      o.photo?.left != photo?.left || o.photo?.image != photo?.image || o.mood != mood || o.t != t || o.form != form;
 }

@@ -510,12 +510,19 @@ class Voice:
         return (r.json().get("text") or "").strip()
 
     def annotate(self, text: str) -> str:
-        """If `text` is what was just heard, note the words that were unclear, for the AI."""
+        """If `text` is what was just heard, say so to the AI: speech recognition
+        mishears, and a misheard sentence must be asked about, never acted on.
+        Real conversations showed the cost: "and I can see" or "to order" taken as
+        instructions, a button clicked that nobody asked for."""
         last = getattr(self, "last_final", None)
-        unclear = getattr(self, "last_unclear", [])
-        if not unclear or not last or last[0].strip() != text.strip() or time.monotonic() - last[1] > 30:
+        if not last or last[0].strip() != text.strip() or time.monotonic() - last[1] > 30:
             return text
-        return f"{text}\n\n(Spoken request. Possibly misheard words: {', '.join(unclear)}.)"
+        unclear = getattr(self, "last_unclear", [])
+        doubt = f" Words the recogniser was unsure of: {', '.join(unclear)}." if unclear else ""
+        return (f"{text}\n\n(Spoken, then transcribed: it may be misheard.{doubt} Read it in the light of the "
+                "conversation so far. If it doesn't make sense there, or it would make you click, type, open, "
+                "send or change something the user hasn't clearly asked for, ask one short question about what "
+                "they meant instead of acting.)")
 
     def _transcribe_fast(self, audio: np.ndarray) -> str:
         """Live preview while you talk: quick and good enough."""

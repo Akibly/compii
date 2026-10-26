@@ -143,6 +143,67 @@ def tools_to_openai(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
                                               "parameters": t["input_schema"]}} for t in tools]
 
 
+def _json_object(text: str) -> dict[str, Any] | None:
+    """The whole reply as one JSON object, fenced or bare; anything else is prose."""
+    t = text.strip()
+    if t.startswith("```"):
+        t = t.strip("`").strip()
+        if t[:4].lower() == "json":
+            t = t[4:].strip()
+    if not (t.startswith("{") and t.endswith("}")):
+        return None
+    try:
+        v = json.loads(t)
+    except ValueError:
+        return None
+    return v if isinstance(v, dict) and v else None
+
+
+def looks_like_json(text: str) -> bool:
+    """A reply that is starting out as a JSON blob, not words: held back from the
+    screen while it streams, so a tool call written as text is never shown."""
+    t = text.lstrip()
+    return t.startswith("{") or t.lower().startswith("```json") or t.startswith("```\n{")
+
+
+def recover_tool_call(reply: BrainReply, tools: list[dict[str, Any]]) -> BrainReply:
+    """Some open models (gpt-oss among them) sometimes write a tool call out as
+    JSON text instead of making it, and the user is shown a blob like
+    {"bot": "Sammy", "objective": ...} where the work should have started. When
+    the whole answer is one JSON object that names an offered tool, or whose keys
+    fit exactly one tool, it becomes that tool call. Prose is never touched, and
+    an ambiguous object is left as it is."""
+    if reply.tool_calls or not reply.text or not tools:
+        return reply
+    obj = _json_object(reply.text)
+    if obj is None:
+        return reply
+    by_name = {t["name"]: t for t in tools}
+    name: str | None = None
+    args: dict[str, Any] = {}
+    named = obj.get("name") or obj.get("tool") or obj.get("function")
+    given = obj.get("arguments", obj.get("parameters", obj.get("input", obj.get("args"))))
+    if isinstance(named, str) and named in by_name and isinstance(given, (dict, str)):
+        name, args = named, _args(given)
+    else:
+        keys = set(obj)
+        fits: list[tuple[int, int, str]] = []
+        for t in tools:
+            schema = t.get("input_schema") or {}
+            props = set(schema.get("properties") or {})
+            required = set(schema.get("required") or [])
+            if keys and keys <= props and (required <= keys or len(keys & required) >= 2):
+                fits.append((int(required <= keys), len(keys & props), t["name"]))
+        fits.sort(reverse=True)
+        if fits and (len(fits) == 1 or fits[0][:2] > fits[1][:2]):
+            name, args = fits[0][2], obj
+    if name is None:
+        return reply
+    call = ToolCall(f"call_{uuid.uuid4().hex[:12]}", name, args)
+    return BrainReply([{"type": "tool_use", "id": call.id, "name": call.name, "input": call.input}],
+                      "", [call], "tool_use", reply.usage)
+
+
 def _args(raw: Any) -> dict[str, Any]:
     if isinstance(raw, dict):
         return raw
@@ -182,7 +243,7 @@ class OpenAICompatBrain:
         if not reply.text and not reply.tool_calls:
             # Same as the stream: an empty answer is a dropped reply, worth one more ask.
             reply = await self._step_once(system, messages, tools)
-        return reply
+        return recover_tool_call(reply, tools)
 
     async def _step_once(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> BrainReply:
         import httpx
@@ -282,7 +343,9 @@ class OpenAICompatBrain:
                         piece = delta.get("content")
                         if piece:
                             text_parts.append(piece)
-                            await on_text(strip_thinking("".join(text_parts)))
+                            so_far = strip_thinking("".join(text_parts))
+                            if not looks_like_json(so_far):
+                                await on_text(so_far)
                         for tc in delta.get("tool_calls") or []:
                             slot = pieces.setdefault(tc.get("index", 0), {"id": "", "name": "", "arguments": ""})
                             if tc.get("id"):
@@ -316,7 +379,7 @@ class OpenAICompatBrain:
             calls.append(call)
             blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
         stop = "max_tokens" if finish == "length" else "tool_use" if calls else "end_turn"
-        return BrainReply(blocks, text, calls, stop, usage)
+        return recover_tool_call(BrainReply(blocks, text, calls, stop, usage), tools)
 
 
 def _chat_reply(choice: Any, usage: Any = None) -> BrainReply:
@@ -435,7 +498,7 @@ class OllamaBrain(OpenAICompatBrain):
             calls.append(call)
             blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
         stop = "max_tokens" if data.get("done_reason") == "length" else "tool_use" if calls else "end_turn"
-        return BrainReply(blocks, text, calls, stop, _ollama_usage(data))
+        return recover_tool_call(BrainReply(blocks, text, calls, stop, _ollama_usage(data)), tools)
 
     async def step_stream(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                           on_text: Any) -> BrainReply:
@@ -471,7 +534,9 @@ class OllamaBrain(OpenAICompatBrain):
                     piece = msg.get("content")
                     if piece:
                         text_parts.append(piece)
-                        await on_text(strip_thinking("".join(text_parts)))
+                        so_far = strip_thinking("".join(text_parts))
+                        if not looks_like_json(so_far):
+                            await on_text(so_far)
                     for c in msg.get("tool_calls") or []:
                         fn = c.get("function") or {}
                         calls.append(ToolCall(c.get("id") or f"call_{uuid.uuid4().hex[:12]}",
@@ -486,7 +551,7 @@ class OllamaBrain(OpenAICompatBrain):
         for call in calls:
             blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
         stop = "max_tokens" if done_reason == "length" else "tool_use" if calls else "end_turn"
-        return BrainReply(blocks, text, calls, stop, usage)
+        return recover_tool_call(BrainReply(blocks, text, calls, stop, usage), tools)
 
 
 class FallbackBrain:
