@@ -73,20 +73,20 @@ class AppState extends ChangeNotifier {
         .ignore();
   }
 
-  /// Replies as a chat history instead of the character's speech bubble.
-  bool chatView = false;
+  /// Replies as the thread (the default since v5) or as the character's speech bubble.
+  bool chatView = true;
 
   void setChatView(bool v) {
     chatView = v;
     notifyListeners();
-    SharedPreferences.getInstance().then((p) => p.setBool('chat_view', v)).ignore();
+    SharedPreferences.getInstance().then((p) => p.setBool('chat_view_v5', v)).ignore();
   }
 
   /// Restore saved preferences (chat view, theme).
   Future<void> load() async {
     try {
       final p = await SharedPreferences.getInstance();
-      chatView = p.getBool('chat_view') ?? false;
+      chatView = p.getBool('chat_view_v5') ?? true;
       themeMode = ThemeMode.values.byName(p.getString('theme') ?? 'system');
       restoreCompiiLook(p);
       final seen = p.getString('bot_seen');
@@ -263,6 +263,42 @@ class Workspace extends StatelessWidget {
     }
   }
 
+  /// The page for the current section. The old destinations sit inside two hubs, so the
+  /// sidebar keeps four places while every page stays one click (or Ctrl+K) away.
+  Widget _page(BuildContext context, TaskView? task) {
+    final page = switch (state.section) {
+      Section.memory => MemoryPage(core: core, run: _run,
+          focusId: state.focusKind == 'memory' ? state.focusId : null),
+      Section.timeline => TimelinePage(core: core, run: _run,
+          focusQuery: state.focusKind == 'moment' ? state.focusQuery : null),
+      Section.clips => ClipsPage(core: core, run: _run,
+          focusQuery: (state.focusKind == 'clip' || state.focusKind == 'snippet') ? state.focusQuery : null,
+          focusSnippets: state.focusTab == 'snippets'),
+      Section.routines => RoutinesPage(core: core, run: _run, onOpenTask: state.open,
+          focusId: state.focusKind == 'routine' ? state.focusId : null),
+      Section.skills => SkillsPage(run: _run, onOpenTask: state.open),
+      Section.library => LibraryPage(run: _run),
+      Section.knowledge => KnowledgePage(run: _run),
+      Section.research => ResearchPage(run: _run),
+      Section.team => TeamPage(core: core, state: state, run: _run),
+      Section.safety => SafetyPage(run: _run),
+      Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
+      Section.settings => SettingsPage(core: core, state: state, run: _run),
+      Section.chat when task != null && state.chatView => _Conversation(task: task, core: core, run: _run, state: state),
+      Section.chat when task != null => Stage(task: task, core: core, state: state, run: _run),
+      _ => _Home(core: core, state: state, run: _run),
+    };
+    if (_activitySections.contains(state.section)) {
+      return _Hub(title: 'Activity', tabs: _activitySections, current: state.section, onPick: state.go,
+          badges: {Section.updates: core.unread}, child: page);
+    }
+    if (_toolSections.contains(state.section)) {
+      return _Hub(title: 'Tools & settings', tabs: _toolSections, current: state.section, onPick: state.go,
+          child: page);
+    }
+    return page;
+  }
+
   String? _title(TaskView? task) => switch (state.section) {
     Section.chat when task != null => null, // the conversation has its own header
     _ => null,
@@ -274,15 +310,15 @@ class Workspace extends StatelessWidget {
     builder: (context, _) {
       final c = context.c;
       final task = state.selected == null ? null : core.tasks[state.selected];
+      void palette() => showCommandPalette(context: context, core: core, state: state, run: _run);
       return CallbackShortcuts(
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyN, control: true): () => state.go(Section.home),
-          const SingleActivator(LogicalKeyboardKey.keyK, control: true): () => showCommandPalette(
-                context: context,
-                core: core,
-                state: state,
-                run: _run,
-              ),
+          const SingleActivator(LogicalKeyboardKey.keyK, control: true): palette,
+          const SingleActivator(LogicalKeyboardKey.digit1, control: true): () => state.go(Section.home),
+          const SingleActivator(LogicalKeyboardKey.digit2, control: true): () => state.go(Section.team),
+          const SingleActivator(LogicalKeyboardKey.digit3, control: true): () => state.go(Section.updates),
+          const SingleActivator(LogicalKeyboardKey.comma, control: true): () => state.go(Section.settings),
         },
         child: Scaffold(
           backgroundColor: c.canvas,
@@ -292,7 +328,7 @@ class Workspace extends StatelessWidget {
             shape: const RoundedRectangleBorder(
               borderRadius: BorderRadius.horizontal(right: Radius.circular(20)),
             ),
-            child: SafeArea(child: _Sidebar(core: core, state: state, onFaceView: onFaceView)),
+            child: SafeArea(child: _Sidebar(core: core, state: state, onFaceView: onFaceView, onSearch: palette)),
           ),
           body: LayoutBuilder(
             builder: (context, box) {
@@ -300,25 +336,21 @@ class Workspace extends StatelessWidget {
               final showSidebar = box.maxWidth >= 760;
               return Row(
                 children: [
-                  if (showSidebar) _Sidebar(core: core, state: state, onFaceView: onFaceView),
+                  if (showSidebar) _Sidebar(core: core, state: state, onFaceView: onFaceView, onSearch: palette),
                   Expanded(
                     child: Column(
                       children: [
                         TitleBar(
                           title: _title(task),
+                          center: state.section == Section.chat && task != null && state.chatView
+                              ? _ChatHeader(task: task, core: core, state: state, run: _run)
+                              : null,
                           leading: showSidebar ? null : IconButton(
                             tooltip: 'Open navigation', icon: const Glyph(G.menu, size: 22),
                             onPressed: () => Scaffold.of(context).openDrawer()),
                           actions: [
-                            PaletteButton(
-                              onTap: () => showCommandPalette(
-                                context: context,
-                                core: core,
-                                state: state,
-                                run: _run,
-                              ),
-                            ),
-                            const SizedBox(width: 10),
+                            // The sidebar carries the search box; without it, the palette needs a way in.
+                            if (!showSidebar) ...[PaletteButton(onTap: palette), const SizedBox(width: 10)],
                           ],
                         ),
                         _StatusLine(core: core, state: state),
@@ -347,29 +379,7 @@ class Workspace extends StatelessWidget {
                             },
                             child: KeyedSubtree(
                               key: ValueKey('${state.section}-${state.selected}'),
-                              child: switch (state.section) {
-                                Section.memory => MemoryPage(core: core, run: _run,
-                                    focusId: state.focusKind == 'memory' ? state.focusId : null),
-                                Section.timeline => TimelinePage(core: core, run: _run,
-                                    focusQuery: state.focusKind == 'moment' ? state.focusQuery : null),
-                                Section.clips => ClipsPage(core: core, run: _run,
-                                    focusQuery: (state.focusKind == 'clip' || state.focusKind == 'snippet')
-                                        ? state.focusQuery : null,
-                                    focusSnippets: state.focusTab == 'snippets'),
-                                Section.routines => RoutinesPage(core: core, run: _run, onOpenTask: state.open,
-                                    focusId: state.focusKind == 'routine' ? state.focusId : null),
-                                Section.skills => SkillsPage(run: _run, onOpenTask: state.open),
-                                Section.library => LibraryPage(run: _run),
-                                Section.knowledge => KnowledgePage(run: _run),
-                                Section.research => ResearchPage(run: _run),
-                                Section.team => TeamPage(core: core, state: state, run: _run),
-                                Section.safety => SafetyPage(run: _run),
-                                Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
-                                Section.settings => SettingsPage(core: core, state: state, run: _run),
-                                Section.chat when task != null && state.chatView => _Conversation(task: task, core: core, run: _run, state: state),
-                                Section.chat when task != null => Stage(task: task, core: core, state: state, run: _run),
-                                _ => _Home(core: core, state: state, run: _run),
-                              },
+                              child: _page(context, task),
                             ),
                           ),
                         ),
@@ -387,11 +397,63 @@ class Workspace extends StatelessWidget {
   );
 }
 
+/// The four places, in the order people use them. Every old page lives inside one of them.
+enum Place { chats, agents, activity, tools }
+
+const _activitySections = [Section.updates, Section.timeline, Section.clips];
+const _toolSections = [
+  Section.routines, Section.skills, Section.library, Section.knowledge,
+  Section.research, Section.memory, Section.safety, Section.settings,
+];
+
+Place placeOf(AppState state) => switch (state.section) {
+      Section.team => Place.agents,
+      Section.home when state.botId != null || state.team.isNotEmpty => Place.agents,
+      Section.home || Section.chat => Place.chats,
+      final s when _activitySections.contains(s) => Place.activity,
+      _ => Place.tools,
+    };
+
+String sectionLabel(Section s) => switch (s) {
+      Section.home => 'New chat',
+      Section.chat => 'Chat',
+      Section.team => 'Agents',
+      Section.updates => 'Updates',
+      Section.routines => 'Routines',
+      Section.skills => 'Skills',
+      Section.library => 'Library',
+      Section.knowledge => 'Knowledge',
+      Section.research => 'Research',
+      Section.memory => 'Memory',
+      Section.timeline => 'Timeline',
+      Section.clips => 'Clips',
+      Section.safety => 'Safety',
+      Section.settings => 'Settings',
+    };
+
+/// Which bucket of the chat list a conversation falls in.
+String _day(double at) {
+  if (at <= 0) return 'Earlier';
+  final then = DateTime.fromMillisecondsSinceEpoch((at * 1000).round());
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final day = DateTime(then.year, then.month, then.day);
+  final gap = today.difference(day).inDays;
+  if (gap <= 0) return 'Today';
+  if (gap == 1) return 'Yesterday';
+  if (gap < 7) return 'This week';
+  return 'Earlier';
+}
+
+double _lastAt(TaskView t) =>
+    (t.last?['at'] as num?)?.toDouble() ?? (t.events.firstOrNull?['at'] as num?)?.toDouble() ?? 0;
+
 class _Sidebar extends StatelessWidget {
-  const _Sidebar({required this.core, required this.state, this.onFaceView});
+  const _Sidebar({required this.core, required this.state, this.onFaceView, this.onSearch});
   final CoreClient core;
   final AppState state;
   final VoidCallback? onFaceView;
+  final VoidCallback? onSearch;
 
   void _newTeammate(BuildContext context) {
     Future<void> act(Future<void> Function() f) async {
@@ -411,11 +473,10 @@ class _Sidebar extends StatelessWidget {
     final mood = state.moodWith(core);
     final tasks = core.ordered;
     final voice = state.voice;
-    // A teammate the user put away keeps a lane here — its conversations have to stay reachable —
-    // but it sits under the team and asks for nothing: no waiting count, no new work.
+    // Teammates show as faces on Team at the foot; a put-away one is left out (its chats stay listed).
     final team = [for (final b in core.bots) if (!b.archived) b].take(8).toList();
-    final away = [for (final b in core.bots) if (b.archived) b];
     final jobs = tasks.where((t) => t.active).length;
+    final waiting = tasks.where((t) => t.pendingApproval != null).length;
     final (String status, Color statusColor) = switch (mood) {
       Mood.offline => ('Offline', c.danger),
       Mood.waiting => ('Needs you', c.warning),
@@ -424,60 +485,55 @@ class _Sidebar extends StatelessWidget {
       Mood.speaking => ('Speaking', c.accent),
       _ => (voice?.wakeListening == true ? 'Say “Hey Compii”' : 'Ready', c.success),
     };
+    final place = placeOf(state);
     Widget group(String label, {List<Widget> actions = const []}) => Padding(
-      padding: const EdgeInsets.fromLTRB(10, 16, 2, 4),
+      padding: const EdgeInsets.fromLTRB(8, 14, 0, 2),
       child: Row(
         children: [
-          Expanded(child: Eyebrow(label)),
+          Expanded(child: Text(label, style: context.type.labelSmall?.copyWith(color: c.faint))),
           ...actions,
         ],
       ),
     );
+    final buckets = <String, List<TaskView>>{};
+    for (final t in tasks) {
+      buckets.putIfAbsent(_day(_lastAt(t)), () => []).add(t);
+    }
     return Container(
-      width: 276,
+      width: 248,
       decoration: BoxDecoration(color: c.surface, border: Border(right: BorderSide(color: c.border))),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           DragStrip(
             child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 18, 10, 12),
+              padding: const EdgeInsets.fromLTRB(12, 12, 6, 6),
               child: Row(
                 children: [
                   if (voice != null)
-                    TalkableCompii(voice: voice, mood: mood, jobs: jobs, size: 40)
+                    TalkableCompii(voice: voice, mood: mood, jobs: jobs, size: 26)
                   else
-                    SizedBox.square(dimension: 38, child: Ember(mood: mood, jobs: jobs)),
-                  const SizedBox(width: 11),
+                    SizedBox.square(dimension: 24, child: Ember(mood: mood, jobs: jobs)),
+                  const SizedBox(width: 9),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('Compii', style: context.type.titleLarge?.copyWith(fontWeight: FontWeight.w700, letterSpacing: -.4)),
-                        const SizedBox(height: 3),
+                        Text('Compii', style: context.type.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
                         Row(
                           children: [
-                            AnimatedContainer(
-                              duration: context.motion(Motion.base),
-                              curve: Motion.standard,
-                              width: 7,
-                              height: 7,
-                              decoration: BoxDecoration(
-                                color: statusColor,
-                                shape: BoxShape.circle,
-                                boxShadow: [BoxShadow(color: statusColor.withValues(alpha: .5), blurRadius: 6)],
-                              ),
+                            Container(
+                              width: 6,
+                              height: 6,
+                              decoration: BoxDecoration(color: statusColor, shape: BoxShape.circle),
                             ),
-                            const SizedBox(width: 6),
+                            const SizedBox(width: 5),
                             Flexible(
-                              child: AnimatedSwitcher(
-                                duration: context.motion(Motion.quick),
-                                child: Text(status,
-                                    key: ValueKey(status),
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: context.type.labelMedium?.copyWith(color: mood == Mood.idle ? c.muted : statusColor)),
-                              ),
+                              child: Text(status,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: context.type.labelMedium?.copyWith(
+                                      fontSize: 11.5, color: mood == Mood.idle ? c.faint : statusColor)),
                             ),
                           ],
                         ),
@@ -485,138 +541,68 @@ class _Sidebar extends StatelessWidget {
                     ),
                   ),
                   if (onFaceView != null)
-                    IconButton(tooltip: 'Presence view (for a phone or second screen)', onPressed: onFaceView, icon: const Glyph(G.pip, size: 18)),
+                    IconButton(
+                        tooltip: 'Presence view (for a phone or second screen)',
+                        onPressed: onFaceView,
+                        visualDensity: VisualDensity.compact,
+                        icon: const Glyph(G.pip, size: 16)),
+                  IconButton(
+                    tooltip: 'New chat (Ctrl+N)',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => state.go(Section.home),
+                    icon: const Glyph(G.plus, size: 16),
+                  ),
                 ],
               ),
             ),
           ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
+            child: _SearchField(onTap: onSearch),
+          ),
           Expanded(
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(12, 2, 12, 14),
+              padding: const EdgeInsets.fromLTRB(10, 2, 10, 12),
               children: [
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 0),
-                  child: _NewButton(
-                    selected: state.section == Section.home && state.botId == null,
-                    onTap: () => state.go(Section.home),
-                  ),
-                ),
-                if (core.bots.isNotEmpty) ...[
-                  group('Team', actions: [
-                    IconButton(
-                      tooltip: 'New team chat',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => showTeamPicker(context, core: core, state: state),
-                      icon: const Glyph(G.team, size: 15),
-                    ),
-                    IconButton(
-                      tooltip: 'New teammate',
-                      visualDensity: VisualDensity.compact,
-                      onPressed: () => _newTeammate(context),
-                      icon: const Glyph(G.plus, size: 14),
-                    ),
-                  ]),
-                  for (final bot in team)
-                    _TeamRow(
-                      bot: bot,
-                      core: core,
-                      state: state,
-                      unread: state.unreadFor(core, bot.id),
-                      selected: state.section == Section.home &&
-                          (state.botId == bot.id || (bot.primary && state.botId == null)),
-                      onTap: () {
-                        state.markBotSeen(bot.id);
-                        state.pickBot(bot.primary ? null : bot.id);
-                      },
-                    ),
-                  for (final bot in away.take(3))
-                    _TeamRow(
-                      bot: bot,
-                      core: core,
-                      state: state,
-                      selected: state.section == Section.home && state.botId == bot.id,
-                      onTap: () => state.pickBot(bot.id),
-                    ),
-                  if (away.length > 3)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(10, 2, 6, 0),
-                      child: Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton.icon(
-                          onPressed: () => state.go(Section.team),
-                          style: TextButton.styleFrom(visualDensity: VisualDensity.compact, padding: EdgeInsets.zero),
-                          icon: Glyph(G.box, size: 12, color: c.faint),
-                          label: Text('${away.length} put away',
-                              style: context.type.labelMedium?.copyWith(color: c.faint)),
-                        ),
-                      ),
-                    ),
-                ],
-                group('Workspace'),
-                _NavButton(glyph: G.team, label: 'Team', selected: state.section == Section.team,
-                    onTap: () => state.go(Section.team)),
-                _NavButton(glyph: G.bell, label: 'Updates', selected: state.section == Section.updates,
-                    onTap: () => state.go(Section.updates), badge: core.unread),
-                _NavButton(glyph: G.routine, label: 'Routines', selected: state.section == Section.routines,
-                    onTap: () => state.go(Section.routines)),
-                _NavButton(glyph: G.skill, label: 'Skills', selected: state.section == Section.skills,
-                    onTap: () => state.go(Section.skills)),
-                const SizedBox(height: 6),
-                _NavButton(glyph: G.box, label: 'Library', selected: state.section == Section.library,
-                    onTap: () => state.go(Section.library)),
-                _NavButton(glyph: G.search, label: 'Knowledge', selected: state.section == Section.knowledge,
-                    onTap: () => state.go(Section.knowledge)),
-                _NavButton(glyph: G.globe, label: 'Research', selected: state.section == Section.research,
-                    onTap: () => state.go(Section.research)),
-                const SizedBox(height: 6),
-                _NavButton(glyph: G.memory, label: 'Memory', selected: state.section == Section.memory,
-                    onTap: () => state.go(Section.memory)),
-                _NavButton(glyph: G.clock, label: 'Timeline', selected: state.section == Section.timeline,
-                    onTap: () => state.go(Section.timeline)),
-                _NavButton(glyph: G.clipboard, label: 'Clips', selected: state.section == Section.clips,
-                    onTap: () => state.go(Section.clips)),
-                group('Recent'),
-                if (tasks.isEmpty)
+                if (tasks.isEmpty) ...[
+                  group('Chats'),
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 2, 10, 0),
-                    child: Text('Conversations you start appear here.', style: context.type.bodySmall?.copyWith(color: c.faint)),
-                  )
-                else
-                  for (final t in tasks)
-                    _ConversationTile(
-                      task: t,
-                      bot: core.botFor(t.botId),
-                      selected: state.selected == t.id,
-                      onTap: () {
-                        state.markBotSeen(t.botId);
-                        state.open(t.id);
-                      },
-                    ),
+                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 0),
+                    child: Text('Chats you start appear here.', style: context.type.bodySmall?.copyWith(color: c.faint)),
+                  ),
+                ] else
+                  for (final day in const ['Today', 'Yesterday', 'This week', 'Earlier'])
+                    if (buckets[day] case final list?) ...[
+                      group(day),
+                      for (final t in list)
+                        _ConversationTile(
+                          task: t,
+                          bot: core.botFor(t.botId),
+                          selected: state.selected == t.id,
+                          onTap: () {
+                            state.markBotSeen(t.botId);
+                            state.open(t.id);
+                          },
+                        ),
+                    ],
               ],
             ),
           ),
-          Container(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-            decoration: BoxDecoration(border: Border(top: BorderSide(color: c.border))),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 6, 10, 12),
             child: Column(
               children: [
-                _NavButton(glyph: G.shield, label: 'Safety', selected: state.section == Section.safety,
-                    onTap: () => state.go(Section.safety)),
-                _NavButton(glyph: G.sliders, label: 'Settings', selected: state.section == Section.settings,
-                    onTap: () => state.go(Section.settings)),
-                const SizedBox(height: 8),
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text('Talk', maxLines: 1, overflow: TextOverflow.ellipsis,
-                            style: context.type.labelMedium?.copyWith(color: c.faint)),
-                      ),
-                      const Kbd('Ctrl + Alt'),
-                    ],
-                  ),
+                _TeamFoot(
+                  bots: [for (final b in team) if (!b.primary) b],
+                  working: tasks.where((t) => t.active && !(core.botFor(t.botId)?.primary ?? true)).length,
+                  selected: place == Place.agents,
+                  onTap: () => state.go(Section.team),
+                  onNew: () => _newTeammate(context),
                 ),
+                _NavButton(glyph: G.bell, label: 'Activity', keys: 'Ctrl+3', selected: place == Place.activity,
+                    onTap: () => state.go(Section.updates), badge: core.unread + waiting),
+                _NavButton(glyph: G.sliders, label: 'Settings', keys: 'Ctrl+,',
+                    selected: place == Place.tools, onTap: () => state.go(Section.settings)),
               ],
             ),
           ),
@@ -626,63 +612,123 @@ class _Sidebar extends StatelessWidget {
   }
 }
 
-/// The main call to action at the top of the sidebar.
-class _NewButton extends StatefulWidget {
-  const _NewButton({required this.selected, required this.onTap});
+/// Team at the foot of the sidebar: the teammates' faces and how many are working right now.
+class _TeamFoot extends StatefulWidget {
+  const _TeamFoot({required this.bots, required this.working, required this.selected, required this.onTap,
+      required this.onNew});
+  final List<BotView> bots;
+  final int working;
   final bool selected;
   final VoidCallback onTap;
+  final VoidCallback onNew;
   @override
-  State<_NewButton> createState() => _NewButtonState();
+  State<_TeamFoot> createState() => _TeamFootState();
 }
 
-class _NewButtonState extends State<_NewButton> {
+class _TeamFootState extends State<_TeamFoot> {
   bool _hover = false;
-  bool _down = false;
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final lit = _hover || widget.selected;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() {
-        _hover = false;
-        _down = false;
-      }),
-      child: InkWell(
-        onTap: widget.onTap,
-        onHighlightChanged: (v) => setState(() => _down = v),
-        child: AnimatedScale(
-          scale: _down ? .988 : 1,
-          duration: context.motion(_down ? Motion.tap : Motion.base),
-          curve: Motion.spring,
+    final faces = widget.bots.take(3).toList();
+    final status = widget.working > 0 ? 'Team · ${widget.working} working' : 'Team';
+    return Semantics(
+      button: true,
+      selected: widget.selected,
+      label: '$status, Control 2',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: Shapes.r10,
           child: AnimatedContainer(
             duration: context.motion(Motion.quick),
-            curve: Motion.standard,
-            height: 42,
-            padding: const EdgeInsets.symmetric(horizontal: 10),
+            margin: const EdgeInsets.only(bottom: 1),
+            padding: const EdgeInsets.fromLTRB(10, 7, 4, 7),
             decoration: BoxDecoration(
-              color: widget.selected ? c.accentSoft : c.raised,
-              borderRadius: Shapes.r12,
-              border: Border.all(color: lit ? c.accent.withValues(alpha: .35) : c.border),
-              boxShadow: _hover ? Shapes.lift(c) : Shapes.card(c),
+              color: widget.selected ? c.hover : (_hover ? c.hover.withValues(alpha: .6) : Colors.transparent),
+              borderRadius: Shapes.r10,
             ),
             child: Row(
               children: [
-                AnimatedContainer(
-                  duration: context.motion(Motion.quick),
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(color: c.accent, borderRadius: Shapes.r8),
-                  alignment: Alignment.center,
-                  child: Glyph(G.plus, size: 15, color: c.onAccent, weight: 2.2),
-                ),
+                if (faces.isEmpty)
+                  Glyph(G.team, size: 16, color: c.muted)
+                else
+                  SizedBox(
+                    width: 18.0 + 12 * (faces.length - 1),
+                    height: 20,
+                    child: Stack(
+                      children: [
+                        for (var i = 0; i < faces.length; i++)
+                          Positioned(left: 12.0 * i, top: 1, child: BotAvatar(bot: faces[i], size: 18)),
+                      ],
+                    ),
+                  ),
                 const SizedBox(width: 10),
                 Expanded(
-                  child: Text('New conversation',
-                      style: context.type.labelLarge?.copyWith(color: widget.selected ? c.accent : c.text)),
+                  child: Text(status, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: context.type.labelLarge?.copyWith(
+                          color: widget.selected || _hover ? c.text : (widget.working > 0 ? c.text : c.muted))),
                 ),
-                const Kbd('Ctrl + N'),
+                if (_hover)
+                  IconButton(
+                    tooltip: 'New teammate',
+                    visualDensity: VisualDensity.compact,
+                    onPressed: widget.onNew,
+                    icon: const Glyph(G.plus, size: 13),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// The way into everything: looks like a search box, opens the command palette.
+class _SearchField extends StatefulWidget {
+  const _SearchField({this.onTap});
+  final VoidCallback? onTap;
+  @override
+  State<_SearchField> createState() => _SearchFieldState();
+}
+
+class _SearchFieldState extends State<_SearchField> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Semantics(
+      button: true,
+      label: 'Search chats, agents and pages, Control K',
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            height: 30,
+            padding: const EdgeInsets.symmetric(horizontal: 9),
+            decoration: BoxDecoration(
+              color: _hover ? c.hover : c.sunken,
+              borderRadius: Shapes.r6,
+              border: Border.all(color: c.border),
+            ),
+            child: Row(
+              children: [
+                Glyph(G.search, size: 13, color: c.faint),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text('Search or jump to…', maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: context.type.labelMedium?.copyWith(color: c.faint, fontSize: 12.5)),
+                ),
+                const Kbd('Ctrl + K'),
               ],
             ),
           ),
@@ -693,10 +739,12 @@ class _NewButtonState extends State<_NewButton> {
 }
 
 class _NavButton extends StatefulWidget {
-  const _NavButton({required this.glyph, required this.label, required this.selected, required this.onTap, this.badge = 0});
+  const _NavButton({required this.glyph, required this.label, required this.selected, required this.onTap,
+      this.badge = 0, this.keys});
   final int badge;
   final GlyphData glyph;
   final String label;
+  final String? keys;
   final bool selected;
   final VoidCallback onTap;
 
@@ -710,42 +758,47 @@ class _NavButtonState extends State<_NavButton> {
   Widget build(BuildContext context) {
     final c = context.c;
     final on = widget.selected;
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: InkWell(
-        onTap: widget.onTap,
-        borderRadius: Shapes.r10,
-        child: AnimatedContainer(
-          duration: context.motion(Motion.quick),
-          curve: Motion.standard,
-          margin: const EdgeInsets.only(bottom: 1),
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          decoration: BoxDecoration(
-            color: on ? c.accentSoft : (_hover ? c.hover.withValues(alpha: .65) : Colors.transparent),
-            borderRadius: Shapes.r10,
-          ),
-          child: Row(
-            children: [
-              Glyph(widget.glyph, size: 18, color: on ? c.accent : c.muted, duo: on),
-              const SizedBox(width: 11),
-              Expanded(
-                child: Text(widget.label,
-                    style: context.type.labelLarge?.copyWith(
-                      color: on ? c.accent : (_hover ? c.text : c.muted),
-                      fontWeight: on ? FontWeight.w600 : FontWeight.w500,
-                    )),
-              ),
-              if (widget.badge > 0)
-                Container(
-                  constraints: const BoxConstraints(minWidth: 20),
-                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1.5),
-                  decoration: BoxDecoration(color: c.warning, borderRadius: Shapes.pill),
-                  child: Text('${widget.badge}', textAlign: TextAlign.center,
-                      style: TextStyle(color: c.dark ? c.canvas : Colors.white, fontSize: 11, fontWeight: FontWeight.w800)),
+    return Semantics(
+      selected: on,
+      button: true,
+      label: widget.keys == null ? widget.label : '${widget.label}, ${widget.keys}',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: Shapes.r6,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            curve: Motion.standard,
+            margin: const EdgeInsets.only(bottom: 1),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(
+              color: on ? c.hover : (_hover ? c.hover.withValues(alpha: .6) : Colors.transparent),
+              borderRadius: Shapes.r10,
+            ),
+            child: Row(
+              children: [
+                Glyph(widget.glyph, size: 15, color: on ? c.text : c.muted),
+                const SizedBox(width: 9),
+                Expanded(
+                  child: Text(widget.label,
+                      style: context.type.labelLarge?.copyWith(color: on || _hover ? c.text : c.muted)),
                 ),
-            ],
+                if (widget.badge > 0)
+                  Container(
+                    constraints: const BoxConstraints(minWidth: 18),
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(color: c.warningSoft, borderRadius: Shapes.pill),
+                    child: Text('${widget.badge}', textAlign: TextAlign.center,
+                        style: TextStyle(color: c.warning, fontSize: 11, fontWeight: FontWeight.w600)),
+                  )
+                else if (widget.keys != null && _hover)
+                  Text(widget.keys!, style: context.type.labelSmall?.copyWith(color: c.faint, letterSpacing: 0)),
+              ],
+            ),
           ),
         ),
       ),
@@ -753,150 +806,92 @@ class _NavButtonState extends State<_NavButton> {
   }
 }
 
-/// One teammate in the sidebar: its face, name, and a small menu.
-class _TeamRow extends StatefulWidget {
-  const _TeamRow({required this.bot, required this.core, required this.state, required this.selected, required this.onTap, this.unread = 0});
-  final BotView bot;
-  final CoreClient core;
-  final AppState state;
-  final int unread;
-  final bool selected;
-  final VoidCallback onTap;
-
-  @override
-  State<_TeamRow> createState() => _TeamRowState();
-}
-
-class _TeamRowState extends State<_TeamRow> {
-  bool _hover = false;
-
-  Future<void> _act(Future<void> Function() action) async {
-    try {
-      await action();
-    } catch (e) {
-      widget.state.fail(e);
-    }
-  }
+/// The tabs across the top of Activity and Tools & settings: the old pages, one click apart.
+class _Hub extends StatelessWidget {
+  const _Hub({required this.title, required this.tabs, required this.current, required this.onPick,
+      required this.child, this.badges = const {}});
+  final String title;
+  final List<Section> tabs;
+  final Section current;
+  final ValueChanged<Section> onPick;
+  final Map<Section, int> badges;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final bot = widget.bot;
-    final on = widget.selected;
-    // Retired, not gone: the lane stays so its history is one tap away, but it is visibly out of
-    // the team and it never claims anything is waiting on it.
-    final away = bot.archived;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: AnimatedContainer(
-        duration: context.motion(Motion.quick),
-        curve: Motion.standard,
-        margin: const EdgeInsets.only(bottom: 1),
-        padding: const EdgeInsets.fromLTRB(8, 5, 4, 5),
-        decoration: BoxDecoration(
-          color: on ? c.accentSoft : (_hover ? c.hover.withValues(alpha: .65) : Colors.transparent),
-          borderRadius: Shapes.r10,
-        ),
-        child: Row(
-          children: [
-            Expanded(
-              child: Keyable(
-                radius: Shapes.r10,
-                selected: on,
-                label: [
-                  bot.name,
-                  if (away) 'archived',
-                  if (bot.job.isNotEmpty) bot.job,
-                  if (!away && widget.unread > 0) '${widget.unread} waiting',
-                ].join(', '),
-                onTap: widget.onTap,
-                child: MouseRegion(
-                  cursor: SystemMouseCursors.click,
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: widget.onTap,
-                    child: Row(
-                      children: [
-                        if (away)
-                          Opacity(opacity: .45, child: BotAvatar(bot: bot, size: 22))
-                        else
-                          BotAvatar(bot: bot, size: 22),
-                        const SizedBox(width: 9),
-                        Expanded(
-                          child: Tooltip(
-                            message: away
-                                ? '${bot.name} — archived. Its conversations stay; bring it back for new work.'
-                                : (bot.job.isEmpty ? bot.name : '${bot.name} — ${bot.job}'),
-                            waitDuration: const Duration(milliseconds: 500),
-                            child: Text(
-                              bot.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: context.type.labelLarge?.copyWith(
-                                color: away ? c.faint : (on ? c.accent : (_hover ? c.text : c.muted)),
-                                fontWeight: on ? FontWeight.w600 : FontWeight.w500,
-                              ),
-                            ),
-                          ),
-                        ),
-                        if (away)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 3),
-                            child: Glyph(G.box, size: 11, color: c.faint),
-                          )
-                        else if (widget.unread > 0)
-                          Container(
-                            constraints: const BoxConstraints(minWidth: 17),
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(color: c.warning, borderRadius: Shapes.pill),
-                            child: Text(
-                              '${widget.unread}',
-                              textAlign: TextAlign.center,
-                              style: context.type.labelSmall?.copyWith(
-                                color: c.dark ? c.canvas : Colors.white,
-                                fontWeight: FontWeight.w800,
-                              ),
-                            ),
-                          )
-                        else if (bot.pinned)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 3),
-                            child: Glyph(G.flag, size: 11, color: botColor(bot, c.accent)),
-                          ),
-                      ],
-                    ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          height: 38,
+          padding: EdgeInsets.symmetric(horizontal: Space.gutter(context) - 10),
+          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(
+              children: [
+                for (final s in tabs)
+                  _HubTab(
+                    label: sectionLabel(s),
+                    selected: s == current,
+                    badge: badges[s] ?? 0,
+                    onTap: () => onPick(s),
                   ),
-                ),
-              ),
+              ],
             ),
-            SizedBox(
-              width: 24,
-              child: _hover || on
-                  ? PopupMenuButton<String>(
-                      tooltip: 'Teammate options',
-                      padding: EdgeInsets.zero,
-                      iconSize: 14,
-                      icon: const Glyph(G.expand, size: 13),
-                      onSelected: (v) {
-                        if (v == 'pin') {
-                          _act(() => widget.core.editBot(bot.id, {'pinned': !bot.pinned}));
-                        } else if (v == 'back') {
-                          _act(() => widget.core.editBot(bot.id, {'archived': false}));
-                        } else if (v == 'edit') {
-                          showBotEditor(context, core: widget.core, state: widget.state, run: _act, bot: bot);
-                        }
-                      },
-                      itemBuilder: (_) => [
-                        if (!away)
-                          PopupMenuItem(value: 'pin', child: Text(bot.pinned ? 'Unpin from top' : 'Pin to top')),
-                        if (away) const PopupMenuItem(value: 'back', child: Text('Bring back to the team')),
-                        const PopupMenuItem(value: 'edit', child: Text('Edit teammate…')),
-                      ],
-                    )
-                  : null,
+          ),
+        ),
+        Expanded(child: child),
+      ],
+    );
+  }
+}
+
+class _HubTab extends StatefulWidget {
+  const _HubTab({required this.label, required this.selected, required this.onTap, this.badge = 0});
+  final String label;
+  final bool selected;
+  final int badge;
+  final VoidCallback onTap;
+  @override
+  State<_HubTab> createState() => _HubTabState();
+}
+
+class _HubTabState extends State<_HubTab> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final on = widget.selected;
+    return Semantics(
+      selected: on,
+      button: true,
+      label: widget.label,
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            decoration: BoxDecoration(
+              border: Border(bottom: BorderSide(color: on ? c.text : Colors.transparent, width: 1.5)),
             ),
-          ],
+            alignment: Alignment.center,
+            child: Row(
+              children: [
+                Text(widget.label,
+                    style: context.type.labelLarge?.copyWith(color: on || _hover ? c.text : c.muted)),
+                if (widget.badge > 0) ...[
+                  const SizedBox(width: 6),
+                  Text('${widget.badge}', style: TextStyle(color: c.warning, fontSize: 11, fontWeight: FontWeight.w600)),
+                ],
+              ],
+            ),
+          ),
         ),
       ),
     );
@@ -923,7 +918,7 @@ class _ConversationTileState extends State<_ConversationTile> {
     final task = widget.task;
     final selected = widget.selected;
     final waiting = task.pendingApproval != null;
-    final at = (task.last?['at'] as num?)?.toDouble() ?? task.events.firstOrNull?['at'] as double? ?? 0;
+    final at = _lastAt(task);
     final (String label, Color color) = waiting
         ? ('Needs you', c.warning)
         : switch (task.status) {
@@ -932,76 +927,63 @@ class _ConversationTileState extends State<_ConversationTile> {
             'stopped' => ('Stopped', c.faint),
             _ => ('Done', c.success),
           };
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: InkWell(
-        onTap: widget.onTap,
-        borderRadius: Shapes.r10,
-        child: AnimatedContainer(
-          duration: context.motion(Motion.quick),
-          curve: Motion.standard,
-          margin: const EdgeInsets.only(bottom: 1),
-          padding: const EdgeInsets.fromLTRB(10, 9, 12, 9),
-          decoration: BoxDecoration(
-            color: selected
-                ? c.accentSoft
-                : (_hover ? c.hover.withValues(alpha: .65) : Colors.transparent),
-            borderRadius: Shapes.r10,
-          ),
-          child: Row(
-            children: [
-              Container(
-                width: 3,
-                height: 30,
-                decoration: BoxDecoration(color: waiting || task.active ? color : Colors.transparent, borderRadius: Shapes.pill),
-              ),
-              const SizedBox(width: 9),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        if (task.isTeam) ...[
-                          Glyph(G.team, size: 14, color: c.accent),
-                          const SizedBox(width: 5),
-                        ] else if (widget.bot != null) ...[
-                          BotAvatar(bot: widget.bot!, size: 15),
-                          const SizedBox(width: 5),
-                        ],
-                        if (task.fromRoutine) ...[
-                          Glyph(G.routine, size: 13, color: c.accent),
-                          const SizedBox(width: 5),
-                        ],
-                        Expanded(
-                          child: Text(
-                            task.fromRoutine ? '${task.origin!['title']}' : titleOf(task),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: context.type.bodyMedium?.copyWith(fontWeight: selected ? FontWeight.w600 : FontWeight.w500, height: 1.3),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Row(
-                      children: [
-                        if (task.active && !waiting)
-                          SizedBox.square(dimension: 9, child: CircularProgressIndicator(strokeWidth: 1.6, color: color))
-                        else
-                          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-                        const SizedBox(width: 6),
-                        Text(label, style: context.type.labelMedium?.copyWith(color: waiting ? c.warning : c.muted, fontSize: 11.5)),
-                        const Spacer(),
-                        Text(ago(at), style: context.type.labelMedium?.copyWith(color: c.faint, fontSize: 11.5)),
-                      ],
-                    ),
-                  ],
+    // One line per chat, the way a list of files reads: what it is, and a mark only when it is
+    // doing something or wants something. Done is the normal state and draws nothing.
+    final Widget mark = task.active && !waiting
+        ? SizedBox.square(dimension: 10, child: CircularProgressIndicator(strokeWidth: 1.5, color: color))
+        : waiting || task.status == 'failed'
+            ? Container(width: 7, height: 7, decoration: BoxDecoration(color: color, shape: BoxShape.circle))
+            : const SizedBox(width: 7);
+    final title = task.fromRoutine ? '${task.origin!['title']}' : titleOf(task);
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: '$title, $label, ${ago(at)}',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: Shapes.r6,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            curve: Motion.standard,
+            margin: const EdgeInsets.only(bottom: 1),
+            padding: const EdgeInsets.fromLTRB(8, 6, 8, 6),
+            decoration: BoxDecoration(
+              color: selected ? c.hover : (_hover ? c.hover.withValues(alpha: .6) : Colors.transparent),
+              borderRadius: Shapes.r6,
+            ),
+            child: Row(
+              children: [
+                SizedBox(width: 12, child: Center(child: mark)),
+                const SizedBox(width: 6),
+                if (task.isTeam) ...[
+                  Glyph(G.team, size: 13, color: c.muted),
+                  const SizedBox(width: 5),
+                ] else if (widget.bot != null && !widget.bot!.primary) ...[
+                  BotAvatar(bot: widget.bot!, size: 14),
+                  const SizedBox(width: 5),
+                ],
+                if (task.fromRoutine) ...[
+                  Glyph(G.routine, size: 12, color: c.muted),
+                  const SizedBox(width: 5),
+                ],
+                Expanded(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.type.labelLarge?.copyWith(color: selected || _hover ? c.text : c.muted),
+                  ),
                 ),
-              ),
-            ],
+                const SizedBox(width: 6),
+                Text(waiting ? 'Needs you' : ago(at),
+                    style: context.type.labelSmall?.copyWith(color: waiting ? c.warning : c.faint, letterSpacing: 0)),
+              ],
+            ),
           ),
         ),
       ),
@@ -1061,7 +1043,7 @@ class _StatusLine extends StatelessWidget {
 
 /// The message box. Enter sends; Shift+Enter adds a line.
 class Composer extends StatefulWidget {
-  const Composer({super.key, required this.core, required this.onSend, this.onSendFiles, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state, this.large = false, this.seed = '', this.onVoice, this.allowOffline = false});
+  const Composer({super.key, required this.core, required this.onSend, this.onSendFiles, this.hint = 'Ask Compii to do something…', this.busyTask, this.run, this.autofocus = true, this.state, this.large = false, this.seed = '', this.onVoice, this.allowOffline = false, this.voiceIsMic = false, this.tools = const []});
   final CoreClient core;
 
   /// App state, for voice and the "typing" reaction.
@@ -1085,6 +1067,13 @@ class Composer extends StatefulWidget {
 
   /// Back to talking (voice-first screens); replaces the mic button.
   final VoidCallback? onVoice;
+
+  /// The voice button starts listening in place (a text-first composer) instead of going
+  /// back to the voice bar; Esc then does nothing voice-related.
+  final bool voiceIsMic;
+
+  /// Extra controls in the large composer's toolbar, between attach and the mic.
+  final List<Widget> tools;
 
   /// On a paired phone: typing while the PC is away is kept and sent later.
   final bool allowOffline;
@@ -1176,19 +1165,93 @@ class _ComposerState extends State<Composer> {
     final hearing = voice != null && (voice.listening || voice.busy);
     final focused = _focus.hasFocus || hearing;
     final canSend = canType && !_uploading && (_text.text.trim().isNotEmpty || _files.isNotEmpty);
+    final textStyle = widget.large ? context.type.bodyLarge?.copyWith(fontSize: 18, height: 1.45) : context.type.bodyLarge;
+    final Widget? attach = widget.onSendFiles == null
+        ? null
+        : _GhostIconButton(
+            tooltip: 'Attach files',
+            glyph: G.clip,
+            size: 19,
+            onTap: canType && !_uploading ? _pick : null,
+            color: canType ? c.muted : c.faint,
+          );
+    final Widget field = hearing
+        ? LiveTranscript(voice: voice)
+        : Focus(
+            onFocusChange: (_) => setState(() {}),
+            onKeyEvent: (node, e) {
+              if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape && widget.onVoice != null && !widget.voiceIsMic) {
+                widget.onVoice!();
+                return KeyEventResult.handled;
+              }
+              if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.enter && !HardwareKeyboard.instance.isShiftPressed) {
+                _send();
+                return KeyEventResult.handled;
+              }
+              return KeyEventResult.ignored;
+            },
+            child: TextField(
+              controller: _text,
+              focusNode: _focus,
+              autofocus: widget.autofocus,
+              enabled: canType,
+              minLines: widget.large ? 2 : 1,
+              maxLines: 6,
+              style: textStyle,
+              decoration: InputDecoration(
+                hintText: online
+                    ? (busy ? 'Compii is working — you can stop it any time' : widget.hint)
+                    : widget.allowOffline
+                        ? 'Your PC is away — this will wait and send when it’s back'
+                        : 'Waiting for Compii Core…',
+                hintStyle: textStyle?.copyWith(color: c.faint),
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                filled: false,
+                isDense: true,
+                contentPadding: EdgeInsets.symmetric(vertical: widget.large ? 6 : 12),
+              ),
+            ),
+          );
+    final Widget? mic = widget.onVoice == null
+        ? null
+        : _GhostIconButton(
+            tooltip: widget.voiceIsMic ? 'Talk instead (or hold Ctrl+Alt)' : 'Back to talking (Esc)',
+            glyph: widget.voiceIsMic ? G.mic : G.wave,
+            size: 19,
+            onTap: widget.onVoice);
+    // Send is ink on the composer, like every primary action; Stop is the one red thing.
+    final Widget action = busy
+        ? _RoundButton(
+            tooltip: 'Stop',
+            color: c.danger,
+            onPressed: () => widget.run?.call(() => widget.core.stop(widget.busyTask!.id)),
+            child: const Glyph(G.stop, size: 16, color: Colors.white, duo: true, duoColor: Colors.white),
+          )
+        : _RoundButton(
+            tooltip: _uploading ? 'Sending files…' : 'Send (Enter)',
+            color: c.text,
+            onPressed: canSend ? _send : null,
+            child: _uploading
+                ? SizedBox.square(dimension: 15, child: CircularProgressIndicator(strokeWidth: 2, color: c.canvas))
+                : Glyph(G.arrowUp, size: 18, color: c.canvas, weight: 2.2),
+          );
     return AnimatedContainer(
       duration: context.motion(Motion.base),
       curve: Motion.standard,
       decoration: BoxDecoration(
         color: c.raised,
-        borderRadius: widget.large ? Shapes.r24 : Shapes.r20,
-        border: Border.all(color: hearing ? c.listen : focused ? c.accent.withValues(alpha: .7) : c.borderStrong, width: focused ? 1.5 : 1),
-        boxShadow: [
-          ...Shapes.float(c),
-          if (focused) BoxShadow(color: (hearing ? c.listen : c.accent).withValues(alpha: .14), blurRadius: 0, spreadRadius: 4),
-        ],
+        borderRadius: widget.large ? Shapes.r20 : Shapes.r12,
+        boxShadow: widget.large ? Shapes.float(c) : null,
+        // A hairline that firms up when you are in it; no glow, no float. Listening is the only
+        // state that brings a colour, because it is the only one you cannot see otherwise.
+        border: Border.all(
+            color: hearing ? c.listen : focused ? c.muted.withValues(alpha: .6) : c.borderStrong,
+            width: hearing ? 1.5 : 1),
       ),
-      padding: EdgeInsets.fromLTRB(widget.large ? 20 : 18, widget.large ? 10 : 6, 8, widget.large ? 10 : 6),
+      padding: widget.large ? const EdgeInsets.fromLTRB(16, 14, 12, 10) : const EdgeInsets.fromLTRB(14, 4, 6, 4),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -1210,87 +1273,35 @@ class _ComposerState extends State<Composer> {
                 ),
               ),
             ),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              if (widget.onSendFiles != null) ...[
-                _GhostIconButton(
-                  tooltip: 'Attach files',
-                  glyph: G.clip,
-                  size: 19,
-                  onTap: canType && !_uploading ? _pick : null,
-                  color: canType ? c.muted : c.faint,
+          if (widget.large)
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                field,
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    ?attach,
+                    for (final t in widget.tools) ...[const SizedBox(width: 6), t],
+                    const Spacer(),
+                    ?mic,
+                    const SizedBox(width: 6),
+                    action,
+                  ],
                 ),
-                const SizedBox(width: 2),
               ],
-              Expanded(
-            child: hearing
-                ? LiveTranscript(voice: voice)
-                : Focus(
-              onFocusChange: (_) => setState(() {}),
-              onKeyEvent: (node, e) {
-                if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.escape && widget.onVoice != null) {
-                  widget.onVoice!();
-                  return KeyEventResult.handled;
-                }
-                if (e is KeyDownEvent && e.logicalKey == LogicalKeyboardKey.enter && !HardwareKeyboard.instance.isShiftPressed) {
-                  _send();
-                  return KeyEventResult.handled;
-                }
-                return KeyEventResult.ignored;
-              },
-              child: TextField(
-                controller: _text,
-                focusNode: _focus,
-                autofocus: widget.autofocus,
-                enabled: canType,
-                minLines: 1,
-                maxLines: 6,
-                style: context.type.bodyLarge,
-                decoration: InputDecoration(
-                  hintText: online
-                      ? (busy ? 'Compii is working — you can stop it any time' : widget.hint)
-                      : widget.allowOffline
-                          ? 'Your PC is away — this will wait and send when it’s back'
-                          : 'Waiting for Compii Core…',
-                  hintStyle: context.type.bodyLarge?.copyWith(color: c.faint),
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  disabledBorder: InputBorder.none,
-                  filled: false,
-                  isDense: true,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                ),
-              ),
-            ),
-          ),
-          if (widget.onVoice != null)
-            _GhostIconButton(tooltip: 'Back to talking (Esc)', glyph: G.wave, size: 19, onTap: widget.onVoice)
-          else
-            const SizedBox(width: 4),
-          const SizedBox(width: 2),
-          if (busy)
-            _RoundButton(
-              tooltip: 'Stop',
-              color: c.danger,
-              onPressed: () => widget.run?.call(() => widget.core.stop(widget.busyTask!.id)),
-              child: const Glyph(G.stop, size: 16, color: Colors.white, duo: true, duoColor: Colors.white),
             )
           else
-            _RoundButton(
-              tooltip: _uploading ? 'Sending files…' : 'Send (Enter)',
-              color: c.accent,
-              onPressed: canSend ? _send : null,
-              child: _uploading
-                  ? SizedBox.square(
-                      dimension: 15,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: c.onAccent),
-                    )
-                  : Glyph(G.arrowUp, size: 18, color: c.onAccent, weight: 2.2),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (attach != null) ...[attach, const SizedBox(width: 2)],
+                Expanded(child: field),
+                mic ?? const SizedBox(width: 4),
+                const SizedBox(width: 2),
+                action,
+              ],
             ),
-            ],
-          ),
         ],
       ),
     );
@@ -1492,11 +1503,6 @@ class _Home extends StatelessWidget {
   final AppState state;
   final Run run;
 
-  String get _greeting {
-    final h = DateTime.now().hour;
-    return h < 5 ? 'Up late' : h < 12 ? 'Good morning' : (h < 18 ? 'Good afternoon' : 'Good evening');
-  }
-
   Future<void> _start(String text, [List<String> files = const []]) async {
     try {
       final id = await core.startConversation(text, botId: state.botId,
@@ -1509,47 +1515,97 @@ class _Home extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.c;
     final team = [for (final id in state.team) core.botFor(id)].whereType<BotView>().toList();
     if (team.length > 1) return TeamHome(core: core, state: state, run: run, bots: team);
     final bot = core.botFor(state.botId);
     if (bot != null && !bot.primary) return BotHome(core: core, state: state, run: run, bot: bot);
+    final c = context.c;
     final mood = state.moodWith(core);
     final jobs = core.ordered.where((t) => t.active).length;
-    // The character is the star: big on a normal window, smaller when space is tight.
-    final hero = (MediaQuery.sizeOf(context).height * .3).clamp(150.0, 270.0);
     final online = core.status == CoreStatus.online;
-    return Center(
+    final ready = core.ordered.take(3).toList();
+    final seeing = core.sight.value['screen_aware'] != false;
+    final hero = (MediaQuery.sizeOf(context).height * .14).clamp(72.0, 120.0);
+    // The Halo canvas the user approved: the halo, one question, one big composer, and what is
+    // ready for you underneath. Outcomes first; the work is one click deeper, in the chat.
+    return Align(
+      alignment: const Alignment(0, -.4),
       child: SingleChildScrollView(
-        padding: const EdgeInsets.fromLTRB(32, 0, 32, 40),
+        padding: EdgeInsets.fromLTRB(Space.gutter(context), 40, Space.gutter(context), 40),
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 700),
+          constraints: const BoxConstraints(maxWidth: 720),
           child: Column(
             mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Aura(
-                size: hero * 1.55,
-                color: switch (mood) {
-                  Mood.listening => c.listen,
-                  Mood.waiting => c.warning,
-                  Mood.problem || Mood.offline => c.danger,
-                  _ => c.accent,
-                },
+              Center(
                 child: state.voice != null
                     ? TalkableCompii(voice: state.voice!, mood: mood, jobs: jobs, size: hero)
                     : SizedBox.square(dimension: hero, child: Ember(mood: mood, jobs: jobs)),
               ),
-              Text('$_greeting.', style: context.type.displaySmall, textAlign: TextAlign.center),
-              const SizedBox(height: 6),
-              Text('What should we get done?', style: context.type.bodyLarge?.copyWith(color: c.muted), textAlign: TextAlign.center),
               const SizedBox(height: 22),
-              VoiceDock(core: core, state: state, onSend: _start, onSendFiles: _start, run: run, showCharacter: false),
+              Text('What should we do?', textAlign: TextAlign.center,
+                  style: context.type.displaySmall?.copyWith(fontSize: 40, height: 1.1, letterSpacing: -.8)),
               const SizedBox(height: 26),
-              TrySaying(
-                items: [for (final (g, title, _, prompt) in suggestions) (g, title, prompt)],
-                onPick: online ? _start : null,
+              VoiceDock(
+                core: core,
+                state: state,
+                onSend: _start,
+                onSendFiles: _start,
+                run: run,
+                showCharacter: false,
+                textFirst: true,
+                large: true,
+                hint: 'Ask anything, or describe what you want done',
+                tools: [
+                  _ToolChip(
+                    glyph: seeing ? G.eye : G.eyeOff,
+                    label: seeing ? 'Sees your screen' : 'Screen off',
+                    tooltip: seeing
+                        ? 'Compii reads the app in front of you when a request needs it. Click to turn it off.'
+                        : 'Compii can’t see your screen. Click to let it read the app in front of you.',
+                    onTap: online ? () => run(() => core.voiceSettings({'screen_aware': !seeing})) : null,
+                  ),
+                  _AgentChip(core: core, state: state),
+                ],
               ),
-              const SizedBox(height: 22),
+              const SizedBox(height: 14),
+              Text.rich(
+                TextSpan(children: [
+                  const TextSpan(text: 'Or hold '),
+                  TextSpan(text: 'Ctrl + Alt', style: TextStyle(color: c.text, fontWeight: FontWeight.w500)),
+                  const TextSpan(text: ' in any app and just say it.'),
+                ]),
+                textAlign: TextAlign.center,
+                style: context.type.bodySmall?.copyWith(color: c.faint, fontSize: 13),
+              ),
+              const SizedBox(height: 32),
+              if (ready.isNotEmpty) ...[
+                Text('Ready for you', style: context.type.labelMedium?.copyWith(color: c.faint)),
+                const SizedBox(height: 10),
+                LayoutBuilder(
+                  builder: (context, box) {
+                    final cols = box.maxWidth >= 620 ? 3 : (box.maxWidth >= 400 ? 2 : 1);
+                    final w = (box.maxWidth - 10 * (cols - 1)) / cols;
+                    return Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        for (final t in ready)
+                          SizedBox(width: w, child: _ResultTile(task: t, core: core, onTap: () => state.open(t.id))),
+                      ],
+                    );
+                  },
+                ),
+              ] else
+                _HomeList(
+                  title: 'Start with',
+                  rows: [
+                    for (final (g, title, _, prompt) in suggestions)
+                      _HomeRow(glyph: g, label: title, onTap: online ? () => _start(prompt) : null),
+                  ],
+                ),
+              const SizedBox(height: 18),
               BriefCard(core: core, run: run),
             ],
           ),
@@ -1559,11 +1615,275 @@ class _Home extends StatelessWidget {
   }
 }
 
-class _Conversation extends StatelessWidget {
-  const _Conversation({required this.task, required this.core, required this.run, required this.state});
+/// A control in the big composer's toolbar: a quiet pill with a glyph and a word.
+class _ToolChip extends StatefulWidget {
+  const _ToolChip({required this.glyph, required this.label, this.tooltip, this.onTap, this.trailing});
+  final GlyphData glyph;
+  final String label;
+  final String? tooltip;
+  final VoidCallback? onTap;
+  final Widget? trailing;
+  @override
+  State<_ToolChip> createState() => _ToolChipState();
+}
+
+class _ToolChipState extends State<_ToolChip> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final chip = Semantics(
+      button: true,
+      enabled: widget.onTap != null,
+      label: widget.label,
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: widget.onTap == null ? SystemMouseCursors.basic : SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            height: 34,
+            padding: const EdgeInsets.symmetric(horizontal: 11),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: _hover && widget.onTap != null ? .10 : .06),
+              borderRadius: Shapes.r10,
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Glyph(widget.glyph, size: 14, color: c.muted),
+                const SizedBox(width: 7),
+                Text(widget.label, style: context.type.labelLarge?.copyWith(color: c.muted, fontSize: 13)),
+                if (widget.trailing != null) ...[const SizedBox(width: 4), widget.trailing!],
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    return widget.tooltip == null ? chip : Tooltip(message: widget.tooltip!, child: chip);
+  }
+}
+
+/// Who this new chat goes to: Compii, or one of the teammates.
+class _AgentChip extends StatelessWidget {
+  const _AgentChip({required this.core, required this.state});
+  final CoreClient core;
   final AppState state;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final bots = [for (final b in core.bots) if (!b.archived) b];
+    final current = core.botFor(state.botId);
+    final name = current?.name ?? 'Compii';
+    if (bots.length < 2) return _ToolChip(glyph: G.team, label: name);
+    return PopupMenuButton<String>(
+      tooltip: 'Who should take this',
+      onSelected: (id) {
+        final bot = core.botFor(id);
+        state.pickBot(bot == null || bot.primary ? null : id);
+      },
+      itemBuilder: (_) => [
+        for (final b in bots)
+          PopupMenuItem(
+            value: b.id,
+            child: Row(
+              children: [
+                BotAvatar(bot: b, size: 18),
+                const SizedBox(width: 10),
+                Expanded(child: Text(b.name, maxLines: 1, overflow: TextOverflow.ellipsis)),
+              ],
+            ),
+          ),
+      ],
+      child: IgnorePointer(
+        child: _ToolChip(glyph: G.team, label: name, onTap: () {}, trailing: Glyph(G.expand, size: 11, color: c.faint)),
+      ),
+    );
+  }
+}
+
+/// One finished, waiting or running piece of work, outcome first: what state it is in, what it
+/// was, and the gist of the result.
+class _ResultTile extends StatefulWidget {
+  const _ResultTile({required this.task, required this.core, required this.onTap});
   final TaskView task;
   final CoreClient core;
+  final VoidCallback onTap;
+  @override
+  State<_ResultTile> createState() => _ResultTileState();
+}
+
+class _ResultTileState extends State<_ResultTile> {
+  bool _hover = false;
+
+  String _gist(TaskView t) {
+    if (t.pendingApproval != null) return '${t.pendingApproval!['label'] ?? 'Waiting for your yes.'}';
+    if (t.active) {
+      final step = t.events.lastWhere(
+          (e) => (e['type'] == 'action_started' || e['type'] == 'action_done') && e['label'] != null,
+          orElse: () => const {})['label'];
+      return step == null ? 'Working on it…' : '$step…';
+    }
+    final text = (t.finalText ?? '').replaceAll(RegExp(r'\s+'), ' ').trim();
+    final first = RegExp(r'^.*?[.!?](\s|$)').firstMatch(text)?.group(0)?.trim() ?? text;
+    return first.isEmpty ? 'No answer was written.' : first;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final t = widget.task;
+    final bot = widget.core.botFor(t.botId);
+    final who = bot == null || bot.primary ? '' : ' · ${bot.name}';
+    final waiting = t.pendingApproval != null;
+    final (String status, Color color) = waiting
+        ? ('Needs you', c.warning)
+        : t.active
+            ? ('Working$who', c.accent)
+            : switch (t.status) {
+                'failed' => ('Problem$who', c.danger),
+                'stopped' => ('Stopped$who', c.faint),
+                _ => ('Done · ${ago(_lastAt(t))}', c.success),
+              };
+    final title = t.fromRoutine ? '${t.origin!['title']}' : titleOf(t);
+    return Semantics(
+      button: true,
+      label: '$status. $title. ${_gist(t)}',
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.click,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            height: 124,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: _hover ? c.hover : c.raised,
+              borderRadius: Shapes.r16,
+              border: Border.all(color: waiting ? c.warning.withValues(alpha: .35) : c.border),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(status, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: context.type.labelMedium?.copyWith(color: color)),
+                const SizedBox(height: 8),
+                Text(title, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: context.type.titleSmall?.copyWith(fontWeight: FontWeight.w600, fontSize: 15)),
+                const SizedBox(height: 6),
+                Expanded(
+                  child: Text(_gist(t), maxLines: 2, overflow: TextOverflow.ellipsis,
+                      style: context.type.bodySmall?.copyWith(color: c.muted, fontSize: 13)),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A titled list on the home page: a label above, hairline rows below.
+class _HomeList extends StatelessWidget {
+  const _HomeList({required this.title, required this.rows});
+  final String title;
+  final List<Widget> rows;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          height: 28,
+          child: Row(
+            children: [
+              Expanded(child: Text(title, style: context.type.labelSmall?.copyWith(color: c.faint))),
+            ],
+          ),
+        ),
+        Container(
+          decoration: BoxDecoration(borderRadius: Shapes.r8, border: Border.all(color: c.border)),
+          clipBehavior: Clip.antiAlias,
+          child: Column(
+            children: [
+              for (var i = 0; i < rows.length; i++) ...[
+                if (i > 0) Divider(height: 1, color: c.border),
+                rows[i],
+              ],
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _HomeRow extends StatefulWidget {
+  const _HomeRow({required this.glyph, required this.label, this.onTap});
+  final GlyphData glyph;
+  final String label;
+  final VoidCallback? onTap;
+  @override
+  State<_HomeRow> createState() => _HomeRowState();
+}
+
+class _HomeRowState extends State<_HomeRow> {
+  bool _hover = false;
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final enabled = widget.onTap != null;
+    return Semantics(
+      button: true,
+      enabled: enabled,
+      label: widget.label,
+      excludeSemantics: true,
+      child: MouseRegion(
+        cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        onEnter: (_) => setState(() => _hover = true),
+        onExit: (_) => setState(() => _hover = false),
+        child: InkWell(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: context.motion(Motion.quick),
+            color: _hover && enabled ? c.hover.withValues(alpha: .6) : Colors.transparent,
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+            child: Row(
+              children: [
+                Glyph(widget.glyph, size: 14, color: enabled ? c.muted : c.faint),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(widget.label, maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: context.type.labelLarge?.copyWith(color: enabled ? c.text : c.faint)),
+                ),
+                if (_hover && enabled)
+                  Glyph(G.chevronRight, size: 13, color: c.faint),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A chat's title, status and controls, drawn inside the window's title bar.
+class _ChatHeader extends StatelessWidget {
+  const _ChatHeader({required this.task, required this.core, required this.state, required this.run});
+  final TaskView task;
+  final CoreClient core;
+  final AppState state;
   final Run run;
 
   @override
@@ -1579,98 +1899,84 @@ class _Conversation extends StatelessWidget {
             'stopped' => ('Stopped', c.faint),
             _ => ('Done', c.success),
           };
+    return Row(
+      children: [
+        if (task.isTeam)
+          Padding(padding: const EdgeInsets.only(right: 8), child: TeamStrip(task: task, core: core))
+        else if (bot != null && !bot.primary)
+          Padding(padding: const EdgeInsets.only(right: 8), child: BotAvatar(bot: bot, size: 18)),
+        Flexible(
+          child: Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis,
+              style: context.type.titleSmall?.copyWith(fontWeight: FontWeight.w600)),
+        ),
+        const SizedBox(width: 10),
+        Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+        const SizedBox(width: 5),
+        Text(label, style: context.type.labelMedium?.copyWith(color: waiting ? c.warning : c.muted)),
+        // What else is true of this chat, as quiet words rather than coloured pills.
+        for (final (bool on, String word, String why) in [
+          (task.fromRoutine, 'Routine', 'Started by a routine'),
+          (task.delegated, 'Delegated', 'A job handed to this agent by another'),
+          (core.sight.value['looking'] == true, 'Seeing your screen', 'Compii is reading your screen now'),
+          (task.probation || (task.delegated && core.botFor(task.botId)?.trust == 'probation'),
+              'On probation', 'This agent drafts but does not send, delete or pay'),
+        ])
+          if (on) ...[
+            Text('  ·  ', style: context.type.labelMedium?.copyWith(color: c.faint)),
+            Tooltip(message: why, child: Text(word, style: context.type.labelMedium?.copyWith(color: c.faint))),
+          ],
+        if (task.answersWith.isNotEmpty) ...[
+          Text('  ·  ', style: context.type.labelMedium?.copyWith(color: c.faint)),
+          Flexible(
+            child: Tooltip(
+              message: 'The AI answering this chat: ${task.answersWith}',
+              child: Text(task.answersWith, maxLines: 1, overflow: TextOverflow.ellipsis,
+                  style: context.type.labelMedium?.copyWith(color: c.faint)),
+            ),
+          ),
+        ],
+        const Spacer(),
+        if (task.active)
+          TextButton.icon(
+            style: TextButton.styleFrom(foregroundColor: c.danger),
+            onPressed: () => run(() => core.stop(task.id)),
+            icon: const Glyph(G.stop, size: 14),
+            label: const Text('Stop'),
+          ),
+        if (!task.active && core.bots.length > 1)
+          IconButton(
+            tooltip: 'Hand over to another agent',
+            onPressed: () => showHandover(context, core: core, state: state, run: run, task: task),
+            icon: const Glyph(G.hand, size: 15),
+          ),
+        if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
+        IconButton(
+          tooltip: 'Character view',
+          onPressed: () => state.setChatView(false),
+          icon: const Glyph(G.pip, size: 15),
+        ),
+        ConversationMenu(task: task, core: core, state: state),
+      ],
+    );
+  }
+}
+
+class _Conversation extends StatelessWidget {
+  const _Conversation({required this.task, required this.core, required this.run, required this.state});
+  final AppState state;
+  final TaskView task;
+  final CoreClient core;
+  final Run run;
+
+  @override
+  Widget build(BuildContext context) {
+    // Its title, status and controls are in the title bar (_ChatHeader); this is the thread.
+    final gutter = Space.gutter(context);
     return Column(
       children: [
-        Container(
-          padding: const EdgeInsets.fromLTRB(28, 4, 20, 12),
-          decoration: BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
-          child: Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(titleOf(task), maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.headlineSmall),
-                    const SizedBox(height: 6),
-                    Wrap(
-                      spacing: 6,
-                      runSpacing: 4,
-                      children: [
-                        if (task.isTeam)
-                          TeamStrip(task: task, core: core)
-                        else if (bot != null && !bot.primary)
-                          BotChip(bot: bot),
-                        Pill(label, color: color),
-                        if (task.answersWith.isNotEmpty)
-                          Tooltip(
-                            message: 'The AI thinking behind this conversation: ${task.answersWith}',
-                            waitDuration: const Duration(milliseconds: 350),
-                            child: ConstrainedBox(
-                              // A model id is long; on a narrow pane or at 2x type it shortens
-                              // rather than pushing the header off the screen.
-                              constraints: const BoxConstraints(maxWidth: 200),
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Glyph(G.memory, size: 12, color: c.faint),
-                                  const SizedBox(width: 5),
-                                  Flexible(
-                                    child: Text(task.answersWith,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: context.type.labelSmall?.copyWith(color: c.faint)),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                        if (core.sight.value['looking'] == true) Pill('Seeing your screen', color: c.accent, glyph: G.eye),
-                        if (task.fromRoutine) Pill('Routine', color: c.accent, glyph: G.routine),
-                        if (task.delegated) Pill('Delegated job', color: c.accent, glyph: G.team),
-                        if (task.probation || (task.delegated && core.botFor(task.botId)?.trust == 'probation'))
-                          Pill('On probation', color: c.warning, glyph: G.warning),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              // Five controls beside a long title: they flow onto a second line rather
-              // than pushing the header out of a narrow pane or at enlarged type.
-              Flexible(
-                child: Wrap(
-                  alignment: WrapAlignment.end,
-                  crossAxisAlignment: WrapCrossAlignment.center,
-                  children: [
-                    if (!task.active && core.bots.length > 1)
-                      TextButton.icon(
-                        onPressed: () => showHandover(context, core: core, state: state, run: run, task: task),
-                        icon: const Glyph(G.hand, size: 15),
-                        label: const Text('Hand over'),
-                      ),
-                    if (task.status == 'done' && !task.fromRoutine) SaveSkillButton(task: task, run: run),
-                    TextButton.icon(
-                      onPressed: () => state.setChatView(false),
-                      icon: const Glyph(G.memory, size: 16),
-                      label: const Text('Character view'),
-                    ),
-                    if (task.active)
-                      OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                            foregroundColor: c.danger, side: BorderSide(color: c.danger.withValues(alpha: .4))),
-                        onPressed: () => run(() => core.stop(task.id)),
-                        icon: const Glyph(G.stop, size: 16, duo: true),
-                        label: const Text('Stop'),
-                      ),
-                    ConversationMenu(task: task, core: core, state: state),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
         Expanded(child: ThreadView(task: task, core: core, run: run, onOpenTask: state.open)),
         Padding(
-          padding: const EdgeInsets.fromLTRB(24, 0, 24, 22),
+          padding: EdgeInsets.fromLTRB(gutter, 0, gutter, 16),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 760),
             child: VoiceDock(
@@ -1679,6 +1985,7 @@ class _Conversation extends StatelessWidget {
               hint: 'Follow up…',
               task: task,
               run: run,
+              textFirst: true,
               onSend: (text) => run(() => core.reply(task.id, text)),
               onSendFiles: (text, files) => run(() => core.reply(task.id, text, attachments: files)),
             ),

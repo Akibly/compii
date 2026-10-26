@@ -17,7 +17,7 @@ import 'voice.dart';
 /// Start typing anywhere (or press the keyboard button) and a slim text box
 /// appears; Esc goes back to voice.
 class VoiceDock extends StatefulWidget {
-  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.onSendFiles, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true, this.showCaptions = true});
+  const VoiceDock({super.key, required this.core, required this.state, required this.onSend, this.onSendFiles, this.task, this.run, this.hint = 'Ask Compii to do something…', this.showCharacter = true, this.showCaptions = true, this.textFirst = false, this.large = false, this.tools = const []});
   final CoreClient core;
   final AppState state;
   final Future<void> Function(String text) onSend;
@@ -33,6 +33,14 @@ class VoiceDock extends StatefulWidget {
 
   /// Show what Compii is saying (off where a speech bubble already shows it).
   final bool showCaptions;
+
+  /// A box you type into is always there and the mic is a button in it: the workspace's
+  /// composer. Voice-first (the default) suits the presence view and the phone.
+  final bool textFirst;
+
+  /// With [textFirst]: the big composer (taller box, a toolbar row) and the controls in it.
+  final bool large;
+  final List<Widget> tools;
 
   @override
   State<VoiceDock> createState() => _VoiceDockState();
@@ -58,7 +66,7 @@ class _VoiceDockState extends State<VoiceDock> {
 
   /// Any printable key opens the text box with that character already in it.
   bool _onKey(KeyEvent e) {
-    if (e is! KeyDownEvent || !mounted) return false;
+    if (e is! KeyDownEvent || !mounted || widget.textFirst) return false;
     if (_typing) {
       if (e.logicalKey == LogicalKeyboardKey.escape && _voice?.canListen == true && ModalRoute.of(context)?.isCurrent == true) {
         setState(() => _typing = false);
@@ -84,6 +92,35 @@ class _VoiceDockState extends State<VoiceDock> {
   Widget build(BuildContext context) {
     final voice = _voice;
     final canTalk = voice?.canListen == true;
+    if (widget.textFirst) {
+      final listening = voice == null ? null : ListenableBuilder(
+        listenable: voice,
+        builder: (context, _) => voice.listening || voice.speaking
+            ? Padding(padding: const EdgeInsets.only(bottom: 8), child: _Hint(voice: voice))
+            : const SizedBox.shrink(),
+      );
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          ?listening,
+          Composer(
+            core: widget.core,
+            state: widget.state,
+            hint: widget.hint,
+            busyTask: widget.task,
+            run: widget.run,
+            seed: _seed,
+            onSendFiles: widget.onSendFiles,
+            onSend: widget.onSend,
+            onVoice: canTalk ? voice!.toggle : null,
+            voiceIsMic: true,
+            large: widget.large,
+            tools: widget.tools,
+          ),
+        ],
+      );
+    }
     if (!canTalk || _typing) {
       return Column(
         mainAxisSize: MainAxisSize.min,

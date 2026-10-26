@@ -17,26 +17,35 @@ bool get _testing => Platform.environment.containsKey('FLUTTER_TEST');
 /// The strip across the top of the content area: drag to move, double-click
 /// to maximise, and Compii-drawn minimise / maximise / close buttons.
 class TitleBar extends StatelessWidget {
-  const TitleBar({super.key, this.title, this.leading, this.actions = const []});
+  const TitleBar({super.key, this.title, this.leading, this.actions = const [], this.center});
   final String? title;
   final Widget? leading;
   final List<Widget> actions;
 
+  /// What the page puts in the bar itself, e.g. a chat's title, status and controls; the
+  /// bar then draws a hairline under it, since it is the page's header too.
+  final Widget? center;
+
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final bar = SizedBox(
+    final bar = Container(
       height: 46,
+      decoration: center == null ? null : BoxDecoration(border: Border(bottom: BorderSide(color: c.border))),
       child: Row(
         children: [
           const SizedBox(width: Space.l),
           ?leading,
-          if (title != null)
-            Flexible(
-              child: Text(title!, maxLines: 1, overflow: TextOverflow.ellipsis,
-                  style: context.type.titleMedium?.copyWith(color: c.text)),
-            ),
-          const Spacer(),
+          if (center != null)
+            Expanded(child: center!)
+          else ...[
+            if (title != null)
+              Flexible(
+                child: Text(title!, maxLines: 1, overflow: TextOverflow.ellipsis,
+                    style: context.type.titleMedium?.copyWith(color: c.text)),
+              ),
+            const Spacer(),
+          ],
           ...actions,
           if (customChrome) ...[const SizedBox(width: Space.s), const _CaptionButtons()] else const SizedBox(width: Space.m),
         ],

@@ -1,12 +1,13 @@
 import 'package:flutter/material.dart';
 
-/// Compii's design tokens.
+/// Compii's design tokens (v5, docs/compii/design-v5-workspace.md; night follows the Halo
+/// canvas the user approved: a near-black ground, white ink, one blue halo accent).
 ///
-/// The language is Apple's: neutral surfaces stacked in layers and separated by
-/// hairlines rather than heavy borders, diffuse shadows, a tight typographic
-/// scale, and motion that leaves quickly and settles slowly. Colour is spent
-/// only on meaning — indigo = Compii, gold = needs you, coral = danger,
-/// green = done, cyan = listening.
+/// A workspace, not a toy: neutral greys with no hue in them, surfaces told
+/// apart by a step of lightness and a hairline instead of a shadow, dense
+/// type, small radii. Colour is spent only on meaning: blue = Compii acting,
+/// amber = needs you, red = failed or dangerous, green = done, cyan =
+/// listening. Primary buttons are ink on canvas, so the accent stays rare.
 @immutable
 class CompiiColors extends ThemeExtension<CompiiColors> {
   const CompiiColors({
@@ -75,67 +76,67 @@ class CompiiColors extends ThemeExtension<CompiiColors> {
   final bool dark;
 
   static const light = CompiiColors(
-    canvas: Color(0xFFF5F5F7),
-    surface: Color(0xFFEFEFF2),
+    canvas: Color(0xFFFFFFFF),
+    surface: Color(0xFFF7F7F8),
     raised: Color(0xFFFFFFFF),
-    sunken: Color(0xFFF4F4F7),
-    hover: Color(0xFFE7E7EC),
+    sunken: Color(0xFFF2F2F3),
+    hover: Color(0xFFEEEEF0),
     border: Color(0x14000000),
-    borderStrong: Color(0x29000000),
-    text: Color(0xFF16151C),
-    muted: Color(0xFF5A5963),
-    faint: Color(0xFF717078),
-    accent: Color(0xFF4B3FE0),
-    accentSoft: Color(0xFFECE9FF),
-    accentGlow: Color(0x334B3FE0),
+    borderStrong: Color(0x24000000),
+    text: Color(0xFF18181B),
+    muted: Color(0xFF5B5B63),
+    faint: Color(0xFF76767E),
+    accent: Color(0xFF2563EB),
+    accentSoft: Color(0xFFEAF1FE),
+    accentGlow: Color(0x332563EB),
     onAccent: Color(0xFFFFFFFF),
-    success: Color(0xFF0F7A45),
-    successSoft: Color(0xFFE4F4EA),
-    warning: Color(0xFF8A5A00),
-    warningSoft: Color(0xFFFFF1D6),
-    danger: Color(0xFFC0342B),
-    dangerSoft: Color(0xFFFCE8E6),
-    listen: Color(0xFF0B7E8A),
-    userBubble: Color(0xFF16151C),
-    shadow: Color(0x14000000),
-    hairline: Color(0x99FFFFFF),
-    glass: Color(0xE8FAFAFC),
-    scrim: Color(0x59000000),
+    success: Color(0xFF15803D),
+    successSoft: Color(0xFFE8F5EC),
+    warning: Color(0xFF9A4A06),
+    warningSoft: Color(0xFFFDF1E3),
+    danger: Color(0xFFDC2626),
+    dangerSoft: Color(0xFFFDECEC),
+    listen: Color(0xFF0E7490),
+    userBubble: Color(0xFFF2F2F3),
+    shadow: Color(0x10000000),
+    hairline: Color(0x00FFFFFF),
+    glass: Color(0xF2FFFFFF),
+    scrim: Color(0x4D000000),
     dark: false,
   );
 
   static const night = CompiiColors(
-    canvas: Color(0xFF0A0910),
-    surface: Color(0xFF121119),
-    raised: Color(0xFF1A1926),
-    sunken: Color(0xFF0C0B12),
-    hover: Color(0xFF232234),
-    border: Color(0x14FFFFFF),
-    borderStrong: Color(0x2EFFFFFF),
-    text: Color(0xFFF6F4FB),
-    muted: Color(0xFFABA6BE),
-    faint: Color(0xFF8B86A0),
-    accent: Color(0xFF9A8CFF),
-    accentSoft: Color(0xFF251F4D),
-    accentGlow: Color(0x409A8CFF),
-    onAccent: Color(0xFF0A0910),
-    success: Color(0xFF4BD48C),
-    successSoft: Color(0xFF123028),
-    warning: Color(0xFFFFC24D),
-    warningSoft: Color(0xFF33270F),
-    danger: Color(0xFFFF7A70),
-    dangerSoft: Color(0xFF3A1A1E),
-    listen: Color(0xFF62D9E8),
-    userBubble: Color(0xFF2A2456),
-    shadow: Color(0x99000000),
-    hairline: Color(0x1FFFFFFF),
-    glass: Color(0xD9141320),
-    scrim: Color(0xA6000000),
+    canvas: Color(0xFF050507),
+    surface: Color(0xFF09090C),
+    raised: Color(0xFF0E0E12),
+    sunken: Color(0xFF0B0B0F),
+    hover: Color(0xFF15151B),
+    border: Color(0x0FFFFFFF),
+    borderStrong: Color(0x24FFFFFF),
+    text: Color(0xFFF5F5F7),
+    muted: Color(0xFFA9A9B3),
+    faint: Color(0xFF8E8E99),
+    accent: Color(0xFF3D8BFF),
+    accentSoft: Color(0xFF0F1B33),
+    accentGlow: Color(0x403D8BFF),
+    onAccent: Color(0xFF050507),
+    success: Color(0xFF3BE08F),
+    successSoft: Color(0xFF0C2419),
+    warning: Color(0xFFFF9B3D),
+    warningSoft: Color(0xFF2A1A0B),
+    danger: Color(0xFFFF5A4E),
+    dangerSoft: Color(0xFF2C1110),
+    listen: Color(0xFF2FD3FF),
+    userBubble: Color(0xFF111116),
+    shadow: Color(0x80000000),
+    hairline: Color(0x0FFFFFFF),
+    glass: Color(0xF00E0E12),
+    scrim: Color(0x99000000),
     dark: true,
   );
 
   /// Text on the user's own message bubble.
-  Color get onBubble => dark ? text : const Color(0xFFF5F5F7);
+  Color get onBubble => text;
 
   @override
   CompiiColors copyWith() => this;
@@ -255,33 +256,22 @@ class Shapes {
 
   /// Radius for a control of a given height: Apple keeps the corner at roughly
   /// a third of the height, so small things look small and large ones look soft.
-  static BorderRadius forHeight(double height) => BorderRadius.all(Radius.circular((height * .32).clamp(6.0, 22.0)));
+  static BorderRadius forHeight(double height) => BorderRadius.all(Radius.circular((height * .22).clamp(5.0, 12.0)));
 
   /// A card at rest: two diffuse shadows in light, a whisper at night, where a
   /// shadow would only muddy an already dark surface.
-  static List<BoxShadow> card(CompiiColors c) => c.dark
-      ? [BoxShadow(color: const Color(0x40000000), blurRadius: 18, offset: const Offset(0, 6))]
-      : [
-          BoxShadow(color: c.shadow.withValues(alpha: .5), blurRadius: 1.5, offset: const Offset(0, 1)),
-          BoxShadow(color: c.shadow.withValues(alpha: .8), blurRadius: 18, offset: const Offset(0, 8)),
-        ];
+  static List<BoxShadow> card(CompiiColors c) => const [];
 
   /// A card under the pointer.
-  static List<BoxShadow> lift(CompiiColors c) => c.dark
-      ? [BoxShadow(color: const Color(0x59000000), blurRadius: 26, offset: const Offset(0, 10))]
-      : [
-          BoxShadow(color: c.shadow.withValues(alpha: .6), blurRadius: 2, offset: const Offset(0, 1)),
-          BoxShadow(color: c.shadow.withValues(alpha: 1), blurRadius: 28, offset: const Offset(0, 14)),
-        ];
+  static List<BoxShadow> lift(CompiiColors c) =>
+      [BoxShadow(color: c.shadow.withValues(alpha: c.dark ? .5 : .6), blurRadius: 12, offset: const Offset(0, 4))];
 
   /// Floating things: composer, dialogs, toasts.
   static List<BoxShadow> float(CompiiColors c) => [
-        BoxShadow(color: c.shadow.withValues(alpha: c.dark ? .8 : .6), blurRadius: 2, offset: const Offset(0, 1)),
-        BoxShadow(
-            color: c.shadow.withValues(alpha: c.dark ? .9 : 1), blurRadius: 44, offset: const Offset(0, 18)),
+        BoxShadow(color: c.shadow.withValues(alpha: c.dark ? .9 : 1), blurRadius: 24, offset: const Offset(0, 8)),
       ];
 
-  static BoxDecoration panel(CompiiColors c, {BorderRadius radius = r18, Color? color, Color? borderColor}) =>
+  static BoxDecoration panel(CompiiColors c, {BorderRadius radius = r10, Color? color, Color? borderColor}) =>
       BoxDecoration(
         color: color ?? c.raised,
         borderRadius: radius,
@@ -337,23 +327,23 @@ ThemeData compiiTheme(Brightness brightness) {
       );
   final t = base.textTheme;
   const label = TextStyle(
-      fontFamily: kText, fontFamilyFallback: kFallback, fontWeight: FontWeight.w600, fontSize: 13.5, letterSpacing: 0);
-  final buttonShape = RoundedRectangleBorder(borderRadius: Shapes.r10);
+      fontFamily: kText, fontFamilyFallback: kFallback, fontWeight: FontWeight.w500, fontSize: 13, letterSpacing: 0);
+  final buttonShape = RoundedRectangleBorder(borderRadius: Shapes.r6);
 
   return base.copyWith(
     textTheme: t.copyWith(
-      displaySmall: d(t.displaySmall, 32, FontWeight.w700, ls: -1, height: 1.12),
-      headlineMedium: d(t.headlineMedium, 26, FontWeight.w700, ls: -.7),
-      headlineSmall: d(t.headlineSmall, 20, FontWeight.w600, ls: -.4),
-      titleLarge: d(t.titleLarge, 17, FontWeight.w600, ls: -.25),
-      titleMedium: d(t.titleMedium, 15, FontWeight.w600, ls: -.1),
-      titleSmall: t.titleSmall?.copyWith(fontWeight: FontWeight.w600, color: c.text, fontSize: 13.5, letterSpacing: -.05),
-      bodyLarge: t.bodyLarge?.copyWith(color: c.text, fontSize: 15.5, height: 1.55, letterSpacing: -.1),
-      bodyMedium: t.bodyMedium?.copyWith(color: c.text, fontSize: 14, height: 1.5, letterSpacing: -.05),
-      bodySmall: t.bodySmall?.copyWith(color: c.muted, fontSize: 12.5, height: 1.45),
-      labelLarge: t.labelLarge?.copyWith(fontWeight: FontWeight.w600, fontSize: 13.5, color: c.text),
+      displaySmall: d(t.displaySmall, 26, FontWeight.w600, ls: -.6, height: 1.15),
+      headlineMedium: d(t.headlineMedium, 22, FontWeight.w600, ls: -.4),
+      headlineSmall: d(t.headlineSmall, 18, FontWeight.w600, ls: -.3),
+      titleLarge: d(t.titleLarge, 16, FontWeight.w600, ls: -.2),
+      titleMedium: d(t.titleMedium, 14, FontWeight.w600, ls: -.1),
+      titleSmall: t.titleSmall?.copyWith(fontWeight: FontWeight.w500, color: c.text, fontSize: 13, letterSpacing: 0),
+      bodyLarge: t.bodyLarge?.copyWith(color: c.text, fontSize: 14.5, height: 1.6, letterSpacing: 0),
+      bodyMedium: t.bodyMedium?.copyWith(color: c.text, fontSize: 13.5, height: 1.5, letterSpacing: 0),
+      bodySmall: t.bodySmall?.copyWith(color: c.muted, fontSize: 12, height: 1.45),
+      labelLarge: t.labelLarge?.copyWith(fontWeight: FontWeight.w500, fontSize: 13, color: c.text),
       labelMedium: t.labelMedium?.copyWith(color: c.muted, fontSize: 12, fontWeight: FontWeight.w500),
-      labelSmall: t.labelSmall?.copyWith(color: c.faint, fontSize: 11, fontWeight: FontWeight.w600, letterSpacing: .5),
+      labelSmall: t.labelSmall?.copyWith(color: c.faint, fontSize: 11, fontWeight: FontWeight.w500, letterSpacing: .3),
     ),
     iconTheme: IconThemeData(color: c.muted, size: 20),
     filledButtonTheme: FilledButtonThemeData(
@@ -361,16 +351,16 @@ ThemeData compiiTheme(Brightness brightness) {
         backgroundColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.disabled)
             ? c.hover
             : s.contains(WidgetState.hovered)
-                ? Color.lerp(c.accent, c.text, .12)
-                : c.accent),
-        foregroundColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.disabled) ? c.faint : c.onAccent),
+                ? Color.lerp(c.text, c.canvas, .14)
+                : c.text),
+        foregroundColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.disabled) ? c.faint : c.canvas),
         overlayColor: WidgetStateProperty.resolveWith(
-            (s) => c.onAccent.withValues(alpha: s.contains(WidgetState.focused) ? .2 : .08)),
+            (s) => c.canvas.withValues(alpha: s.contains(WidgetState.focused) ? .16 : .06)),
         side: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.focused)
-            ? BorderSide(color: c.onAccent.withValues(alpha: .85), width: 2)
+            ? BorderSide(color: c.accent, width: 2)
             : BorderSide.none),
-        minimumSize: const WidgetStatePropertyAll(Size(44, 40)),
-        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 18)),
+        minimumSize: const WidgetStatePropertyAll(Size(40, 34)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 14)),
         shape: WidgetStatePropertyAll(buttonShape),
         elevation: const WidgetStatePropertyAll(0),
         textStyle: const WidgetStatePropertyAll(label),
@@ -393,8 +383,8 @@ ThemeData compiiTheme(Brightness brightness) {
             color: s.contains(WidgetState.focused) ? c.accent : c.borderStrong,
             width: s.contains(WidgetState.focused) ? 1.6 : 1)),
         overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-        minimumSize: const WidgetStatePropertyAll(Size(44, 40)),
-        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 16)),
+        minimumSize: const WidgetStatePropertyAll(Size(40, 34)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 12)),
         shape: WidgetStatePropertyAll(buttonShape),
         textStyle: const WidgetStatePropertyAll(label),
         iconSize: const WidgetStatePropertyAll(18),
@@ -412,9 +402,9 @@ ThemeData compiiTheme(Brightness brightness) {
         side: WidgetStateProperty.resolveWith(
             (s) => s.contains(WidgetState.focused) ? BorderSide(color: c.accent, width: 1.4) : BorderSide.none),
         overlayColor: const WidgetStatePropertyAll(Colors.transparent),
-        minimumSize: const WidgetStatePropertyAll(Size(36, 36)),
-        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 12)),
-        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r10)),
+        minimumSize: const WidgetStatePropertyAll(Size(32, 32)),
+        padding: const WidgetStatePropertyAll(EdgeInsets.symmetric(horizontal: 10)),
+        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r6)),
         textStyle: WidgetStatePropertyAll(label.copyWith(fontSize: 13)),
         iconSize: const WidgetStatePropertyAll(17),
       ),
@@ -431,22 +421,22 @@ ThemeData compiiTheme(Brightness brightness) {
         overlayColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.focused) ? c.accentGlow : Colors.transparent),
         side: WidgetStateProperty.resolveWith(
             (s) => s.contains(WidgetState.focused) ? BorderSide(color: c.accent, width: 1.4) : BorderSide.none),
-        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r10)),
-        iconSize: const WidgetStatePropertyAll(18),
+        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r6)),
+        iconSize: const WidgetStatePropertyAll(17),
       ),
     ),
     inputDecorationTheme: InputDecorationTheme(
       filled: true,
       fillColor: c.sunken,
       isDense: true,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       labelStyle: TextStyle(color: c.muted, fontSize: 13.5),
       floatingLabelStyle: TextStyle(color: c.accent, fontSize: 13, fontWeight: FontWeight.w600),
       hintStyle: TextStyle(color: c.faint),
       helperStyle: TextStyle(color: c.faint, fontSize: 12),
-      border: OutlineInputBorder(borderRadius: Shapes.r10, borderSide: BorderSide(color: c.border)),
-      enabledBorder: OutlineInputBorder(borderRadius: Shapes.r10, borderSide: BorderSide(color: c.border)),
-      focusedBorder: OutlineInputBorder(borderRadius: Shapes.r10, borderSide: BorderSide(color: c.accent, width: 1.6)),
+      border: OutlineInputBorder(borderRadius: Shapes.r6, borderSide: BorderSide(color: c.border)),
+      enabledBorder: OutlineInputBorder(borderRadius: Shapes.r6, borderSide: BorderSide(color: c.borderStrong)),
+      focusedBorder: OutlineInputBorder(borderRadius: Shapes.r6, borderSide: BorderSide(color: c.accent, width: 1.4)),
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.selected) ? Colors.white : c.faint),
@@ -464,7 +454,7 @@ ThemeData compiiTheme(Brightness brightness) {
         side: WidgetStateProperty.resolveWith(
             (s) => BorderSide(color: s.contains(WidgetState.focused) ? c.accent : c.border)),
         overlayColor: WidgetStateProperty.resolveWith((s) => s.contains(WidgetState.focused) ? c.accentGlow : Colors.transparent),
-        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r10)),
+        shape: WidgetStatePropertyAll(RoundedRectangleBorder(borderRadius: Shapes.r6)),
         textStyle: WidgetStatePropertyAll(label.copyWith(fontSize: 13)),
         visualDensity: const VisualDensity(vertical: -1),
       ),
@@ -474,8 +464,8 @@ ThemeData compiiTheme(Brightness brightness) {
       backgroundColor: c.raised,
       selectedColor: c.accentSoft,
       side: BorderSide(color: c.border),
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r10),
-      labelStyle: TextStyle(color: c.text, fontSize: 13, fontWeight: FontWeight.w500, fontFamily: kText),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r6),
+      labelStyle: TextStyle(color: c.text, fontSize: 12.5, fontWeight: FontWeight.w500, fontFamily: kText),
       secondaryLabelStyle: TextStyle(color: c.accent, fontSize: 13, fontWeight: FontWeight.w600, fontFamily: kText),
       checkmarkColor: c.accent,
       showCheckmark: false,
@@ -485,8 +475,8 @@ ThemeData compiiTheme(Brightness brightness) {
     dialogTheme: DialogThemeData(
       backgroundColor: c.raised,
       surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r24, side: BorderSide(color: c.border)),
-      titleTextStyle: d(null, 20, FontWeight.w700, ls: -.4),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r12, side: BorderSide(color: c.borderStrong)),
+      titleTextStyle: d(null, 17, FontWeight.w600, ls: -.2),
       contentTextStyle: TextStyle(color: c.muted, fontSize: 14, height: 1.5),
       elevation: 0,
       shadowColor: Colors.transparent,
@@ -496,14 +486,14 @@ ThemeData compiiTheme(Brightness brightness) {
       surfaceTintColor: Colors.transparent,
       elevation: 0,
       margin: EdgeInsets.zero,
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r18, side: BorderSide(color: c.border)),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r10, side: BorderSide(color: c.border)),
     ),
     listTileTheme: ListTileThemeData(
       iconColor: c.muted,
       textColor: c.text,
-      titleTextStyle: TextStyle(fontFamily: kText, color: c.text, fontSize: 14, fontWeight: FontWeight.w600),
-      subtitleTextStyle: TextStyle(fontFamily: kText, color: c.muted, fontSize: 12.5),
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r12),
+      titleTextStyle: TextStyle(fontFamily: kText, color: c.text, fontSize: 13.5, fontWeight: FontWeight.w500),
+      subtitleTextStyle: TextStyle(fontFamily: kText, color: c.muted, fontSize: 12),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r6),
     ),
     dividerTheme: DividerThemeData(color: c.border, thickness: 1, space: 1),
     scrollbarTheme: ScrollbarThemeData(
@@ -522,11 +512,12 @@ ThemeData compiiTheme(Brightness brightness) {
     popupMenuTheme: PopupMenuThemeData(
       color: c.raised,
       surfaceTintColor: Colors.transparent,
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r14, side: BorderSide(color: c.border)),
-      textStyle: TextStyle(color: c.text, fontSize: 13.5, fontFamily: kText),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r8, side: BorderSide(color: c.borderStrong)),
+      textStyle: TextStyle(color: c.text, fontSize: 13, fontFamily: kText),
     ),
     tooltipTheme: TooltipThemeData(
-      decoration: BoxDecoration(color: c.dark ? c.hover : c.text, borderRadius: Shapes.r8),
+      decoration: BoxDecoration(color: c.dark ? c.raised : c.text, borderRadius: Shapes.r6,
+          border: Border.all(color: c.dark ? c.borderStrong : Colors.transparent)),
       textStyle: TextStyle(color: c.dark ? c.text : c.canvas, fontSize: 12, fontFamily: kText),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       waitDuration: const Duration(milliseconds: 400),
@@ -535,11 +526,11 @@ ThemeData compiiTheme(Brightness brightness) {
       behavior: SnackBarBehavior.floating,
       backgroundColor: c.dark ? c.hover : c.text,
       contentTextStyle: TextStyle(color: c.dark ? c.text : c.canvas, fontFamily: kText, fontSize: 13.5),
-      actionTextColor: c.dark ? c.accent : const Color(0xFFB9B2FF),
-      shape: RoundedRectangleBorder(borderRadius: Shapes.r14),
+      actionTextColor: c.dark ? c.accent : const Color(0xFF93B8FF),
+      shape: RoundedRectangleBorder(borderRadius: Shapes.r8),
       width: 460,
       elevation: 8,
     ),
-    timePickerTheme: TimePickerThemeData(backgroundColor: c.raised, shape: RoundedRectangleBorder(borderRadius: Shapes.r24)),
+    timePickerTheme: TimePickerThemeData(backgroundColor: c.raised, shape: RoundedRectangleBorder(borderRadius: Shapes.r12)),
   );
 }

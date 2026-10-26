@@ -931,9 +931,9 @@ class ApprovalCard extends StatelessWidget {
     final body = input['code'] ?? input['content'];
 
     final approve = FilledButton.icon(
-      style: FilledButton.styleFrom(backgroundColor: destructive ? c.danger : c.accent),
+      style: destructive ? FilledButton.styleFrom(backgroundColor: c.danger, foregroundColor: Colors.white) : null,
       onPressed: () => run(() => core.decide(id, approved: true)),
-      icon: Glyph(destructive ? G.warning : G.check, size: 18),
+      icon: Glyph(destructive ? G.warning : G.check, size: 15),
       label: Text(destructive ? 'Yes, ${kind == 'spend' ? 'pay' : 'delete'}' : 'Approve'),
     );
     final decline = OutlinedButton(
@@ -959,53 +959,56 @@ class ApprovalCard extends StatelessWidget {
           : [approve, decline, ?always],
     );
 
+    // A plain card with an amber edge: amber is "needs you" everywhere in the app. The kind of
+    // action (send, change, delete, pay) is said in words and its own colour, not a gradient.
+    final edge = destructive ? c.danger : c.warning;
     return Container(
       decoration: BoxDecoration(
         color: c.raised,
-        borderRadius: Shapes.r16,
-        border: Border.all(color: fg.withValues(alpha: destructive ? .7 : .4), width: destructive ? 1.8 : 1.2),
-        boxShadow: [
-          ...Shapes.float(c),
-          BoxShadow(color: fg.withValues(alpha: .10), blurRadius: 0, spreadRadius: 4),
-        ],
+        borderRadius: Shapes.r10,
+        border: Border.all(color: edge.withValues(alpha: destructive ? .7 : .45)),
       ),
       clipBehavior: Clip.antiAlias,
-      child: Column(
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(width: 3, color: edge),
+            Expanded(
+              child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: [bg, bg.withValues(alpha: 0)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-            ),
-            padding: const EdgeInsets.fromLTRB(16, 12, 16, 10),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
             child: Row(
               children: [
-                GlyphTile(
-                  glyph: switch (kind) {
+                Glyph(
+                  switch (kind) {
                     'send' => G.send,
                     'delete' => G.trash,
                     'spend' => G.money,
                     _ => G.edit,
                   },
-                  size: 30,
+                  size: 14,
                   color: fg,
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 8),
                 Expanded(
                   child: Text(_tierTitle(kind),
-                      maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleMedium?.copyWith(color: fg)),
+                      maxLines: 1, overflow: TextOverflow.ellipsis,
+                      style: context.type.labelLarge?.copyWith(color: fg, fontWeight: FontWeight.w600)),
                 ),
                 const SizedBox(width: 8),
-                Pill('Needs your okay', color: c.warning, glyph: G.hand),
+                Text('Needs your okay', style: context.type.labelMedium?.copyWith(color: c.warning)),
               ],
             ),
           ),
           Padding(
-            padding: const EdgeInsets.fromLTRB(16, 6, 16, 16),
+            padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${approval['label']}', style: context.type.titleMedium),
+                Text('${approval['label']}', style: context.type.bodyLarge?.copyWith(fontWeight: FontWeight.w500)),
                 if (compact) ...[
                   const SizedBox(height: 10),
                   actions,
@@ -1062,13 +1065,17 @@ class ApprovalCard extends StatelessWidget {
                   ),
                 ),
                 if (!compact) ...[
-                  const SizedBox(height: 14),
+                  const SizedBox(height: 12),
                   actions,
                 ],
               ],
             ),
           ),
         ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
