@@ -9,6 +9,7 @@ import 'bots.dart';
 import 'reader.dart';
 import 'reply_text.dart';
 import 'supervisor.dart';
+import 'outcome.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'chrome.dart';
@@ -459,6 +460,10 @@ class _AssistantTurn extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              // Outcome first (the Halo canvas's task view): the latest answer leads with what it
+              // changed. The header draws nothing while work runs or for a plain chat reply.
+              if (latest && !compact)
+                Padding(padding: const EdgeInsets.only(bottom: 8), child: OutcomeHeader(task: task, core: core)),
               if (handedOver)
                 Padding(
                   padding: const EdgeInsets.only(bottom: 6),
@@ -930,15 +935,23 @@ class ApprovalCard extends StatelessWidget {
     final fields = input.entries.where((e) => e.key != 'code' && e.key != 'content' && e.value != null).toList();
     final body = input['code'] ?? input['content'];
 
-    final approve = FilledButton.icon(
+    // The Halo canvas's Approval board: say what Compii wants to do, show exactly what would
+    // happen, say what cannot be taken back, then two plain choices named after the action.
+    final (String wants, String yes, String no) = switch (kind) {
+      'send' => ('Compii wants to send something', 'Send it', 'Don’t send'),
+      'delete' => ('Compii wants to delete something', 'Yes, delete', 'Keep it'),
+      'spend' => ('Compii wants to spend money', 'Yes, pay', 'Don’t pay'),
+      'change' => ('Compii wants to make a change', 'Make the change', 'Don’t change it'),
+      _ => ('Compii wants to go ahead', 'Approve', 'Decline'),
+    };
+    final approve = FilledButton(
       style: destructive ? FilledButton.styleFrom(backgroundColor: c.danger, foregroundColor: Colors.white) : null,
       onPressed: () => run(() => core.decide(id, approved: true)),
-      icon: Glyph(destructive ? G.warning : G.check, size: 15),
-      label: Text(destructive ? 'Yes, ${kind == 'spend' ? 'pay' : 'delete'}' : 'Approve'),
+      child: Text(yes),
     );
     final decline = OutlinedButton(
       onPressed: () => run(() => core.decide(id, approved: false)),
-      child: const Text('Decline'),
+      child: Text(no),
     );
     // Grok-style "Always allow": saved as a rule for this tool on this folder,
     // site, window or recipients. Never offered for payments.
@@ -949,133 +962,133 @@ class ApprovalCard extends StatelessWidget {
           )
         : null;
     final why = '${approval['why'] ?? ''}';
-
     final actions = Wrap(
       spacing: 8,
       runSpacing: 8,
-      alignment: destructive ? WrapAlignment.spaceBetween : WrapAlignment.start,
-      children: destructive
-          ? [decline, approve]
-          : [approve, decline, ?always],
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [?always, decline, approve],
     );
-
-    // A plain card with an amber edge: amber is "needs you" everywhere in the app. The kind of
-    // action (send, change, delete, pay) is said in words and its own colour, not a gradient.
-    final edge = destructive ? c.danger : c.warning;
-    return Container(
-      decoration: BoxDecoration(
-        color: c.raised,
-        borderRadius: Shapes.r10,
-        border: Border.all(color: edge.withValues(alpha: destructive ? .7 : .45)),
-      ),
-      clipBehavior: Clip.antiAlias,
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Container(width: 3, color: edge),
-            Expanded(
-              child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
+    Widget note(Color dot, String text, {Color? color}) => Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 14, 0),
-            child: Row(
-              children: [
-                Glyph(
+            padding: const EdgeInsets.only(top: 6),
+            child: Container(width: 6, height: 6, decoration: BoxDecoration(color: dot, shape: BoxShape.circle)),
+          ),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: context.type.bodySmall?.copyWith(color: color ?? c.muted, fontSize: 13))),
+        ],
+      ),
+    );
+    final preview = (fields.isEmpty && body == null)
+        ? null
+        : Container(
+            constraints: const BoxConstraints(maxHeight: 320),
+            decoration: BoxDecoration(
+              color: c.sunken,
+              borderRadius: Shapes.r14,
+              border: Border.all(color: c.border),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: SingleChildScrollView(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  for (var i = 0; i < fields.length; i++)
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                      decoration: BoxDecoration(
+                        border: i < fields.length - 1 || body != null
+                            ? Border(bottom: BorderSide(color: c.border))
+                            : null,
+                      ),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SizedBox(
+                            width: 96,
+                            child: Text(_fieldName(fields[i].key), maxLines: 2, overflow: TextOverflow.ellipsis,
+                                style: context.type.bodySmall?.copyWith(color: c.faint, fontSize: 13)),
+                          ),
+                          Expanded(child: _FieldValue(name: fields[i].key, value: fields[i].value)),
+                        ],
+                      ),
+                    ),
+                  if (body != null)
+                    Padding(
+                      padding: const EdgeInsets.all(14),
+                      child: SelectableText(
+                        '$body',
+                        style: TextStyle(fontFamily: 'Cascadia Mono', fontFamilyFallback: const ['Consolas'],
+                            fontSize: 12.5, height: 1.5, color: c.text),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          );
+    return Container(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      decoration: BoxDecoration(
+        color: c.raised,
+        borderRadius: Shapes.r20,
+        border: Border.all(color: (destructive ? c.danger : c.warning).withValues(alpha: destructive ? .6 : .35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(color: (destructive ? c.danger : c.warning).withValues(alpha: .14),
+                    shape: BoxShape.circle),
+                alignment: Alignment.center,
+                child: Glyph(
                   switch (kind) {
                     'send' => G.send,
                     'delete' => G.trash,
                     'spend' => G.money,
                     _ => G.edit,
                   },
-                  size: 14,
-                  color: fg,
+                  size: 16,
+                  color: destructive ? c.danger : c.warning,
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(_tierTitle(kind),
-                      maxLines: 1, overflow: TextOverflow.ellipsis,
-                      style: context.type.labelLarge?.copyWith(color: fg, fontWeight: FontWeight.w600)),
-                ),
-                const SizedBox(width: 8),
-                Text('Needs your okay', style: context.type.labelMedium?.copyWith(color: c.warning)),
-              ],
-            ),
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 6, 14, 12),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('${approval['label']}', style: context.type.bodyLarge?.copyWith(fontWeight: FontWeight.w500)),
-                if (compact) ...[
-                  const SizedBox(height: 10),
-                  actions,
-                ],
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxHeight: 300),
-                  child: SingleChildScrollView(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        if (why.isNotEmpty) ...[
-                          const SizedBox(height: 6),
-                          Text(why, style: context.type.bodySmall?.copyWith(color: c.danger)),
-                        ],
-                        if (_tierWhy(kind).isNotEmpty) ...[
-                          const SizedBox(height: 4),
-                          Text(_tierWhy(kind), style: context.type.bodySmall),
-                        ],
-                        if (fields.isNotEmpty) ...[
-                          const SizedBox(height: 10),
-                          for (final f in fields)
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 4),
-                              child: Row(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  SizedBox(
-                                    width: 96,
-                                    child: Text(_fieldName(f.key),
-                                        maxLines: 2, overflow: TextOverflow.ellipsis, style: context.type.bodySmall),
-                                  ),
-                                  Expanded(child: _FieldValue(name: f.key, value: f.value)),
-                                ],
-                              ),
-                            ),
-                        ],
-                        if (body != null) ...[
-                          const SizedBox(height: 8),
-                          Container(
-                            width: double.infinity,
-                            constraints: const BoxConstraints(maxHeight: 180),
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r8),
-                            child: SingleChildScrollView(
-                              child: SelectableText(
-                                '$body',
-                                style: TextStyle(fontFamily: 'Cascadia Mono', fontFamilyFallback: const ['Consolas'], fontSize: 12.5, color: c.text),
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
-                ),
-                if (!compact) ...[
-                  const SizedBox(height: 12),
-                  actions,
-                ],
-              ],
-            ),
-          ),
-        ],
               ),
-            ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(wants, style: context.type.labelMedium?.copyWith(color: fg)),
+                    const SizedBox(height: 2),
+                    Text(_tierTitle(kind), style: context.type.headlineSmall),
+                  ],
+                ),
+              ),
+              Text('Needs your okay', style: context.type.labelMedium?.copyWith(color: c.warning)),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text('${approval['label']}', style: context.type.bodyLarge?.copyWith(fontWeight: FontWeight.w500)),
+          if (compact) ...[const SizedBox(height: 12), actions],
+          if (preview != null) ...[const SizedBox(height: 12), preview],
+          const SizedBox(height: 8),
+          if (why.isNotEmpty) note(c.danger, why, color: c.danger),
+          if (_tierWhy(kind).isNotEmpty) note(destructive ? c.danger : c.warning, _tierWhy(kind)),
+          // What a yes covers, as the default dial works: a change is allowed for the rest of this
+          // task; sending, deleting and paying ask again every time.
+          note(c.faint, kind == 'change'
+              ? 'Approving lets this task make changes like this without asking again.'
+              : 'Approving covers this one step. The next one asks again.'),
+          if (!compact) ...[
+            const SizedBox(height: 16),
+            Align(alignment: Alignment.centerRight, child: actions),
           ],
-        ),
+        ],
       ),
     );
   }

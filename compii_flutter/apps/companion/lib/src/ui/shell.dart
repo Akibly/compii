@@ -20,7 +20,7 @@ import 'trust.dart';
 import 'voice.dart';
 import 'voice_dock.dart';
 import 'stage.dart';
-import 'team.dart';
+import 'team_halo.dart';
 import 'library.dart';
 import 'knowledge.dart';
 import 'research.dart';
@@ -280,7 +280,7 @@ class Workspace extends StatelessWidget {
       Section.library => LibraryPage(run: _run),
       Section.knowledge => KnowledgePage(run: _run),
       Section.research => ResearchPage(run: _run),
-      Section.team => TeamPage(core: core, state: state, run: _run),
+      Section.team => TeamHaloPage(core: core, state: state, run: _run),
       Section.safety => SafetyPage(run: _run),
       Section.updates => UpdatesPage(core: core, run: _run, onOpenTask: state.open),
       Section.settings => SettingsPage(core: core, state: state, run: _run),

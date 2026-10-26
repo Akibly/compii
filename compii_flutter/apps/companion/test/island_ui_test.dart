@@ -529,8 +529,9 @@ void main() {
       expect(find.text('Needs your okay'), findsWidgets);
       expect(find.text('Email Sam the sorted list'), findsOneWidget);
       expect(find.text('sam@example.com'), findsOneWidget);
-      expect(find.text('Approve'), findsOneWidget);
-      expect(find.text('Decline'), findsOneWidget);
+      // Named after the action, as on the Halo canvas's Approval board: an email is sent or not sent.
+      expect(find.text('Send it'), findsOneWidget);
+      expect(find.text('Don’t send'), findsOneWidget);
       expect(
         find.textContaining('Approving covers this step only'),
         findsOneWidget,
@@ -693,7 +694,7 @@ void main() {
       expect(c.taskId, 't9');
       expect(c.phase, IslandPhase.approval);
       expect(
-        find.text('Approve'),
+        find.text('Send it'),
         findsOneWidget,
         reason: 'an approval with no detail fields is still answerable',
       );
