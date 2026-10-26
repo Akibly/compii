@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -70,6 +71,25 @@ void restoreCompiiLook(SharedPreferences p) {
   if (coat != null) {
     compiiColor.value = parseHex(coat) ?? _legacyCoats[coat] ?? haloBlue;
   }
+}
+
+/// The island and the cursor overlay run as their own processes, so the form and
+/// colour chosen in the main window reach them through the saved preferences:
+/// read now and re-read every few seconds, which is cheap and keeps every
+/// surface in the chosen colour.
+void followCompiiLook({Duration every = const Duration(seconds: 4)}) {
+  Future<void> read() async {
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.reload();
+      restoreCompiiLook(p);
+    } on Object {
+      // Preferences unreadable: the default look stays.
+    }
+  }
+
+  read();
+  Timer.periodic(every, (_) => read());
 }
 
 /// Compii is a piece of black glass with two eyes of light and a halo, in a

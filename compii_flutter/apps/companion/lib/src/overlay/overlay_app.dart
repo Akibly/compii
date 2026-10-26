@@ -42,6 +42,7 @@ Future<void> runOverlay() async {
   // Full-screen, topmost, click-through (layered + transparent), no focus and
   // hidden from the taskbar: all set natively when the popup is created.
   await windowManager.setBackgroundColor(Colors.transparent);
+  followCompiiLook();
   runApp(
     OverlayApp(
       core: CoreClient()..start(),

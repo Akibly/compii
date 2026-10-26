@@ -4,6 +4,7 @@ import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:compii/src/overlay/buddy_layer.dart';
+import 'package:compii/src/overlay/halo_cursor.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -11,8 +12,8 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'the buddy stays on the pointer while Compii works, and a long answer opens as a '
-    'readable panel in the top corner away from the cursor',
+    'the eyes stay on the pointer while Compii works, and a long answer opens beside '
+    'the cursor, outcome first, and stays put while you read',
     (tester) async {
       const size = Size(1400, 900);
       tester.view.physicalSize = size;
@@ -78,7 +79,7 @@ void main() {
         final bytes = await tester.runAsync(
           () => image.toByteData(format: ui.ImageByteFormat.png),
         );
-        final out = Directory('../../../docs/compii/build-previews/v5')
+        final out = Directory('../../../docs/compii/build-previews/halo')
           ..createSync(recursive: true);
         await tester.runAsync(
           () => File(
@@ -116,68 +117,71 @@ void main() {
         reason: 'the pointer still drags the mark along while Compii works',
       );
 
-      // A researched answer: a wide panel of its own, not a bubble by the mark.
-      final long = (
-        'Revenue grew 18 per cent in the second quarter, mostly from the two new '
-        'regions, and the margin held at 41 per cent even after the shipping increase. '
-    ) * 3;
+      // A researched answer: a wide card of its own, its first sentence the headline.
+      const head =
+          'Revenue grew 18 per cent in the second quarter, mostly from the two new '
+          'regions, and the margin held at 41 per cent even after the shipping increase.';
+      final long = '$head ${'$head ' * 2}'.trim();
       events.add({'type': 'voice_buddy', 'state': 'answer', 'text': long});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       await shot('answer');
-      final words = find.text(long);
-      expect(words, findsOneWidget);
-      final box = tester.getSize(words);
-      expect(box.width, greaterThan(300), reason: 'the panel is wide, not 290 of bubble');
-      expect(box.height, greaterThan(200), reason: 'paragraphs get paragraph room');
-      expect(
-        tester.getTopLeft(words).dx,
-        lessThan(60),
-        reason: 'the pointer is on the right, so the answer opens top-left',
-      );
-      expect(
-        tester.getTopLeft(words).dy,
-        lessThan(60),
-        reason: 'and at the top, where the taskbar is not',
-      );
+      expect(find.text(head), findsOneWidget, reason: 'the outcome leads, as its own headline');
+      final rest = find.text(long.substring(head.length + 1));
+      expect(rest, findsOneWidget, reason: 'and the detail follows under it');
+      expect(find.text('Copy'), findsOneWidget);
+      expect(find.text('Dismiss'), findsOneWidget);
+      final card = tester.getRect(rest);
+      expect(card.width, greaterThan(300), reason: 'the card is wide enough for paragraphs');
+      expect(card.right, lessThan(mouse.dx), reason: 'the pointer is on the right, so it opens to its left');
+      expect(card.right, greaterThan(mouse.dx - 80), reason: 'but beside the cursor, not in a far corner');
+      expect(card.top, greaterThan(mouse.dy), reason: 'and below the pointer, clear of what it is on');
       expect(
         (state().buddyPosition - mouse).distance,
         lessThan(64),
-        reason: 'answering never sends the mark off to a corner',
+        reason: 'answering never sends the eyes off to a corner',
       );
 
-      // Moving the mouse while you read does not swing the card to the other side.
+      // Moving the mouse while you read does not drag the card along.
       mouse = const Offset(240, 300);
       for (var i = 0; i < 40; i++) {
         await tester.pump(const Duration(milliseconds: 16));
       }
-      expect(
-        tester.getTopLeft(words).dx,
-        lessThan(60),
-        reason: 'the corner is latched for as long as the card is up',
-      );
+      expect(tester.getRect(rest).topLeft, card.topLeft, reason: 'the card is latched while it is up');
       expect(
         (state().buddyPosition - mouse).distance,
         lessThan(64),
-        reason: 'and the mark came to the new pointer anyway',
+        reason: 'and the eyes came to the new pointer anyway',
       );
       // All of it fits, so Compii does not claim a part of it is elsewhere.
       expect(find.text('The full answer is in Compii'), findsNothing);
 
-      // Longer than the corner can hold: then, and only then, the note appears.
+      // Longer than the card can hold: then, and only then, the note appears.
       final huge = '$long ' * 24;
       events.add({'type': 'voice_buddy', 'state': 'answer', 'text': huge});
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
       expect(find.text('The full answer is in Compii'), findsOneWidget);
-      final cut = tester.getSize(find.text(huge));
+      final cut = tester.getSize(find.text(huge.trim().substring(head.length + 1)));
       expect(
         cut.height,
-        allOf(greaterThan(box.height), lessThan(900 * .52)),
-        reason: 'it fills the corner panel and stops there, instead of running up '
-            'the screen or shrinking to two lines',
+        allOf(greaterThan(card.height), lessThan(900 * .5)),
+        reason: 'it fills the card and stops there, instead of running down the screen',
       );
       await shot('truncated');
+
+      // Copy puts the whole answer on the clipboard, not just what fits.
+      String? copied;
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(SystemChannels.platform, (call) async {
+        if (call.method == 'Clipboard.setData') copied = (call.arguments as Map)['text'] as String;
+        return null;
+      });
+      await tester.tap(find.text('Copy'));
+      await tester.pump();
+      expect(copied, huge);
+      await tester.tap(find.text('Dismiss'));
+      await tester.pump();
+      expect(find.text('Copy'), findsNothing, reason: 'Dismiss closes it');
 
       // Free again: it goes back to the pointer.
       events.add({'type': 'voice_buddy', 'state': 'idle', 'text': ''});
@@ -196,7 +200,7 @@ void main() {
   );
 
   testWidgets(
-    'the cursor buddy rides beside the pointer without covering it, listens, answers and truly aims at what it points at',
+    'the eyes ride beside the pointer without covering it, listen, answer, and spotlight what they show you',
     (tester) async {
       const capture = bool.fromEnvironment('CAPTURE');
       if (capture) {
@@ -265,7 +269,7 @@ void main() {
 
       Offset buddy() => tester.getCenter(
         find.byWidgetPredicate(
-          (w) => w is CustomPaint && w.painter is SparkPainter,
+          (w) => w is CustomPaint && w.painter is CursorMarkPainter,
         ),
       );
       BuddyLayerState buddyState() =>
@@ -333,7 +337,7 @@ void main() {
         final bytes = await tester.runAsync(
           () => image.toByteData(format: ui.ImageByteFormat.png),
         );
-        final out = Directory('../../../docs/compii/build-previews/v4')
+        final out = Directory('../../../docs/compii/build-previews/halo')
           ..createSync(recursive: true);
         await tester.runAsync(
           () => File(
@@ -352,6 +356,12 @@ void main() {
       await tester.pump();
       await tester.pump();
       expect(find.text('how do I add a table here'), findsOneWidget);
+      expect(find.text('Listening'), findsOneWidget, reason: 'the card says what it is doing');
+      expect(
+        find.byWidgetPredicate((w) => w is CustomPaint && w.painter is CursorRingPainter),
+        findsOneWidget,
+        reason: 'a halo rings the pointer while it listens',
+      );
       await shot('listening');
 
       events.add({
@@ -398,9 +408,15 @@ void main() {
       expect(
         (state.aimAngle - wanted).abs(),
         lessThan(.05),
-        reason: 'its beam is aimed at the exact spot',
+        reason: 'its eyes look at the exact spot',
       );
       expect(state.pointingAt, isNotNull);
+      expect(find.text('Showing you'), findsOneWidget);
+      expect(
+        find.byWidgetPredicate((w) => w is CustomPaint && w.painter is SpotlightPainter),
+        findsOneWidget,
+        reason: 'the screen dims around the one thing it is showing',
+      );
       await shot('pointing');
 
       // The label closes by itself once Compii has finished talking.

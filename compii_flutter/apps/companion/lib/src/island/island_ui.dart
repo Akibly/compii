@@ -140,10 +140,10 @@ class _IslandViewState extends State<IslandView> {
   /// wider, so it never clips a word. Height stays at the cutout height.
   Size _compactSize(IslandController c, double maxW, double maxH) {
     final listening = c.stage == IslandStage.listening;
-    final label = _compactLabel(c);
-    final style =
-        (_theme.textTheme.labelLarge ?? const TextStyle(fontSize: 13.5))
-            .copyWith(fontWeight: FontWeight.w600);
+    final label = _compactLabel(c, hover: _hover);
+    final style = (_theme.textTheme.labelLarge ?? const TextStyle(fontSize: 13.5)).copyWith(
+      fontWeight: FontWeight.w600,
+    );
     final painter = TextPainter(
       text: TextSpan(text: label, style: style),
       maxLines: 1,
@@ -154,7 +154,7 @@ class _IslandViewState extends State<IslandView> {
     final chrome = listening ? 173.0 : 75.0;
     final width = math.min(
       maxW,
-      math.max(listening ? 300.0 : 126.0, chrome + painter.width + 4),
+      label.isEmpty ? 84.0 : math.max(listening ? 300.0 : 126.0, chrome + painter.width + 4),
     );
     final height = math.min(maxH, math.max(36.0, painter.height + 18));
     return Size(width, height);
@@ -166,8 +166,7 @@ class _IslandViewState extends State<IslandView> {
 
   KeyEventResult _enter(KeyEvent event, {required bool ask}) {
     if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    if (event.logicalKey != LogicalKeyboardKey.enter &&
-        event.logicalKey != LogicalKeyboardKey.numpadEnter) {
+    if (event.logicalKey != LogicalKeyboardKey.enter && event.logicalKey != LogicalKeyboardKey.numpadEnter) {
       return KeyEventResult.ignored;
     }
     // Shift+Enter is a new line; so are Enter presses while an IME is composing
@@ -195,38 +194,22 @@ class _IslandViewState extends State<IslandView> {
     return Theme(
       data: _theme,
       child: CallbackShortcuts(
-        bindings: {
-          const SingleActivator(LogicalKeyboardKey.escape): () => c.collapse(),
-        },
+        bindings: {const SingleActivator(LogicalKeyboardKey.escape): () => c.collapse()},
         child: Focus(
           autofocus: false,
           child: LayoutBuilder(
             builder: (context, box) {
               final m = widget.metrics;
-              final maxW = math.max(
-                240.0,
-                math.min(m.maxCardWidth, box.maxWidth - 2 * m.margin),
-              );
-              final maxH = math.max(
-                260.0,
-                math.min(
-                  m.maxCardHeight,
-                  box.maxHeight - 2 * m.margin - m.shadowInset,
-                ),
-              );
+              final maxW = math.max(240.0, math.min(m.maxCardWidth, box.maxWidth - 2 * m.margin));
+              final maxH = math.max(260.0, math.min(m.maxCardHeight, box.maxHeight - 2 * m.margin - m.shadowInset));
               final stage = c.stage;
-              final compact =
-                  stage == IslandStage.compact ||
-                  stage == IslandStage.listening;
+              final compact = stage == IslandStage.compact || stage == IslandStage.listening;
               final scale = MediaQuery.textScalerOf(context).scale(1);
               // At large type the card itself gets taller. Squeezing the same
               // 420 px would leave the conversation no room at all; the
               // placement maths keeps using the normal size.
               final grow = (scale - 1).clamp(0.0, 2.0);
-              final limit = math.max(
-                260.0,
-                box.maxHeight - 2 * m.margin - m.shadowInset,
-              );
+              final limit = math.max(260.0, box.maxHeight - 2 * m.margin - m.shadowInset);
               final size = compact
                   ? _compactSize(c, maxW, maxH)
                   : Size(
@@ -236,9 +219,7 @@ class _IslandViewState extends State<IslandView> {
                         // than taken from a thread, and 300 cut its own footer hint in
                         // half. This clears header, field, toolbar, two rows of
                         // suggestions and the two-line hint; anything more scrolls.
-                        stage == IslandStage.ask
-                            ? 360 + grow * 90
-                            : maxH + grow * 160,
+                        stage == IslandStage.ask ? 360 + grow * 90 : maxH + grow * 160,
                         limit,
                       ),
                     );
@@ -284,6 +265,12 @@ class _IslandViewState extends State<IslandView> {
                 width: size.width,
                 height: size.height,
                 radius: compact ? size.height / 2 : _islandRadius,
+                halo: compact && c.signal == IslandSignal.working,
+                rim: switch (c.signal) {
+                  IslandSignal.needsYou => context.c.warning,
+                  IslandSignal.failed => context.c.danger,
+                  _ => null,
+                },
                 child: _Enter(key: ValueKey(slot), child: content),
               );
               return Align(
@@ -361,20 +348,20 @@ class _Mark extends StatelessWidget {
   final bool listening;
 
   @override
-  Widget build(BuildContext context) =>
-      IslandEyes(signal: signal, size: size, level: level, listening: listening);
+  Widget build(BuildContext context) => IslandEyes(signal: signal, size: size, level: level, listening: listening);
 }
 
 // ------------------------------------------------------------- the capsule
 
-/// Compact: the camera cutout. A black pill holding a mark, one label and the
-/// colour that says what is happening. No idle animation, no bounce, no glow;
-/// it sits still until you click it or the hotkey calls it.
-String _compactLabel(IslandController c) {
+/// Compact: the camera cutout. At rest it is only Compii's eyes in a black pill:
+/// no words, no badge. Hovering offers "Ask Compii"; anything happening says
+/// itself in one short line, in the colour of what it is.
+String _compactLabel(IslandController c, {bool hover = false}) {
   if (c.stage == IslandStage.listening) {
     return c.voice?.busy == true ? 'Transcribing' : 'Listening';
   }
-  return c.signal == IslandSignal.none ? 'Ask Compii' : c.capsuleLabel;
+  if (c.signal == IslandSignal.none) return hover ? 'Ask Compii' : '';
+  return c.capsuleLabel;
 }
 
 class _Capsule extends StatelessWidget {
@@ -401,7 +388,7 @@ class _Capsule extends StatelessWidget {
     final c = context.c;
     final listening = controller.stage == IslandStage.listening;
     final signal = controller.signal;
-    final label = _compactLabel(controller);
+    final label = _compactLabel(controller, hover: hover);
     final color = _signalColor(c, signal);
 
     return MouseRegion(
@@ -421,19 +408,9 @@ class _Capsule extends StatelessWidget {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               if (listening) ...[
-                _Mark(
-                  size: 18,
-                  signal: IslandSignal.listening,
-                  level: controller.voice?.level ?? 0,
-                  listening: true,
-                ),
+                _Mark(size: 18, signal: IslandSignal.listening, level: controller.voice?.level ?? 0, listening: true),
                 const SizedBox(width: 8),
-                _Waveform(
-                  level: controller.voice?.level ?? 0,
-                  color: c.listen,
-                  width: 32,
-                  height: 20,
-                ),
+                _Waveform(level: controller.voice?.level ?? 0, color: c.listen, width: 32, height: 20),
                 const SizedBox(width: 9),
                 Flexible(
                   child: Text(
@@ -447,34 +424,23 @@ class _Capsule extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(width: 2),
-                _icon(
-                  context,
-                  G.check,
-                  'Stop listening and use it',
-                  controller.finishListening,
-                ),
-                _icon(
-                  context,
-                  G.close,
-                  'Cancel listening',
-                  controller.cancelListening,
-                ),
+                _icon(context, G.check, 'Stop listening and use it', controller.finishListening),
+                _icon(context, G.close, 'Cancel listening', controller.cancelListening),
               ] else ...[
                 _Mark(size: 18, signal: signal),
-                const SizedBox(width: 9),
-                Flexible(
-                  child: Text(
-                    label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: context.type.labelLarge?.copyWith(
-                      color: signal == IslandSignal.none
-                          ? (hover ? c.text : c.muted)
-                          : color,
-                      fontWeight: FontWeight.w600,
+                if (label.isNotEmpty) const SizedBox(width: 9),
+                if (label.isNotEmpty)
+                  Flexible(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: context.type.labelLarge?.copyWith(
+                        color: signal == IslandSignal.none ? (hover ? c.text : c.muted) : color,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
                   ),
-                ),
               ],
             ],
           ),
@@ -519,31 +485,16 @@ class _DockMenu extends StatelessWidget {
         decoration: BoxDecoration(
           color: _islandBlack,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: hc ? _islandRimStrong : _islandRim,
-            width: hc ? 1.6 : 1,
-          ),
+          border: Border.all(color: hc ? _islandRimStrong : _islandRim, width: hc ? 1.6 : 1),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             _MenuLabel('Placement'),
-            _MenuRow(
-              glyph: G.collapse,
-              label: 'Top left',
-              onTap: () => onDock(IslandDock.left),
-            ),
-            _MenuRow(
-              glyph: G.menu,
-              label: 'Top centre',
-              onTap: () => onDock(IslandDock.center),
-            ),
-            _MenuRow(
-              glyph: G.chevronRight,
-              label: 'Top right',
-              onTap: () => onDock(IslandDock.right),
-            ),
+            _MenuRow(glyph: G.collapse, label: 'Top left', onTap: () => onDock(IslandDock.left)),
+            _MenuRow(glyph: G.menu, label: 'Top centre', onTap: () => onDock(IslandDock.center)),
+            _MenuRow(glyph: G.chevronRight, label: 'Top right', onTap: () => onDock(IslandDock.right)),
             _MenuRow(glyph: G.sync, label: 'Reset position', onTap: onReset),
             const Divider(height: 9),
             _MenuLabel('Wake shortcut'),
@@ -559,35 +510,21 @@ class _DockMenu extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(12, 4, 12, 2),
                 child: Text(
                   'Windows did not take that shortcut. $hotkeyError',
-                  style: context.type.labelSmall?.copyWith(
-                    color: c.warning,
-                    height: 1.35,
-                  ),
+                  style: context.type.labelSmall?.copyWith(color: c.warning, height: 1.35),
                 ),
               ),
             const Divider(height: 9),
             _MenuLabel('When Compii needs you'),
-            _MenuRow(
-              glyph: G.bell,
-              label: 'Tell me: ${attention.label}',
-              onTap: onAttention,
-            ),
+            _MenuRow(glyph: G.bell, label: 'Tell me: ${attention.label}', onTap: onAttention),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 4),
               child: Text(
                 attention.hint,
-                style: context.type.labelSmall?.copyWith(
-                  color: context.c.faint,
-                  height: 1.35,
-                ),
+                style: context.type.labelSmall?.copyWith(color: context.c.faint, height: 1.35),
               ),
             ),
             const Divider(height: 9),
-            _MenuRow(
-              glyph: G.external,
-              label: 'Open Compii',
-              onTap: onRevealMain,
-            ),
+            _MenuRow(glyph: G.external, label: 'Open Compii', onTap: onRevealMain),
           ],
         ),
       ),
@@ -603,21 +540,13 @@ class _MenuLabel extends StatelessWidget {
     padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
     child: Text(
       text.toUpperCase(),
-      style: context.type.labelSmall?.copyWith(
-        color: context.c.faint,
-        letterSpacing: .7,
-      ),
+      style: context.type.labelSmall?.copyWith(color: context.c.faint, letterSpacing: .7),
     ),
   );
 }
 
 class _MenuRow extends StatelessWidget {
-  const _MenuRow({
-    required this.glyph,
-    required this.label,
-    required this.onTap,
-    this.selected = false,
-  });
+  const _MenuRow({required this.glyph, required this.label, required this.onTap, this.selected = false});
   final GlyphData glyph;
   final String label;
   final VoidCallback onTap;
@@ -640,9 +569,7 @@ class _MenuRow extends StatelessWidget {
                 label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: context.type.labelLarge?.copyWith(
-                  color: selected ? c.accent : c.text,
-                ),
+                style: context.type.labelLarge?.copyWith(color: selected ? c.accent : c.text),
               ),
             ),
             if (selected) Glyph(G.check, size: 15, color: c.accent),
@@ -718,11 +645,7 @@ class _AskCardState extends State<_AskCard> {
               context,
               G.clock,
               'Recent conversations',
-              () => setState(
-                () => _panel = _panel == _Panel.history
-                    ? _Panel.none
-                    : _Panel.history,
-              ),
+              () => setState(() => _panel = _panel == _Panel.history ? _Panel.none : _Panel.history),
             ),
             _icon(context, G.external, 'Open Compii', widget.onRevealMain),
             _icon(context, G.close, 'Close (Esc)', c.collapse),
@@ -738,10 +661,7 @@ class _AskCardState extends State<_AskCard> {
                   _NeedsYouRow(controller: c, task: waiting),
                   const SizedBox(height: 8),
                 ],
-                if (c.newsCount > 0) ...[
-                  _NewsRow(controller: c),
-                  const SizedBox(height: 8),
-                ],
+                if (c.newsCount > 0) ...[_NewsRow(controller: c), const SizedBox(height: 8)],
                 if (_panel == _Panel.history)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -762,10 +682,7 @@ class _AskCardState extends State<_AskCard> {
                 if (_panel == _Panel.agents)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
-                    child: _AgentPanel(
-                      controller: c,
-                      onPicked: () => setState(() => _panel = _Panel.none),
-                    ),
+                    child: _AgentPanel(controller: c, onPicked: () => setState(() => _panel = _Panel.none)),
                   ),
                 if (listening || busy || speaking)
                   _VoicePanel(controller: c)
@@ -774,22 +691,13 @@ class _AskCardState extends State<_AskCard> {
                     controller: c,
                     focus: widget.focus,
                     ask: true,
-                    onAgents: () => setState(
-                      () => _panel = _panel == _Panel.agents
-                          ? _Panel.none
-                          : _Panel.agents,
-                    ),
+                    onAgents: () => setState(() => _panel = _panel == _Panel.agents ? _Panel.none : _Panel.agents),
                   ),
-                  if (c.attachments.isEmpty &&
-                      !c.screenContext &&
-                      c.draft.text.trim().isEmpty) ...[
+                  if (c.attachments.isEmpty && !c.screenContext && c.draft.text.trim().isEmpty) ...[
                     const SizedBox(height: 10),
                     _Suggestions(controller: c),
                   ],
-                  if (c.error != null) ...[
-                    const SizedBox(height: 10),
-                    _ErrorBar(controller: c),
-                  ],
+                  if (c.error != null) ...[const SizedBox(height: 10), _ErrorBar(controller: c)],
                   const SizedBox(height: 10),
                   _Hint(
                     'Enter to send · Shift+Enter for a new line · '
@@ -808,12 +716,7 @@ class _AskCardState extends State<_AskCard> {
 /// One composer for both asking and replying: the same controls, the same
 /// preserved draft, only the words above the caret and where it goes differ.
 class _Composer extends StatefulWidget {
-  const _Composer({
-    required this.controller,
-    required this.focus,
-    required this.ask,
-    this.onAgents,
-  });
+  const _Composer({required this.controller, required this.focus, required this.ask, this.onAgents});
 
   final IslandController controller;
   final FocusNode focus;
@@ -860,11 +763,8 @@ class _ComposerState extends State<_Composer> {
     final canSend =
         !controller.sending &&
         !controller.screenBusy &&
-        (controller.draft.text.trim().isNotEmpty ||
-            controller.attachments.isNotEmpty ||
-            controller.screenContext);
-    final micKnownOff =
-        voice != null && voice.status != null && !voice.canListen;
+        (controller.draft.text.trim().isNotEmpty || controller.attachments.isNotEmpty || controller.screenContext);
+    final micKnownOff = voice != null && voice.status != null && !voice.canListen;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -894,10 +794,7 @@ class _ComposerState extends State<_Composer> {
             cursorColor: c.accent,
             decoration: InputDecoration(
               hintText: widget.ask ? 'Ask anything…' : 'Reply to Compii…',
-              hintStyle: context.type.bodyMedium?.copyWith(
-                color: c.faint,
-                fontSize: 14.5,
-              ),
+              hintStyle: context.type.bodyMedium?.copyWith(color: c.faint, fontSize: 14.5),
               filled: false,
               isDense: true,
               border: InputBorder.none,
@@ -918,9 +815,7 @@ class _ComposerState extends State<_Composer> {
             _tool(
               context,
               G.eye,
-              controller.screenContext
-                  ? 'Screen included'
-                  : 'Include the screen',
+              controller.screenContext ? 'Screen included' : 'Include the screen',
               controller.toggleScreenContext,
               active: controller.screenContext,
             ),
@@ -928,9 +823,7 @@ class _ComposerState extends State<_Composer> {
               Flexible(
                 child: _AgentChip(
                   name: controller.agent?.name ?? 'Compii',
-                  color: controller.agent == null
-                      ? c.accent
-                      : botColor(controller.agent!, c.accent),
+                  color: controller.agent == null ? c.accent : botColor(controller.agent!, c.accent),
                   onTap: widget.onAgents,
                 ),
               )
@@ -939,10 +832,7 @@ class _ComposerState extends State<_Composer> {
             if (controller.screenBusy)
               Padding(
                 padding: const EdgeInsets.only(right: 4),
-                child: Text(
-                  'Looking…',
-                  style: context.type.labelMedium?.copyWith(color: c.muted),
-                ),
+                child: Text('Looking…', style: context.type.labelMedium?.copyWith(color: c.muted)),
               ),
             _icon(
               context,
@@ -973,11 +863,7 @@ class _ComposerState extends State<_Composer> {
 }
 
 class _SendButton extends StatelessWidget {
-  const _SendButton({
-    required this.busy,
-    required this.enabled,
-    required this.onTap,
-  });
+  const _SendButton({required this.busy, required this.enabled, required this.onTap});
   final bool busy;
   final bool enabled;
   final VoidCallback onTap;
@@ -989,13 +875,7 @@ class _SendButton extends StatelessWidget {
       dimension: 36,
       child: busy
           ? Center(
-              child: SizedBox.square(
-                dimension: 17,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: c.accent,
-                ),
-              ),
+              child: SizedBox.square(dimension: 17, child: CircularProgressIndicator(strokeWidth: 2, color: c.accent)),
             )
           : IconButton.filled(
               tooltip: enabled ? 'Send (Enter)' : 'Write something first',
@@ -1074,10 +954,7 @@ class _AgentPanel extends StatelessWidget {
       decoration: BoxDecoration(
         color: c.sunken,
         borderRadius: Shapes.r14,
-        border: Border.all(
-          color: hc ? c.borderStrong : c.border,
-          width: hc ? 1.6 : 1,
-        ),
+        border: Border.all(color: hc ? c.borderStrong : c.border, width: hc ? 1.6 : 1),
       ),
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -1090,10 +967,7 @@ class _AgentPanel extends StatelessWidget {
               },
               borderRadius: Shapes.r10,
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 7,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                 child: Row(
                   children: [
                     BotAvatar(bot: bot, size: 24),
@@ -1103,9 +977,7 @@ class _AgentPanel extends StatelessWidget {
                         bot.name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: context.type.labelLarge?.copyWith(
-                          color: selected == bot.id ? c.accent : c.text,
-                        ),
+                        style: context.type.labelLarge?.copyWith(color: selected == bot.id ? c.accent : c.text),
                       ),
                     ),
                     if (bot.job.isNotEmpty)
@@ -1114,15 +986,10 @@ class _AgentPanel extends StatelessWidget {
                           bot.job,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: context.type.labelMedium?.copyWith(
-                            color: c.faint,
-                          ),
+                          style: context.type.labelMedium?.copyWith(color: c.faint),
                         ),
                       ),
-                    if (selected == bot.id) ...[
-                      const SizedBox(width: 6),
-                      Glyph(G.check, size: 15, color: c.accent),
-                    ],
+                    if (selected == bot.id) ...[const SizedBox(width: 6), Glyph(G.check, size: 15, color: c.accent)],
                   ],
                 ),
               ),
@@ -1161,21 +1028,14 @@ class _Attachments extends StatelessWidget {
             color: c.muted,
             onRemove: () => controller.removeAttachment(i),
           ),
-        if (controller.screenBusy)
-          _Chip(glyph: G.eye, label: 'Taking a look…', color: c.listen),
+        if (controller.screenBusy) _Chip(glyph: G.eye, label: 'Taking a look…', color: c.listen),
       ],
     );
   }
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip({
-    required this.glyph,
-    required this.label,
-    required this.color,
-    this.detail,
-    this.onRemove,
-  });
+  const _Chip({required this.glyph, required this.label, required this.color, this.detail, this.onRemove});
   final GlyphData glyph;
   final String label;
   final String? detail;
@@ -1202,18 +1062,12 @@ class _Chip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: context.type.labelMedium?.copyWith(
-                color: color,
-                fontWeight: FontWeight.w600,
-              ),
+              style: context.type.labelMedium?.copyWith(color: color, fontWeight: FontWeight.w600),
             ),
           ),
           if (detail != null && detail!.isNotEmpty) ...[
             const SizedBox(width: 4),
-            Text(
-              detail!,
-              style: context.type.labelSmall?.copyWith(color: context.c.faint),
-            ),
+            Text(detail!, style: context.type.labelSmall?.copyWith(color: context.c.faint)),
           ],
           if (onRemove != null)
             IconButton(
@@ -1266,11 +1120,7 @@ class _Suggestions extends StatelessWidget {
             for (final s in controller.suggestions)
               ActionChip(
                 onPressed: () => controller.chooseSuggestion(s),
-                avatar: Glyph(
-                  s.screen ? G.eye : G.memory,
-                  size: 13,
-                  color: c.muted,
-                ),
+                avatar: Glyph(s.screen ? G.eye : G.memory, size: 13, color: c.muted),
                 label: Text(s.label),
                 labelStyle: context.type.labelMedium?.copyWith(color: c.muted),
                 backgroundColor: c.raised,
@@ -1293,9 +1143,7 @@ class _Hint extends StatelessWidget {
   Widget build(BuildContext context) => Text(
     text,
     textAlign: TextAlign.center,
-    style: context.type.labelSmall?.copyWith(
-      color: context.c.faint.withValues(alpha: .9),
-    ),
+    style: context.type.labelSmall?.copyWith(color: context.c.faint.withValues(alpha: .9)),
   );
 }
 
@@ -1337,47 +1185,16 @@ class _ConversationCardState extends State<_ConversationCard> {
     final failed = stage == IslandStage.failed;
     final approval = stage == IslandStage.approval;
     final working = stage == IslandStage.working;
-    final waiting =
-        task != null &&
-        (task.pendingQuestion != null || pendingTakeover(task) != null);
+    final waiting = task != null && (task.pendingQuestion != null || pendingTakeover(task) != null);
 
     final status = switch (stage) {
-      IslandStage.working => Pill(
-        'Working',
-        color: context.c.accent,
-        glyph: G.bolt,
-        pulse: true,
-      ),
-      IslandStage.approval => Pill(
-        'Needs your okay',
-        color: context.c.warning,
-        glyph: G.hand,
-      ),
-      IslandStage.completed => Pill(
-        'Done',
-        color: context.c.success,
-        glyph: G.checkCircle,
-      ),
-      IslandStage.failed => Pill(
-        'Didn’t finish',
-        color: context.c.danger,
-        glyph: G.alert,
-      ),
-      _ when waiting => Pill(
-        'Waiting for you',
-        color: context.c.warning,
-        glyph: G.hand,
-      ),
-      _ when c.needsYou => Pill(
-        'Needs you',
-        color: context.c.warning,
-        glyph: G.hand,
-      ),
-      _ when c.offline => Pill(
-        'Offline',
-        color: context.c.faint,
-        glyph: G.cloud,
-      ),
+      IslandStage.working => Pill('Working', color: context.c.accent, glyph: G.bolt, pulse: true),
+      IslandStage.approval => Pill('Needs your okay', color: context.c.warning, glyph: G.hand),
+      IslandStage.completed => Pill('Done', color: context.c.success, glyph: G.checkCircle),
+      IslandStage.failed => Pill('Didn’t finish', color: context.c.danger, glyph: G.alert),
+      _ when waiting => Pill('Waiting for you', color: context.c.warning, glyph: G.hand),
+      _ when c.needsYou => Pill('Needs you', color: context.c.warning, glyph: G.hand),
+      _ when c.offline => Pill('Offline', color: context.c.faint, glyph: G.cloud),
       _ => null,
     };
 
@@ -1394,12 +1211,7 @@ class _ConversationCardState extends State<_ConversationCard> {
           onDragUpdate: widget.onDragUpdate,
           onDragEnd: widget.onDragEnd,
           actions: [
-            _icon(
-              context,
-              G.clock,
-              'Recent conversations',
-              () => setState(() => _history = !_history),
-            ),
+            _icon(context, G.clock, 'Recent conversations', () => setState(() => _history = !_history)),
             _icon(context, G.external, 'Open in Compii', c.openInMain),
             _icon(context, G.close, 'Close (Esc)', c.collapse),
           ],
@@ -1433,29 +1245,16 @@ class _ConversationCardState extends State<_ConversationCard> {
                         ask,
                         maxLines: 3,
                         overflow: TextOverflow.ellipsis,
-                        style: context.type.bodyMedium?.copyWith(
-                          color: context.c.muted,
-                        ),
+                        style: context.type.bodyMedium?.copyWith(color: context.c.muted),
                       ),
                     ),
-                  ApprovalCard(
-                    approval: task!.pendingApproval!,
-                    core: c.core,
-                    run: c.run,
-                    compact: true,
-                  ),
+                  ApprovalCard(approval: task!.pendingApproval!, core: c.core, run: c.run, compact: true),
                   const SizedBox(height: 10),
                   Text(
                     'Approving covers this step only. Compii will ask again before anything else consequential.',
-                    style: context.type.labelSmall?.copyWith(
-                      color: context.c.faint,
-                      height: 1.4,
-                    ),
+                    style: context.type.labelSmall?.copyWith(color: context.c.faint, height: 1.4),
                   ),
-                  if (c.error != null) ...[
-                    const SizedBox(height: 10),
-                    _ErrorBar(controller: c),
-                  ],
+                  if (c.error != null) ...[const SizedBox(height: 10), _ErrorBar(controller: c)],
                 ],
               ),
             ),
@@ -1482,12 +1281,8 @@ class _ConversationCardState extends State<_ConversationCard> {
                     const SizedBox(width: 10),
                     Flexible(
                       child: Text(
-                        c.sending
-                            ? 'Sending to Compii…'
-                            : 'Compii is picking it up…',
-                        style: context.type.bodyMedium?.copyWith(
-                          color: context.c.muted,
-                        ),
+                        c.sending ? 'Sending to Compii…' : 'Compii is picking it up…',
+                        style: context.type.bodyMedium?.copyWith(color: context.c.muted),
                       ),
                     ),
                   ],
@@ -1518,30 +1313,17 @@ class _ConversationCardState extends State<_ConversationCard> {
                 child: Text(
                   c.error ?? 'This conversation is no longer here.',
                   textAlign: TextAlign.center,
-                  style: context.type.bodyMedium?.copyWith(
-                    color: context.c.muted,
-                  ),
+                  style: context.type.bodyMedium?.copyWith(color: context.c.muted),
                 ),
               ),
             ),
           ),
           _Foot(
-            children: [
-              TextButton(
-                onPressed: c.openAsk,
-                child: const Text('Ask something else'),
-              ),
-            ],
+            children: [TextButton(onPressed: c.openAsk, child: const Text('Ask something else'))],
           ),
         ] else ...[
           Expanded(
-            child: ThreadView(
-              task: task,
-              core: c.core,
-              run: c.run,
-              compact: true,
-              onOpenTask: c.openTask,
-            ),
+            child: ThreadView(task: task, core: c.core, run: c.run, compact: true, onOpenTask: c.openTask),
           ),
           if (c.error != null) ...[
             Padding(
@@ -1550,8 +1332,7 @@ class _ConversationCardState extends State<_ConversationCard> {
             ),
           ],
           if (working || (waiting && (task.active || c.stopping))) ...[
-            if (c.queuedText case final held?)
-              _WaitingToSend(controller: c, text: held),
+            if (c.queuedText case final held?) _WaitingToSend(controller: c, text: held),
             _WorkingBar(controller: c, task: task, waiting: waiting),
             // Compii is mid-turn, so this field never sends into the middle of
             // a step: the words wait in the thread and go when the turn ends.
@@ -1575,10 +1356,7 @@ class _ConversationCardState extends State<_ConversationCard> {
                   label: const Text('Open in Compii'),
                 ),
                 TextButton(onPressed: c.openAsk, child: const Text('New ask')),
-                TextButton(
-                  onPressed: c.dismissFinished,
-                  child: Text(failed ? 'Dismiss' : 'Done'),
-                ),
+                TextButton(onPressed: c.dismissFinished, child: Text(failed ? 'Dismiss' : 'Done')),
               ],
             ),
           ],
@@ -1587,12 +1365,7 @@ class _ConversationCardState extends State<_ConversationCard> {
     );
   }
 
-  String _subtitle(
-    IslandController c,
-    TaskView? task,
-    String name,
-    IslandStage stage,
-  ) {
+  String _subtitle(IslandController c, TaskView? task, String name, IslandStage stage) {
     if (c.offline) return 'Compii Core is offline';
     if (task == null) return 'No conversation';
     if (stage == IslandStage.working) return islandPhase(task);
@@ -1674,10 +1447,7 @@ class _WaitingToSend extends StatelessWidget {
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 8, 14, 0),
       padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
-      decoration: BoxDecoration(
-        color: c.sunken,
-        borderRadius: Shapes.r12,
-      ),
+      decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r12),
       child: Row(
         children: [
           Glyph(G.clock, size: 15, color: c.muted),
@@ -1687,16 +1457,10 @@ class _WaitingToSend extends StatelessWidget {
               text,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: context.type.labelMedium?.copyWith(
-                color: c.muted,
-                height: 1.35,
-              ),
+              style: context.type.labelMedium?.copyWith(color: c.muted, height: 1.35),
             ),
           ),
-          TextButton(
-            onPressed: controller.cancelQueued,
-            child: const Text('Take back'),
-          ),
+          TextButton(onPressed: controller.cancelQueued, child: const Text('Take back')),
         ],
       ),
     );
@@ -1706,11 +1470,7 @@ class _WaitingToSend extends StatelessWidget {
 /// The honest working state: what Core last said, how long it has been, how
 /// many real steps it took, and a Stop button. Never a percentage.
 class _WorkingBar extends StatelessWidget {
-  const _WorkingBar({
-    required this.controller,
-    required this.task,
-    required this.waiting,
-  });
+  const _WorkingBar({required this.controller, required this.task, required this.waiting});
   final IslandController controller;
   final TaskView task;
   final bool waiting;
@@ -1721,9 +1481,7 @@ class _WorkingBar extends StatelessWidget {
     final hc = MediaQuery.highContrastOf(context);
     final steps = task.events.where((e) => e['type'] == 'action_done').length;
     final what = waiting
-        ? (task.pendingQuestion != null
-              ? 'Waiting for your answer'
-              : 'Waiting for your hands')
+        ? (task.pendingQuestion != null ? 'Waiting for your answer' : 'Waiting for your hands')
         : islandPhase(task);
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 9, 12, 10),
@@ -1743,9 +1501,7 @@ class _WorkingBar extends StatelessWidget {
                   what,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: context.type.labelLarge?.copyWith(
-                    color: waiting ? c.warning : c.text,
-                  ),
+                  style: context.type.labelLarge?.copyWith(color: waiting ? c.warning : c.text),
                 ),
                 if (steps > 0)
                   Text(
@@ -1758,8 +1514,7 @@ class _WorkingBar extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          if (controller.startedAt != null)
-            _Elapsed(from: controller.startedAt!, until: null),
+          if (controller.startedAt != null) _Elapsed(from: controller.startedAt!, until: null),
           const SizedBox(width: 10),
           OutlinedButton(
             onPressed: controller.stopping ? null : controller.stop,
@@ -1785,13 +1540,7 @@ class _LiveMark extends StatelessWidget {
     decoration: BoxDecoration(
       color: color,
       shape: BoxShape.circle,
-      boxShadow: [
-        BoxShadow(
-          color: color.withValues(alpha: .5),
-          blurRadius: 7,
-          spreadRadius: 1,
-        ),
-      ],
+      boxShadow: [BoxShadow(color: color.withValues(alpha: .5), blurRadius: 7, spreadRadius: 1)],
     ),
   );
 }
@@ -1850,9 +1599,7 @@ String _duration(TaskView task) {
     if (e['type'] == 'task_finished') end = at;
   }
   if (start == null || end == null) return '';
-  return formatElapsed(
-    Duration(milliseconds: math.max(0, ((end - start) * 1000).round())),
-  );
+  return formatElapsed(Duration(milliseconds: math.max(0, ((end - start) * 1000).round())));
 }
 
 // --------------------------------------------------------------- history
@@ -1888,10 +1635,7 @@ class _HistoryPanel extends StatelessWidget {
       decoration: BoxDecoration(
         color: c.sunken,
         borderRadius: Shapes.r14,
-        border: Border.all(
-          color: hc ? c.borderStrong : c.border,
-          width: hc ? 1.6 : 1,
-        ),
+        border: Border.all(color: hc ? c.borderStrong : c.border, width: hc ? 1.6 : 1),
       ),
       constraints: BoxConstraints(maxHeight: maxHeight),
       child: SingleChildScrollView(
@@ -1902,18 +1646,12 @@ class _HistoryPanel extends StatelessWidget {
               onTap: onNew,
               borderRadius: Shapes.r10,
               child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 8,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                 child: Row(
                   children: [
                     Glyph(G.plus, size: 15, color: c.accent),
                     const SizedBox(width: 9),
-                    Text(
-                      'New ask',
-                      style: context.type.labelLarge?.copyWith(color: c.accent),
-                    ),
+                    Text('New ask', style: context.type.labelLarge?.copyWith(color: c.accent)),
                   ],
                 ),
               ),
@@ -1924,10 +1662,7 @@ class _HistoryPanel extends StatelessWidget {
                 onTap: () => onOpen(t.id),
                 borderRadius: Shapes.r10,
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 7,
-                  ),
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
                   child: Row(
                     children: [
                       Container(
@@ -1948,18 +1683,11 @@ class _HistoryPanel extends StatelessWidget {
                           _conversationTitle(t),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: context.type.labelLarge?.copyWith(
-                            color: c.text,
-                          ),
+                          style: context.type.labelLarge?.copyWith(color: c.text),
                         ),
                       ),
                       const SizedBox(width: 8),
-                      Text(
-                        _ago(t),
-                        style: context.type.labelSmall?.copyWith(
-                          color: c.faint,
-                        ),
-                      ),
+                      Text(_ago(t), style: context.type.labelSmall?.copyWith(color: c.faint)),
                     ],
                   ),
                 ),
@@ -1984,9 +1712,7 @@ String _ago(TaskView task) {
     if (at != null) break;
   }
   if (at == null || at <= 0) return '';
-  final d = DateTime.now().difference(
-    DateTime.fromMillisecondsSinceEpoch((at * 1000).round()),
-  );
+  final d = DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch((at * 1000).round()));
   if (d.inMinutes < 1) return 'now';
   if (d.inHours < 1) return '${d.inMinutes}m';
   if (d.inDays < 1) return '${d.inHours}h';
@@ -2013,14 +1739,10 @@ class _VoicePanel extends StatelessWidget {
         ? 'Transcribing'
         : 'Compii is speaking';
     final detail = listening
-        ? (controller.partial.isEmpty
-              ? 'Speak now — Compii hears you'
-              : controller.partial)
+        ? (controller.partial.isEmpty ? 'Speak now — Compii hears you' : controller.partial)
         : busy
         ? 'Turning your words into text'
-        : (voice?.caption.isNotEmpty == true
-              ? voice!.caption
-              : 'You can mute the answer here.');
+        : (voice?.caption.isNotEmpty == true ? voice!.caption : 'You can mute the answer here.');
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 12, 10, 12),
       decoration: BoxDecoration(
@@ -2032,12 +1754,7 @@ class _VoicePanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           if (listening)
-            _Waveform(
-              level: voice?.level ?? 0,
-              color: color,
-              width: 40,
-              height: 28,
-            )
+            _Waveform(level: voice?.level ?? 0, color: color, width: 40, height: 28)
           else
             Glyph(speaking ? G.speaker : G.wave, size: 26, color: color),
           const SizedBox(width: 11),
@@ -2045,44 +1762,27 @@ class _VoicePanel extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  title,
-                  style: context.type.labelLarge?.copyWith(color: color),
-                ),
+                Text(title, style: context.type.labelLarge?.copyWith(color: color)),
                 const SizedBox(height: 2),
                 Text(
                   detail,
                   maxLines: 3,
                   overflow: TextOverflow.ellipsis,
-                  style: context.type.labelMedium?.copyWith(
-                    color: c.muted,
-                    height: 1.4,
-                  ),
+                  style: context.type.labelMedium?.copyWith(color: c.muted, height: 1.4),
                 ),
               ],
             ),
           ),
           const SizedBox(width: 8),
           if (listening) ...[
-            _icon(
-              context,
-              G.check,
-              'Stop and use it',
-              controller.finishListening,
-            ),
+            _icon(context, G.check, 'Stop and use it', controller.finishListening),
             _icon(context, G.close, 'Cancel', controller.cancelListening),
           ] else if (speaking)
-            TextButton(
-              onPressed: () => voice?.quiet(),
-              child: const Text('Mute'),
-            )
+            TextButton(onPressed: () => voice?.quiet(), child: const Text('Mute'))
           else
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 4),
-              child: Text(
-                '…',
-                style: context.type.titleMedium?.copyWith(color: c.faint),
-              ),
+              child: Text('…', style: context.type.titleMedium?.copyWith(color: c.faint)),
             ),
         ],
       ),
@@ -2093,12 +1793,7 @@ class _VoicePanel extends StatelessWidget {
 /// Five bars answering the live microphone level Core sends. No level, no
 /// movement: this is a meter, not a decorative loop.
 class _Waveform extends StatelessWidget {
-  const _Waveform({
-    required this.level,
-    required this.color,
-    this.width = 40,
-    this.height = 24,
-  });
+  const _Waveform({required this.level, required this.color, this.width = 40, this.height = 24});
   final double level;
   final Color color;
   final double width;
@@ -2110,10 +1805,7 @@ class _Waveform extends StatelessWidget {
       width: width,
       height: height,
       child: CustomPaint(
-        painter: _WavePainter(
-          level: level.clamp(0, 1).toDouble(),
-          color: color,
-        ),
+        painter: _WavePainter(level: level.clamp(0, 1).toDouble(), color: color),
       ),
     );
   }
@@ -2136,21 +1828,13 @@ class _WavePainter extends CustomPainter {
     final mid = size.height / 2;
     for (var i = 0; i < _shape.length; i++) {
       final x = gap + i * (size.width - gap * 2) / (_shape.length - 1);
-      final amp = math.max(
-        3.0,
-        size.height * .82 * _shape[i] * (.18 + level * .95),
-      );
-      canvas.drawLine(
-        Offset(x, mid - amp / 2),
-        Offset(x, mid + amp / 2),
-        paint,
-      );
+      final amp = math.max(3.0, size.height * .82 * _shape[i] * (.18 + level * .95));
+      canvas.drawLine(Offset(x, mid - amp / 2), Offset(x, mid + amp / 2), paint);
     }
   }
 
   @override
-  bool shouldRepaint(covariant _WavePainter old) =>
-      old.level != level || old.color != color;
+  bool shouldRepaint(covariant _WavePainter old) => old.level != level || old.color != color;
 }
 
 // ------------------------------------------------------- error handling
@@ -2176,10 +1860,7 @@ class _NeedsYouRow extends StatelessWidget {
       borderRadius: Shapes.r12,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: c.warningSoft,
-          borderRadius: Shapes.r12,
-        ),
+        decoration: BoxDecoration(color: c.warningSoft, borderRadius: Shapes.r12),
         child: Row(
           children: [
             Glyph(G.warning, size: 15, color: c.warning),
@@ -2189,10 +1870,7 @@ class _NeedsYouRow extends StatelessWidget {
                 'Compii $what · ${task.request}',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: context.type.labelMedium?.copyWith(
-                  color: c.warning,
-                  height: 1.35,
-                ),
+                style: context.type.labelMedium?.copyWith(color: c.warning, height: 1.35),
               ),
             ),
             Glyph(G.chevronRight, size: 15, color: c.warning),
@@ -2222,10 +1900,7 @@ class _NewsRow extends StatelessWidget {
       borderRadius: Shapes.r12,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-        decoration: BoxDecoration(
-          color: c.successSoft,
-          borderRadius: Shapes.r12,
-        ),
+        decoration: BoxDecoration(color: c.successSoft, borderRadius: Shapes.r12),
         child: Row(
           children: [
             Glyph(G.bell, size: 15, color: c.success),
@@ -2235,10 +1910,7 @@ class _NewsRow extends StatelessWidget {
                 '${news.title}$more',
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
-                style: context.type.labelMedium?.copyWith(
-                  color: c.success,
-                  height: 1.35,
-                ),
+                style: context.type.labelMedium?.copyWith(color: c.success, height: 1.35),
               ),
             ),
             Glyph(G.chevronRight, size: 15, color: c.success),
@@ -2262,10 +1934,7 @@ class _ErrorBar extends StatelessWidget {
       decoration: BoxDecoration(
         color: c.dangerSoft,
         borderRadius: Shapes.r12,
-        border: Border.all(
-          color: hc ? c.danger : c.danger.withValues(alpha: .3),
-          width: hc ? 1.6 : 1,
-        ),
+        border: Border.all(color: hc ? c.danger : c.danger.withValues(alpha: .3), width: hc ? 1.6 : 1),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -2276,30 +1945,18 @@ class _ErrorBar extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Expanded(
-            child: Text(
-              controller.error!,
-              style: context.type.labelMedium?.copyWith(
-                color: c.danger,
-                height: 1.4,
-              ),
-            ),
+            child: Text(controller.error!, style: context.type.labelMedium?.copyWith(color: c.danger, height: 1.4)),
           ),
           if (controller.offline)
             TextButton(
               onPressed: controller.reconnect,
-              style: TextButton.styleFrom(
-                foregroundColor: c.danger,
-                minimumSize: const Size(44, 32),
-              ),
+              style: TextButton.styleFrom(foregroundColor: c.danger, minimumSize: const Size(44, 32)),
               child: const Text('Reconnect'),
             )
           else if (controller.canRetry)
             TextButton(
               onPressed: controller.retry,
-              style: TextButton.styleFrom(
-                foregroundColor: c.danger,
-                minimumSize: const Size(44, 32),
-              ),
+              style: TextButton.styleFrom(foregroundColor: c.danger, minimumSize: const Size(44, 32)),
               child: const Text('Try again'),
             ),
           IconButton(
@@ -2328,24 +1985,30 @@ const _islandRimStrong = Color(0x7AFFFFFF);
 const _islandRadius = 28.0;
 
 /// One shell for the pill and the expanded card, so a press morphs the same
-/// surface instead of replacing one card with another.
+/// surface instead of replacing one card with another. While Compii works, a
+/// halo of its colour runs the edge — the one moving thing on the island, and
+/// only while there is real work. A state that wants you tints the rim.
 class _IslandShell extends StatelessWidget {
   const _IslandShell({
     required this.width,
     required this.height,
     required this.radius,
     required this.child,
+    this.halo = false,
+    this.rim,
   });
 
   final double width;
   final double height;
   final double radius;
   final Widget child;
+  final bool halo;
+  final Color? rim;
 
   @override
   Widget build(BuildContext context) {
     final hc = MediaQuery.highContrastOf(context);
-    return AnimatedContainer(
+    final shell = AnimatedContainer(
       duration: context.motion(380),
       curve: Motion.out,
       width: width,
@@ -2355,9 +2018,10 @@ class _IslandShell extends StatelessWidget {
         color: _islandBlack,
         borderRadius: BorderRadius.circular(radius),
         border: Border.all(
-          color: hc ? _islandRimStrong : _islandRim,
+          color: rim?.withValues(alpha: hc ? .9 : .45) ?? (hc ? _islandRimStrong : _islandRim),
           width: hc ? 1.6 : 1,
         ),
+        boxShadow: [if (rim != null) BoxShadow(color: rim!.withValues(alpha: .22), blurRadius: 24, spreadRadius: -4)],
       ),
       // The content is laid out at the final size from the first frame, so a
       // growing shell reveals it instead of squeezing it through every
@@ -2374,7 +2038,90 @@ class _IslandShell extends StatelessWidget {
         ),
       ),
     );
+    if (!halo) return shell;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        shell,
+        Positioned.fill(
+          child: IgnorePointer(child: _HaloEdge(radius: radius)),
+        ),
+      ],
+    );
   }
+}
+
+/// The working halo: Compii's colour and its neighbours on the wheel, orbiting
+/// the pill's edge. Still under reduced motion.
+class _HaloEdge extends StatefulWidget {
+  const _HaloEdge({required this.radius});
+  final double radius;
+
+  @override
+  State<_HaloEdge> createState() => _HaloEdgeState();
+}
+
+class _HaloEdgeState extends State<_HaloEdge> with SingleTickerProviderStateMixin {
+  late final AnimationController _spin = AnimationController(vsync: this, duration: const Duration(milliseconds: 2600));
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _spin.stop();
+    } else if (!_spin.isAnimating) {
+      _spin.repeat();
+    }
+  }
+
+  @override
+  void dispose() {
+    _spin.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AnimatedBuilder(
+    animation: Listenable.merge([_spin, compiiColor]),
+    builder: (context, _) => CustomPaint(
+      painter: _HaloEdgePainter(t: _spin.value, color: compiiColor.value, radius: widget.radius),
+    ),
+  );
+}
+
+class _HaloEdgePainter extends CustomPainter {
+  _HaloEdgePainter({required this.t, required this.color, required this.radius});
+  final double t;
+  final Color color;
+  final double radius;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final r = RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius));
+    final shader = SweepGradient(
+      colors: [color, const Color(0xFF2FD3FF), const Color(0xFFC06BFF), color],
+      transform: GradientRotation(t * 2 * math.pi),
+    ).createShader(Offset.zero & size);
+    canvas.drawRRect(
+      r,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 6
+        ..shader = shader
+        ..color = Colors.white.withValues(alpha: .55)
+        ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 6),
+    );
+    canvas.drawRRect(
+      r.deflate(.5),
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.6
+        ..shader = shader,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _HaloEdgePainter o) => o.t != t || o.color != color || o.radius != radius;
 }
 
 /// The new content arrives with a short fade while the shell morphs. Keyed by
@@ -2389,10 +2136,7 @@ class _Enter extends StatefulWidget {
 
 class _EnterState extends State<_Enter> with SingleTickerProviderStateMixin {
   late final AnimationController _controller = AnimationController(vsync: this);
-  late final Animation<double> _fade = CurvedAnimation(
-    parent: _controller,
-    curve: Motion.out,
-  );
+  late final Animation<double> _fade = CurvedAnimation(parent: _controller, curve: Motion.out);
   bool _started = false;
 
   @override
@@ -2411,8 +2155,7 @@ class _EnterState extends State<_Enter> with SingleTickerProviderStateMixin {
   }
 
   @override
-  Widget build(BuildContext context) =>
-      FadeTransition(opacity: _fade, child: widget.child);
+  Widget build(BuildContext context) => FadeTransition(opacity: _fade, child: widget.child);
 }
 
 class _Head extends StatelessWidget {
@@ -2469,9 +2212,7 @@ class _Head extends StatelessWidget {
                         title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: context.type.titleSmall?.copyWith(
-                          fontSize: 14.5,
-                        ),
+                        style: context.type.titleSmall?.copyWith(fontSize: 14.5),
                       ),
                       const SizedBox(height: 1),
                       Row(
@@ -2481,9 +2222,7 @@ class _Head extends StatelessWidget {
                               subtitle,
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
-                              style: context.type.labelMedium?.copyWith(
-                                color: subtitleColor ?? c.muted,
-                              ),
+                              style: context.type.labelMedium?.copyWith(color: subtitleColor ?? c.muted),
                             ),
                           ),
                           // The status pill sits on the quieter line so a long
@@ -2539,13 +2278,7 @@ class _Foot extends StatelessWidget {
   }
 }
 
-Widget _icon(
-  BuildContext context,
-  GlyphData glyph,
-  String tooltip,
-  VoidCallback? onTap, {
-  bool active = false,
-}) {
+Widget _icon(BuildContext context, GlyphData glyph, String tooltip, VoidCallback? onTap, {bool active = false}) {
   return IconButton(
     tooltip: tooltip,
     onPressed: onTap,
@@ -2556,13 +2289,7 @@ Widget _icon(
   );
 }
 
-Widget _tool(
-  BuildContext context,
-  GlyphData glyph,
-  String tooltip,
-  VoidCallback? onTap, {
-  bool active = false,
-}) {
+Widget _tool(BuildContext context, GlyphData glyph, String tooltip, VoidCallback? onTap, {bool active = false}) {
   final c = context.c;
   return IconButton(
     tooltip: tooltip,

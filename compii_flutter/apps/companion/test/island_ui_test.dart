@@ -7,6 +7,7 @@ import 'package:compii/src/island/island_controller.dart';
 import 'package:compii/src/island/island_geometry.dart';
 import 'package:compii/src/island/island_platform.dart';
 import 'package:compii/src/island/island_prefs.dart';
+import 'package:compii/src/island/island_eyes.dart';
 import 'package:compii/src/island/island_ui.dart';
 import 'package:compii/src/ui/tokens.dart';
 import 'package:flutter/gestures.dart';
@@ -344,6 +345,9 @@ Future<void> _writeOut(WidgetTester tester, GlobalKey boundary, String name) asy
   image.dispose();
 }
 
+/// The island at rest is its eyes; that is what you click.
+Finder _eyes() => find.byType(IslandEyes);
+
 void main() {
   late _Core core;
   late _Actions actions;
@@ -363,14 +367,15 @@ void main() {
     'the compact capsule is quiet: no idle movement and no progress theatre',
     (tester) async {
       await _show(tester, c);
-      expect(find.text('Ask Compii'), findsOneWidget);
+      expect(find.text('Ask Compii'), findsNothing, reason: 'at rest it is only the eyes');
+      expect(_eyes(), findsOneWidget);
 
-      final before = tester.getCenter(find.text('Ask Compii'));
+      final before = tester.getCenter(_eyes());
       for (var i = 0; i < 20; i++) {
         await tester.pump(const Duration(milliseconds: 100));
       }
       expect(
-        tester.getCenter(find.text('Ask Compii')),
+        tester.getCenter(_eyes()),
         before,
         reason: 'nothing moves while idle',
       );
@@ -399,7 +404,6 @@ void main() {
     }
 
     await _show(tester, c);
-    await fits('Ask Compii');
     core.status = CoreStatus.offline;
     core.ping();
     await tester.pump();
@@ -414,7 +418,7 @@ void main() {
     tester,
   ) async {
     await _show(tester, c);
-    await tester.tap(find.text('Ask Compii'));
+    await tester.tap(_eyes());
     await tester.pump();
 
     expect(c.stage, IslandStage.ask);
@@ -428,7 +432,7 @@ void main() {
     'an ask shows honest progress while Core has not reported the thread yet',
     (tester) async {
       await _show(tester, c);
-      await tester.tap(find.text('Ask Compii'));
+      await tester.tap(_eyes());
       await _grow(tester);
 
       await tester.enterText(find.byType(TextField), 'Sort the receipts');
@@ -448,7 +452,7 @@ void main() {
     'the real thread appears as it runs, then restrains itself when done',
     (tester) async {
       await _show(tester, c);
-      await tester.tap(find.text('Ask Compii'));
+      await tester.tap(_eyes());
       await _grow(tester);
       await tester.enterText(find.byType(TextField), 'Sort the receipts');
       await tester.pump();
@@ -586,7 +590,7 @@ void main() {
       _task(request: 'Sort the receipts', status: 'done', events: _doneEvents),
     );
     await _show(tester, c);
-    await tester.tap(find.text('Ask Compii'));
+    await tester.tap(_eyes());
     await _grow(tester);
     await tester.tap(_iconButton('Recent conversations'));
     await tester.pump();
@@ -613,7 +617,7 @@ void main() {
         onShortcut: (s) => shortcut = s,
       );
 
-      await tester.tap(find.text('Ask Compii'), buttons: kSecondaryMouseButton);
+      await tester.tap(_eyes(), buttons: kSecondaryMouseButton);
       await tester.pump();
       expect(find.text('PLACEMENT'), findsOneWidget);
       expect(find.text('Top centre'), findsOneWidget);
@@ -628,7 +632,7 @@ void main() {
         reason: 'the menu closes after a choice',
       );
 
-      await tester.tap(find.text('Ask Compii'), buttons: kSecondaryMouseButton);
+      await tester.tap(_eyes(), buttons: kSecondaryMouseButton);
       await tester.pump();
       await tester.tap(find.text(IslandShortcuts.label('f8')));
       await tester.pump();
@@ -642,7 +646,7 @@ void main() {
     IslandAttention? chosen;
     await _show(tester, c, onAttention: (a) => chosen = a);
 
-    await tester.tap(find.text('Ask Compii'), buttons: kSecondaryMouseButton);
+    await tester.tap(_eyes(), buttons: kSecondaryMouseButton);
     await tester.pump();
     expect(find.text('WHEN COMPII NEEDS YOU'), findsOneWidget);
     expect(find.text('Tell me: Mark and a notification'), findsOneWidget);

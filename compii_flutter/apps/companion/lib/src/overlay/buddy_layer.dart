@@ -4,20 +4,22 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
-/// A little moon that rides along beside your cursor, drawn inside one full-screen,
-/// click-through overlay (no window ever moves, so it keeps up with the mouse).
+import '../console/character.dart' show compiiColor;
+import 'halo_cursor.dart';
+
+/// Compii at your cursor, drawn inside one full-screen, click-through overlay (no
+/// window ever moves, so it keeps up with the mouse).
 ///
-/// It never sits on the pixel you are pointing at and never circles over it: it parks
-/// at a fixed stand-off to the bottom-right, small and half-lit when nothing is
-/// happening, and dims further once your hand is off the mouse. Nothing spins — a
-/// badge that turns in front of text is unreadable, so work is shown by one growing
-/// arc and a single pulse per step. Hold Ctrl+Alt and it listens (cyan ripples and a
-/// tiny sound-wave), thinks, then answers. The badge itself never leaves the pointer;
-/// anything worth reading opens instead as a dark-glass card at the top of the screen,
-/// in the corner away from the cursor, while Compii speaks. When Compii points at
-/// something, the badge glides to a spot clear of the item and
-/// its lit side, comet tail and a tapered beam all aim at the exact spot.
+/// What rides with the pointer is Compii's face in miniature: a small black-glass
+/// capsule with its two eyes of light, parked at a fixed stand-off to the
+/// bottom-right so it never covers the pixel you are pointing at, and looking back
+/// at your pointer. Nothing orbits, trails or spins. Hold Ctrl+Alt and a halo of
+/// light blooms around the pointer itself and swells with your voice, while your
+/// words appear beside it as you say them. Answers open beside the cursor, the
+/// outcome first. To show you something, the screen dims, the one thing that
+/// matters stays lit and ringed, and a caption sits beside it.
 class BuddyLayer extends StatefulWidget {
   const BuddyLayer({
     super.key,
@@ -120,7 +122,6 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   final List<Offset> _gesture = []; // paint trail while you hold Ctrl+Alt
   double _gestureFade = 0;
   bool _hidden = false; // Ctrl+Alt+H
-  final List<Offset> _moonTrail = []; // the satellite's own fading tail
   // Motion goes through its own notifier so a moving moon repaints only the few
   // widgets that actually move, instead of rebuilding the whole overlay.
   final ValueNotifier<int> _frame = ValueNotifier(0);
@@ -178,6 +179,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     super.initState();
     _sub = widget.events.listen(onEvent);
     widget.points?.addListener(_onPoint);
+    compiiColor.addListener(_recolor);
     // Read the pointer ~60 times a second; redraw only when something moved,
     // so an idle buddy costs next to nothing.
     _follow = Timer.periodic(const Duration(milliseconds: 16), (_) => _tick());
@@ -190,6 +192,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   @override
   void dispose() {
     widget.points?.removeListener(_onPoint);
+    compiiColor.removeListener(_recolor);
     _frame.dispose();
     _follow?.cancel();
     _catchAllSafety?.cancel();
@@ -201,6 +204,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     _hide?.cancel();
     _flyBack?.cancel();
     super.dispose();
+  }
+
+  void _recolor() {
+    if (mounted) setState(() {});
   }
 
   // ---- motion: the moon circles the pointer every frame (cheap: nothing moves but pixels) ----
@@ -271,6 +278,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   bool _cardOnLeft = false;
   bool _cardShown = false;
 
+  /// Where the pointer was when the card opened: the card stays there, beside it,
+  /// rather than following the mouse while you read.
+  Offset _cardAt = Offset.zero;
+
   /// The docked card that needs room to be read: Compii's answer, the text lifted from
   /// another app, a question with buttons. These open as a panel in the corner instead
   /// of a bubble beside the badge.
@@ -283,14 +294,6 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     'needs_you' => asking,
     _ => false,
   };
-
-  double _trailSpan() {
-    var span = 0.0;
-    for (var i = 1; i < _moonTrail.length; i++) {
-      span += (_moonTrail[i] - _moonTrail[i - 1]).distance;
-    }
-    return span;
-  }
 
   void _tick() {
     _ticks++;
@@ -367,39 +370,13 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
             end +
             Offset(math.sin(_clock * 1.9) * 1.4, math.cos(_clock * 1.5) * 1.1);
       }
-      // The lit side, comet tail and beam all point at the exact middle of the item.
+      // The eyes look at the exact middle of the item.
       aim = math.atan2(target.center.dy - next.dy, target.center.dx - next.dx);
     } else {
       next = rest;
     }
 
-    // A short tail of light, and only along a pointing swoop: a trail that followed an
-    // orbiting mark drew lines straight across whatever you were reading.
     var changed = false;
-    const tailCap = 18;
-    if (!_still && _target != null && !clearTarget) {
-      if (_moonTrail.isNotEmpty && (next - _moonTrail.last).distance > 140) {
-        _moonTrail.clear();
-      }
-      if (_moonTrail.isEmpty || (next - _moonTrail.last).distance > 1.1) {
-        _moonTrail.add(next);
-        if (_moonTrail.length > tailCap) _moonTrail.removeAt(0);
-        // A tail, not a scratch: keep it short even when the pointer jumps and
-        // the moon covers a lot of ground in one frame.
-        while (_moonTrail.length > 2 && _trailSpan() > 76) {
-          _moonTrail.removeAt(0);
-        }
-        changed = true;
-      } else if (_fly.value >= 1 && !_leaving && _moonTrail.length > 6) {
-        // Parked: let the long flight tail retract into the moon's own short comet tail
-        // instead of hanging in the air for as long as it points.
-        _moonTrail.removeAt(0);
-        changed = true;
-      }
-    } else if (_moonTrail.isNotEmpty) {
-      _moonTrail.clear();
-      changed = true;
-    }
     if (state == 'listening' && !_still) {
       if (_gesture.isNotEmpty && (c - _gesture.last).distance > 300) {
         _gesture.clear(); // a jump, not a gesture
@@ -429,7 +406,6 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         _pos = rest;
         _aim = 0;
       });
-      _moonTrail.clear();
       return;
     }
     if ((next - _pos).distance > .12 || (aim - _aim).abs() > .004) {
@@ -576,7 +552,6 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
       _targetLabel = message.isNotEmpty ? message : '${p['name'] ?? ''}';
       _flyFrom = _pos;
     });
-    _moonTrail.clear();
     _fly.duration = Duration(
       milliseconds: (380 + (vantage - _flyFrom).distance * .32)
           .clamp(460, 900)
@@ -740,91 +715,83 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     });
   }
 
+  /// Compii's own colour, except when the state has to be told apart at a glance:
+  /// amber when it needs you, red when something went wrong or it is recording you.
   Color get _tint => switch (state) {
-    'listening' || 'dictating' => const Color(0xFF5CE1E6),
-    'watching' => const Color(0xFFFF7D72),
-    'needs_you' => const Color(0xFFFFC94D),
-    'error' || 'setup' => const Color(0xFFFF7D72),
-    _ => const Color(0xFF6E8BFF),
+    'needs_you' => const Color(0xFFFF9B3D),
+    'watching' || 'error' || 'setup' => const Color(0xFFFF5A4E),
+    _ => compiiColor.value,
   };
 
-  /// Draw the tail in a small box around it rather than over the whole screen:
-  /// the overlay is full-screen and transparent, so a full-screen repaint every
-  /// frame would cost far more than the few pixels that actually change.
-  Widget _moonTrailLayer() {
-    var b = Rect.fromPoints(_moonTrail.first, _moonTrail.first);
-    for (final p in _moonTrail.skip(1)) {
-      b = b.expandToInclude(Rect.fromPoints(p, p));
-    }
-    b = b.inflate(10);
-    return Positioned(
-      left: b.left,
-      top: b.top,
-      width: b.width,
-      height: b.height,
-      child: IgnorePointer(
-        child: CustomPaint(
-          painter: _CometTrailPainter(
-            [for (final p in _moonTrail) p - b.topLeft],
-            _tint,
-            _leaving ? 1 - _returnT : 1,
-          ),
-        ),
-      ),
-    );
+  /// The words on a card's header: what Compii is doing, in one or two words.
+  String get _title => switch (state) {
+    _ when _target != null => 'Showing you',
+    'listening' => 'Listening',
+    'dictating' => 'Dictating',
+    'thinking' => 'Working',
+    'watching' => 'Watching you',
+    'needs_you' => _takeoverId.isNotEmpty ? 'Your turn' : 'Needs you',
+    'selected' => 'Your selection',
+    'error' => 'Problem',
+    'setup' => 'Setup',
+    _ => 'Compii',
+  };
+
+  /// Where the eyes look: back at your pointer, or at what they are showing you.
+  Offset get _gaze {
+    if (_target != null) return Offset(math.cos(_aim), math.sin(_aim));
+    final d = _center - _pos;
+    final n = d.distance;
+    return n < 1 ? Offset.zero : d / n;
   }
 
-  /// The item ring, painted only in its own small box.
-  Widget _ringLayer() {
-    final target = _target!;
-    final b = target.inflate(34);
-    return Positioned(
-      left: b.left,
-      top: b.top,
-      width: b.width,
-      height: b.height,
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: Listenable.merge([_fly, _pulse]),
-          builder: (context, _) => CustomPaint(
-            painter: _TargetPainter(
-              target: target.shift(-b.topLeft),
-              progress: _fly.value,
-              pulse: _pulse.value,
-              tint: _tint,
-              fade: _leaving ? 1 - _returnT : 1,
-            ),
+  /// The header every card wears: the eyes, in the state's mood, and the title.
+  Widget _header() => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        CardEyes(mood: moodForBuddy(state, speaking: speaking), color: _tint, size: 14),
+        const SizedBox(width: 8),
+        Text(
+          _title,
+          style: TextStyle(
+            color: Color.lerp(_tint, Colors.white, .55),
+            fontSize: 12,
+            fontWeight: FontWeight.w600,
+            letterSpacing: .2,
+            decoration: TextDecoration.none,
+            fontFamily: 'Segoe UI Variable Text',
           ),
         ),
-      ),
-    );
-  }
+      ],
+    ),
+  );
 
-  /// The beam between the moon and the item, painted only along its own path.
-  Widget _aimLayer() {
-    final to = _target!.center;
-    final b = Rect.fromPoints(_pos, to).inflate(22);
-    return Positioned(
-      left: b.left,
-      top: b.top,
-      width: b.width,
-      height: b.height,
-      child: IgnorePointer(
-        child: AnimatedBuilder(
-          animation: Listenable.merge([_fly, _pulse]),
-          builder: (context, _) => CustomPaint(
-            painter: _AimPainter(
-              from: _pos - b.topLeft,
-              to: to - b.topLeft,
-              tint: _tint,
-              progress: ((_fly.value - .45) / .55).clamp(0.0, 1.0),
-              pulse: _pulse.value,
-              fade: _leaving ? 1 - _returnT : 1,
-            ),
+  /// Showing you something: the screen dims and the item stays lit, ringed.
+  Widget _spotlightLayer() => Positioned.fill(
+    child: IgnorePointer(
+      child: AnimatedBuilder(
+        animation: Listenable.merge([_fly, _pulse]),
+        builder: (context, _) => CustomPaint(
+          painter: SpotlightPainter(
+            target: _target!,
+            color: _tint,
+            progress: _fly.value,
+            pulse: _pulse.value,
+            fade: _leaving ? 1 - _returnT : 1,
           ),
         ),
       ),
-    );
+    ),
+  );
+
+  /// The outcome first: the answer's first sentence is the headline, the rest is
+  /// the detail under it.
+  (String, String) _split(String line) {
+    final m = RegExp(r'^(.{12,200}?[.!?])(\s+)(.+)$', dotAll: true).firstMatch(line.trim());
+    if (m == null) return (line.trim(), '');
+    return (m.group(1)!, m.group(3)!.trim());
   }
 
   @override
@@ -874,13 +841,16 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     final roomy = _roomy && _target == null;
     if (roomy != _cardShown) {
       _cardShown = roomy;
-      if (roomy) _cardOnLeft = _center.dx > screen.width * .5;
+      if (roomy) {
+        _cardOnLeft = _center.dx > screen.width * .5;
+        _cardAt = _center;
+      }
     }
     final onLeft = _cardOnLeft;
     final body = TextStyle(
       color: muted ? const Color(0xB3FFFFFF) : const Color(0xF2FFFFFF),
-      fontSize: 13,
-      height: 1.42,
+      fontSize: listening ? 16 : 14,
+      height: 1.45,
       letterSpacing: .1,
       fontWeight: FontWeight.w500,
       decoration: TextDecoration.none,
@@ -888,8 +858,8 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     );
     // A corner panel holds paragraphs, so it is wide, and shows as many lines as the
     // top of the screen has room for instead of eight lines and a shrug.
-    final panelWidth = (roomy ? 430.0 : 290.0) - 24;
-    final panelLines = ((screen.height * .52 - 40) / 18.5).floor().clamp(6, 40);
+    final panelWidth = (roomy ? 440.0 : 320.0) - 32;
+    final panelLines = ((screen.height * .5 - 90) / 21).floor().clamp(5, 36);
     final cutOff =
         roomy && line.isNotEmpty && _losesLines(line, body, panelLines, panelWidth);
     // Built once per state change; the moving frame only repositions it, so its
@@ -898,7 +868,9 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
         ? _GlassLabel(
             key: _card,
             tint: _tint,
-            maxWidth: roomy ? 430 : 290,
+            maxWidth: roomy ? 440 : 320,
+            roomy: roomy || asking,
+            header: _header(),
             child: asking && state == 'selected'
                 ? _selectionCard(line)
                 : asking
@@ -910,33 +882,104 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                       Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          if (listening) ...[
-                            AnimatedBuilder(
-                              animation: _pulse,
-                              builder: (context, _) => CustomPaint(
-                                size: const Size(14, 12),
-                                painter: _WavePainter(_pulse.value, level, _tint),
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                          ],
                           Flexible(
                             child: line.isEmpty
                                 ? _Shimmer(
                                     text: state == 'dictating'
-                                        ? 'Dictating'
-                                        : (listening ? 'Listening' : 'Thinking'),
+                                        ? 'Say it, and it types where your cursor is'
+                                        : (listening ? 'Say what you need' : 'On it'),
                                     t: _pulse,
+                                  )
+                                : roomy && !listening
+                                ? Builder(
+                                    builder: (context) {
+                                      final (head, rest) = _split(line);
+                                      return Column(
+                                        mainAxisSize: MainAxisSize.min,
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            head,
+                                            maxLines: 4,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: body.copyWith(
+                                              fontSize: 17,
+                                              height: 1.3,
+                                              fontWeight: FontWeight.w600,
+                                              fontFamily: 'Segoe UI Variable Display',
+                                            ),
+                                          ),
+                                          if (rest.isNotEmpty) ...[
+                                            const SizedBox(height: 6),
+                                            Text(
+                                              rest,
+                                              maxLines: math.max(2, panelLines - 3),
+                                              overflow: TextOverflow.ellipsis,
+                                              style: body.copyWith(
+                                                color: const Color(0xC7FFFFFF),
+                                                fontWeight: FontWeight.w400,
+                                              ),
+                                            ),
+                                          ],
+                                        ],
+                                      );
+                                    },
                                   )
                                 : Text(
                                     line,
-                                    maxLines: roomy ? panelLines : 2,
+                                    maxLines: roomy ? panelLines : 3,
                                     overflow: TextOverflow.ellipsis,
                                     style: body,
                                   ),
                           ),
+                          if (listening) ...[
+                            const SizedBox(width: 10),
+                            AnimatedBuilder(
+                              animation: _pulse,
+                              builder: (context, _) => CustomPaint(
+                                size: const Size(20, 18),
+                                painter: _WavePainter(_pulse.value, level, _tint),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
+                      if (listening)
+                        const Padding(
+                          padding: EdgeInsets.only(top: 8),
+                          child: Text(
+                            'Let go of Ctrl+Alt to send',
+                            style: TextStyle(
+                              color: Color(0x8CFFFFFF),
+                              fontSize: 11.5,
+                              decoration: TextDecoration.none,
+                              fontFamily: 'Segoe UI Variable Text',
+                            ),
+                          ),
+                        ),
+                      if (roomy && !asking && line.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 12),
+                          child: Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              _Pill(
+                                label: 'Copy',
+                                tint: _tint,
+                                onTap: () => Clipboard.setData(ClipboardData(text: line)),
+                              ),
+                              _Pill(
+                                label: 'Dismiss',
+                                tint: _tint,
+                                onTap: () {
+                                  _hide?.cancel();
+                                  _goIdle();
+                                },
+                              ),
+                            ],
+                          ),
+                        ),
                       if (cutOff)
                         const Padding(
                           padding: EdgeInsets.only(top: 6),
@@ -1042,30 +1085,45 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                               ),
                             ),
                           ),
-                        if (!_still && _moonTrail.length > 1) _moonTrailLayer(),
-                        if (_target != null) _ringLayer(),
-                        if (_target != null && _vantage != null) _aimLayer(),
+                        if (_target != null) _spotlightLayer(),
+                        if ((listening || thinking || watching) && _target == null)
+                          Positioned(
+                            left: _center.dx - 40,
+                            top: _center.dy - 40,
+                            child: IgnorePointer(
+                              child: RepaintBoundary(
+                                child: AnimatedBuilder(
+                                  animation: _pulse,
+                                  builder: (context, _) => CustomPaint(
+                                    size: const Size(80, 80),
+                                    painter: CursorRingPainter(
+                                      color: watching ? _tint : compiiColor.value,
+                                      t: _still ? .2 : _pulse.value,
+                                      level: listening ? level : 0,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         Positioned(
                           left: _pos.dx - 22,
                           top: _pos.dy - 22,
-                          child: RepaintBoundary(
-                            child: AnimatedBuilder(
-                              animation: _pulse,
-                              builder: (context, _) => CustomPaint(
-                                size: const Size(44, 44),
-                                painter: SparkPainter(
-                                  t: _pulse.value,
-                                  tint: _tint,
-                                  listening: listening,
-                                  thinking: thinking,
-                                  level: listening ? level : 0,
-                                  active: talking || _target != null,
-                                  recording: watching,
-                                  pointing: _target != null && !_leaving,
-                                  aim: _aim,
-                                  bulk: _box / 21,
-                                  fade: _dim * (_leaving ? 1 - _returnT : 1),
-                                  working: talking && !_still,
+                          child: IgnorePointer(
+                            child: RepaintBoundary(
+                              child: AnimatedBuilder(
+                                animation: _pulse,
+                                builder: (context, _) => CustomPaint(
+                                  size: const Size(44, 44),
+                                  painter: CursorMarkPainter(
+                                    mood: moodForBuddy(state, speaking: speaking),
+                                    color: _tint,
+                                    t: _still ? .2 : _pulse.value,
+                                    engaged: talking || _target != null,
+                                    level: listening ? level : 0,
+                                    gaze: _gaze,
+                                    fade: _dim * (_leaving ? 1 - _returnT : 1),
+                                  ),
                                 ),
                               ),
                             ),
@@ -1079,23 +1137,19 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                             // takes the click itself; a card you are reading closes when
                             // you tap it.
                             Positioned(
-                              left: onLeft ? 18 : null,
-                              right: onLeft ? null : 18,
-                              top: 18,
-                              child: asking
-                                  ? label
-                                  : Semantics(
-                                      button: true,
-                                      label: 'Dismiss',
-                                      child: GestureDetector(
-                                        behavior: HitTestBehavior.opaque,
-                                        onTap: () {
-                                          _hide?.cancel();
-                                          _goIdle();
-                                        },
-                                        child: label,
-                                      ),
-                                    ),
+                              left: onLeft
+                                  ? null
+                                  : (_cardAt.dx + 28).clamp(12.0, math.max(12.0, screen.width - 452)),
+                              right: onLeft
+                                  ? (screen.width - _cardAt.dx + 28).clamp(12.0, math.max(12.0, screen.width - 452))
+                                  : null,
+                              top: _cardAt.dy < screen.height * .55
+                                  ? (_cardAt.dy + 18).clamp(12.0, math.max(12.0, screen.height - 160))
+                                  : null,
+                              bottom: _cardAt.dy < screen.height * .55
+                                  ? null
+                                  : (screen.height - _cardAt.dy + 18).clamp(12.0, math.max(12.0, screen.height - 160)),
+                              child: label,
                             )
                           else
                             Positioned(
@@ -1130,7 +1184,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     child: AnimatedBuilder(
       animation: _pulse,
       builder: (context, _) => _GlassLabel(
-        tint: const Color(0xFF5CE1E6),
+        tint: compiiColor.value,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -1139,12 +1193,10 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
               height: 8,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFF5CE1E6),
+                color: compiiColor.value,
                 boxShadow: [
                   BoxShadow(
-                    color: const Color(
-                      0xFF5CE1E6,
-                    ).withValues(alpha: .25 + .45 * _pulse.value),
+                    color: compiiColor.value.withValues(alpha: .25 + .45 * _pulse.value),
                     blurRadius: 5 + 7 * _pulse.value,
                     spreadRadius: 1,
                   ),
@@ -1153,7 +1205,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
             ),
             const SizedBox(width: 9),
             const Text(
-              'Compii is seeing your screen',
+              'Compii is looking at your screen',
               style: TextStyle(
                 color: Color(0xF2FFFFFF),
                 fontSize: 12.5,
@@ -1392,12 +1444,12 @@ class _PillState extends State<_Pill> {
         onTap: widget.onTap,
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 120),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
           decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(99),
+            borderRadius: BorderRadius.circular(12),
             color: widget.primary
-                ? widget.tint.withValues(alpha: _hover ? 1 : .88)
-                : Color(_hover ? 0x33FFFFFF : 0x1FFFFFFF),
+                ? Color(_hover ? 0xFFFFFFFF : 0xFFF2F2F5)
+                : Color(_hover ? 0x2EFFFFFF : 0x17FFFFFF),
           ),
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 190),
@@ -1407,9 +1459,9 @@ class _PillState extends State<_Pill> {
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
                 color: widget.primary
-                    ? const Color(0xFF1A1630)
+                    ? const Color(0xFF0A0A0D)
                     : const Color(0xF2FFFFFF),
-                fontSize: 12.5,
+                fontSize: 13,
                 fontWeight: FontWeight.w600,
                 decoration: TextDecoration.none,
                 fontFamily: 'Segoe UI Variable Text',
@@ -1431,54 +1483,59 @@ bool _losesLines(String text, TextStyle style, int maxLines, double width) {
   return p.didExceedMaxLines;
 }
 
-/// Small, dark, frosted label: Compii's voice on screen. Wide when it is a card
-/// meant to be read rather than glanced at.
+/// Compii's card: black glass with a hairline edge, the eyes and a title on top.
+/// Roomy when it is meant to be read or answered, compact when it is a glance.
 class _GlassLabel extends StatelessWidget {
   const _GlassLabel({
     super.key,
     required this.child,
     required this.tint,
-    this.maxWidth = 290,
+    this.maxWidth = 320,
+    this.roomy = false,
+    this.header,
   });
   final Widget child;
   final Color tint;
   final double maxWidth;
+  final bool roomy;
+  final Widget? header;
   @override
-  Widget build(BuildContext context) => ConstrainedBox(
-    constraints: BoxConstraints(maxWidth: maxWidth),
-    child: DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(11),
-        boxShadow: [
-          const BoxShadow(
-            color: Color(0x52000000),
-            blurRadius: 14,
-            offset: Offset(0, 6),
-          ),
-          BoxShadow(
-            color: tint.withValues(alpha: .18),
-            blurRadius: 16,
-            spreadRadius: -6,
-          ),
-        ],
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(11),
-        child: BackdropFilter(
-          filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(11),
-              color: const Color(0xD9161427),
-              border: Border.all(color: const Color(0x24FFFFFF)),
+  Widget build(BuildContext context) {
+    final r = BorderRadius.circular(roomy ? 22 : 18);
+    return ConstrainedBox(
+      constraints: BoxConstraints(maxWidth: maxWidth),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: r,
+          boxShadow: [
+            const BoxShadow(color: Color(0x73000000), blurRadius: 40, offset: Offset(0, 18)),
+            BoxShadow(color: tint.withValues(alpha: .16), blurRadius: 30, spreadRadius: -10),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: r,
+          child: BackdropFilter(
+            filter: ui.ImageFilter.blur(sigmaX: 18, sigmaY: 18),
+            child: Container(
+              padding: roomy
+                  ? const EdgeInsets.fromLTRB(18, 14, 18, 16)
+                  : const EdgeInsets.fromLTRB(14, 10, 14, 12),
+              decoration: BoxDecoration(
+                borderRadius: r,
+                color: const Color(0xEB08080B),
+                border: Border.all(color: const Color(0x1FFFFFFF)),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [?header, child],
+              ),
             ),
-            child: child,
           ),
         ),
       ),
-    ),
-  );
+    );
+  }
 }
 
 class _Shimmer extends StatelessWidget {
@@ -1512,565 +1569,6 @@ class _Shimmer extends StatelessWidget {
   );
 }
 
-/// The cursor's little moon: a glowing sphere with a lit crescent and a quiet
-/// halo. Idle it is small and half-lit; a question makes it bigger and fully lit.
-/// Nothing about it rotates — work is shown by one arc that grows and fades softly,
-/// because a badge that spins in front of text is unreadable. While pointing, its lit
-/// side, comet tail and a tapered beam all aim at the exact spot.
-class SparkPainter extends CustomPainter {
-  SparkPainter({
-    required this.t,
-    required this.tint,
-    required this.listening,
-    required this.thinking,
-    required this.level,
-    required this.active,
-    this.recording = false,
-    this.pointing = false,
-    this.aim = 0,
-    this.fade = 1,
-    this.bulk = 1,
-    this.working = false,
-  });
-  final double t;
-  final Color tint;
-  final bool listening;
-  final bool thinking;
-  final double level;
-  final bool active;
-  final bool recording;
-  final bool pointing;
-  final double aim;
-  final double fade;
-
-  /// Size of the mark relative to its resting 21 px.
-  final double bulk;
-
-  /// Draw the growing "still working" arc.
-  final bool working;
-
-  @override
-  void paint(Canvas canvas, Size s) {
-    final strength = fade.clamp(0.0, 1.0);
-    if (strength <= 0) return;
-    final c = Offset(s.width / 2, s.height / 2);
-    final breath = .5 + .5 * math.sin(t * math.pi * (thinking ? 2 : 1));
-    // Pointing, the lit side faces the item. Otherwise the light is fixed: a wandering
-    // highlight was a slow rotation right next to whatever you were reading.
-    final lightAngle = pointing ? aim : -2.35;
-    final light = Offset(math.cos(lightAngle), math.sin(lightAngle));
-    final r =
-        (4.3 +
-                level * 1.1 +
-                (active ? .2 : 0) +
-                (pointing ? .3 : 0) +
-                breath * .15) *
-            bulk;
-
-    if (pointing) {
-      // A short comet tail, opposite the aim, so direction reads at a glance.
-      final tail = (8.5 + 2.5 * level) * bulk;
-      canvas.save();
-      canvas.translate(c.dx, c.dy);
-      canvas.rotate(aim);
-      final path = Path()
-        ..moveTo(-tail, 0)
-        ..quadraticBezierTo(-r * 1.15, r * .95, r * .2, r * .45)
-        ..lineTo(r * .2, -r * .45)
-        ..quadraticBezierTo(-r * 1.15, -r * .95, -tail, 0)
-        ..close();
-      final bounds = Rect.fromLTRB(-tail, -r, r * .2, r);
-      canvas.drawPath(
-        path,
-        Paint()
-          ..shader = LinearGradient(
-            begin: Alignment.centerLeft,
-            end: Alignment.centerRight,
-            colors: [
-              tint.withValues(alpha: 0),
-              tint.withValues(alpha: .34 * strength),
-            ],
-          ).createShader(bounds),
-      );
-      canvas.drawLine(
-        Offset(-tail * .72, 0),
-        Offset(r * .05, 0),
-        Paint()
-          ..strokeWidth = .7
-          ..strokeCap = StrokeCap.round
-          ..color = Colors.white.withValues(alpha: .3 * strength),
-      );
-      canvas.restore();
-    }
-
-    // Halo: a quiet outer breath plus a tighter bloom.
-    final halo = r + (5.8 + breath * 1.6 + level * 4.5) * bulk;
-    canvas.drawCircle(
-      c,
-      halo,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            tint.withValues(
-              alpha: (.18 + .16 * level + (active ? .05 : 0)) * strength,
-            ),
-            tint.withValues(alpha: .055 * strength),
-            tint.withValues(alpha: 0),
-          ],
-          stops: const [0, .45, 1],
-        ).createShader(Rect.fromCircle(center: c, radius: halo)),
-    );
-    final bloom = r + (2.4 + level * 1.5) * bulk;
-    canvas.drawCircle(
-      c,
-      bloom,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Color.lerp(
-              tint,
-              Colors.white,
-              .45,
-            )!.withValues(alpha: .3 * strength),
-            tint.withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromCircle(center: c, radius: bloom)),
-    );
-
-    if (working) {
-      // Work shown as one arc that grows from the top and fades out again, starting in
-      // the same place each time. It never turns, so it never drags light across text.
-      final sweep = 4.6 * Curves.easeOutCubic.transform(t);
-      final alpha = math.sin(t * math.pi) * .8 * strength;
-      if (alpha > .01) {
-        canvas.drawArc(
-          Rect.fromCircle(center: c, radius: r + 6.4 * bulk),
-          -math.pi / 2,
-          sweep,
-          false,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 1.5
-            ..strokeCap = StrokeCap.round
-            ..color = tint.withValues(alpha: alpha),
-        );
-      }
-    }
-
-    if ((listening || recording) && strength > .4) {
-      for (final k in [0.0, .5]) {
-        final p = (t * 1.6 + k) % 1;
-        canvas.drawCircle(
-          c,
-          r + (1.5 + p * 6) * bulk,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = .9 * bulk
-            ..color = tint.withValues(alpha: (1 - p) * .42 * strength),
-        );
-      }
-    }
-
-    // A soft shadow so the moon sits on the screen rather than in it. A radial
-    // gradient does the same job as a blur without the per-frame filter cost.
-    final shadowC = c + Offset(0, 1.6 * bulk);
-    final shadowR = r * .95 + 2 * bulk;
-    canvas.drawCircle(
-      shadowC,
-      shadowR,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            const Color(0xFF08061A).withValues(alpha: .3 * strength),
-            const Color(0xFF08061A).withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromCircle(center: shadowC, radius: shadowR)),
-    );
-
-    final body = Rect.fromCircle(center: c, radius: r);
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..shader = RadialGradient(
-          center: Alignment(light.dx * .55, light.dy * .55),
-          radius: .95,
-          colors: [
-            Color.lerp(Colors.white, tint, .1)!,
-            Color.lerp(tint, Colors.white, .24)!,
-            tint,
-            Color.lerp(tint, const Color(0xFF17113D), .72)!,
-          ],
-          stops: const [0, .3, .64, 1],
-        ).createShader(body),
-    );
-
-    // The unlit part: a deep, soft crescent carved into the sphere.
-    canvas.save();
-    canvas.clipPath(Path()..addOval(body));
-    final shade = c - light * (r * .62);
-    canvas.drawCircle(
-      shade,
-      r * 1.06,
-      Paint()
-        ..color = Color.lerp(
-          tint,
-          const Color(0xFF0D0926),
-          .82,
-        )!.withValues(alpha: .58 * strength),
-    );
-    // Two quiet craters on the lit side.
-    _crater(
-      canvas,
-      c + light * r * .3 + Offset(-light.dy, light.dx) * r * .24,
-      r * .2,
-      strength,
-    );
-    _crater(
-      canvas,
-      c + light * r * .08 + Offset(light.dy, -light.dx) * r * .34,
-      r * .12,
-      strength,
-    );
-    canvas.restore();
-
-    // Rim light along the side facing the target.
-    canvas.drawArc(
-      body,
-      lightAngle - 1.2,
-      2.4,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = .95
-        ..strokeCap = StrokeCap.round
-        ..color = Colors.white.withValues(alpha: .6 * strength),
-    );
-    canvas.drawCircle(
-      c,
-      r,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = .55
-        ..color = Colors.white.withValues(alpha: .16 * strength),
-    );
-
-    // A small specular highlight where the light lands.
-    final spec = c + light * r * .38;
-    final sr = r * .24;
-    canvas.drawCircle(
-      spec,
-      sr,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            Colors.white.withValues(alpha: .72 * strength),
-            Colors.white.withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromCircle(center: spec, radius: sr)),
-    );
-    if (pointing) {
-      // The nose glows brightest, aimed straight at the item.
-      final nose = c + light * r * 1.2;
-      final nr = r * .34;
-      canvas.drawCircle(
-        nose,
-        nr,
-        Paint()
-          ..shader = RadialGradient(
-            colors: [
-              Colors.white.withValues(alpha: .95 * strength),
-              tint.withValues(alpha: 0),
-            ],
-          ).createShader(Rect.fromCircle(center: nose, radius: nr)),
-      );
-    }
-    if (recording) {
-      canvas.drawCircle(
-        c + Offset(r * .95, -r * .95),
-        2,
-        Paint()..color = const Color(0xFFFF5A5F).withValues(alpha: strength),
-      );
-    }
-  }
-
-  void _crater(Canvas canvas, Offset p, double radius, double strength) {
-    final rect = Rect.fromCenter(
-      center: p,
-      width: radius * 1.7,
-      height: radius * 1.15,
-    );
-    canvas.drawOval(
-      rect,
-      Paint()
-        ..color = const Color(0xFF0D0926).withValues(alpha: .14 * strength),
-    );
-    canvas.drawArc(
-      rect,
-      math.pi * .85,
-      math.pi * .9,
-      false,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = .6
-        ..color = Colors.white.withValues(alpha: .16 * strength),
-    );
-  }
-
-  @override
-  bool shouldRepaint(SparkPainter o) =>
-      o.t != t ||
-      o.tint != tint ||
-      o.listening != listening ||
-      o.thinking != thinking ||
-      o.level != level ||
-      o.active != active ||
-      o.recording != recording ||
-      o.pointing != pointing ||
-      o.aim != aim ||
-      o.fade != fade ||
-      o.bulk != bulk ||
-      o.working != working;
-}
-
-/// The item's ring: it draws itself on, breathes, and snaps four small
-/// brackets around the corners. A bright dot marks the exact center.
-class _TargetPainter extends CustomPainter {
-  _TargetPainter({
-    required this.target,
-    required this.progress,
-    required this.pulse,
-    required this.tint,
-    required this.fade,
-  });
-  final Rect target;
-  final double progress;
-  final double pulse;
-  final Color tint;
-  final double fade;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (progress <= .02 || fade <= 0) return;
-    final t = Curves.easeOutCubic.transform(progress.clamp(0.0, 1.0));
-    final ring = RRect.fromRectAndRadius(
-      target.inflate(8 + 1.5 * pulse),
-      const Radius.circular(10),
-    );
-    final path = Path()..addRRect(ring);
-    final metric = path.computeMetrics().first;
-    final drawn = metric.extractPath(0, metric.length * t);
-    final solid = Color.lerp(tint, Colors.white, .38)!;
-    canvas.drawPath(
-      drawn,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 7
-        ..strokeCap = StrokeCap.round
-        ..color = tint.withValues(alpha: .13 * fade),
-    );
-    canvas.drawPath(
-      drawn,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.7
-        ..strokeCap = StrokeCap.round
-        ..color = solid.withValues(alpha: .9 * fade),
-    );
-
-    if (t > .75) {
-      final a = ((t - .75) / .25).clamp(0.0, 1.0);
-      final r = target.inflate(13);
-      final len = math.min(17.0, math.min(r.width, r.height) / 3);
-      final pen = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2.1
-        ..strokeCap = StrokeCap.round
-        ..color = tint.withValues(alpha: .78 * a * fade);
-      void corner(Offset c, Offset h, Offset v) {
-        final corner = Path()
-          ..moveTo(c.dx + h.dx * len, c.dy + h.dy * len)
-          ..lineTo(c.dx, c.dy)
-          ..lineTo(c.dx + v.dx * len, c.dy + v.dy * len);
-        canvas.drawPath(corner, pen);
-      }
-
-      corner(r.topLeft, const Offset(1, 0), const Offset(0, 1));
-      corner(r.topRight, const Offset(-1, 0), const Offset(0, 1));
-      corner(r.bottomLeft, const Offset(1, 0), const Offset(0, -1));
-      corner(r.bottomRight, const Offset(-1, 0), const Offset(0, -1));
-    }
-
-    // The exact spot the beam lands on.
-    final dot = ((progress - .8) / .2).clamp(0.0, 1.0);
-    if (dot > 0) {
-      final c = target.center;
-      final rr = 2.3 + 1.1 * pulse;
-      canvas.drawCircle(
-        c,
-        rr + 5 + 4 * pulse,
-        Paint()
-          ..shader =
-              RadialGradient(
-                colors: [
-                  tint.withValues(alpha: .38 * dot * fade),
-                  tint.withValues(alpha: 0),
-                ],
-              ).createShader(
-                Rect.fromCircle(center: c, radius: rr + 5 + 4 * pulse),
-              ),
-      );
-      canvas.drawCircle(
-        c,
-        rr,
-        Paint()..color = Colors.white.withValues(alpha: .92 * dot * fade),
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_TargetPainter o) =>
-      o.target != target ||
-      o.progress != progress ||
-      o.pulse != pulse ||
-      o.tint != tint ||
-      o.fade != fade;
-}
-
-/// The light beam from the moon's nose to the middle of the item: a tapered
-/// laser that draws outward and ends in a bright point.
-class _AimPainter extends CustomPainter {
-  _AimPainter({
-    required this.from,
-    required this.to,
-    required this.tint,
-    required this.progress,
-    required this.pulse,
-    required this.fade,
-  });
-  final Offset from;
-  final Offset to;
-  final Color tint;
-  final double progress;
-  final double pulse;
-  final double fade;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (progress <= 0 || fade <= 0) return;
-    final span = to - from;
-    final dist = span.distance;
-    if (dist < 8) return;
-    final dir = span / dist;
-    final normal = Offset(-dir.dy, dir.dx);
-    final tip =
-        from + span * Curves.easeOutCubic.transform(progress.clamp(0.0, 1.0));
-
-    final beam = Path()
-      ..moveTo(from.dx + normal.dx * 1.4, from.dy + normal.dy * 1.4)
-      ..lineTo(tip.dx + normal.dx * .2, tip.dy + normal.dy * .2)
-      ..lineTo(tip.dx - normal.dx * .2, tip.dy - normal.dy * .2)
-      ..lineTo(from.dx - normal.dx * 1.4, from.dy - normal.dy * 1.4)
-      ..close();
-    final bounds = Rect.fromPoints(from, to);
-
-    canvas.drawLine(
-      from,
-      tip,
-      Paint()
-        ..strokeWidth = 4.5
-        ..strokeCap = StrokeCap.round
-        ..color = tint.withValues(alpha: .1 * fade),
-    );
-    canvas.drawPath(
-      beam,
-      Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-          colors: [
-            Color.lerp(tint, Colors.white, .5)!.withValues(alpha: .8 * fade),
-            tint.withValues(alpha: .3 * fade),
-          ],
-        ).createShader(bounds),
-    );
-
-    // A live point of light where the beam is right now.
-    canvas.drawCircle(
-      tip,
-      5.5 + 3 * pulse,
-      Paint()
-        ..shader = RadialGradient(
-          colors: [
-            tint.withValues(alpha: .34 * fade),
-            tint.withValues(alpha: 0),
-          ],
-        ).createShader(Rect.fromCircle(center: tip, radius: 5.5 + 3 * pulse)),
-    );
-    canvas.drawCircle(
-      tip,
-      2 + .6 * pulse,
-      Paint()..color = Colors.white.withValues(alpha: .9 * fade),
-    );
-  }
-
-  @override
-  bool shouldRepaint(_AimPainter o) =>
-      o.from != from ||
-      o.to != to ||
-      o.tint != tint ||
-      o.progress != progress ||
-      o.pulse != pulse ||
-      o.fade != fade;
-}
-
-/// The moon's own tail of light: newest positions brightest, fading backwards.
-class _CometTrailPainter extends CustomPainter {
-  _CometTrailPainter(this.points, this.color, this.fade);
-  final List<Offset> points;
-  final Color color;
-  final double fade;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    if (points.length < 2 || fade <= 0) return;
-    final path = Path()..moveTo(points.first.dx, points.first.dy);
-    for (var i = 1; i < points.length; i++) {
-      path.lineTo(points[i].dx, points[i].dy);
-    }
-    canvas.drawPath(
-      path,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 5
-        ..strokeCap = StrokeCap.round
-        ..color = color.withValues(alpha: .1 * fade),
-    );
-    for (var i = 1; i < points.length; i++) {
-      final w = i / points.length;
-      final c = Color.lerp(
-        color,
-        Colors.white,
-        .32 * w,
-      )!.withValues(alpha: math.pow(w, 1.7).toDouble() * .72 * fade);
-      canvas.drawLine(
-        points[i - 1],
-        points[i],
-        Paint()
-          ..strokeWidth = .5 + 2.1 * w
-          ..strokeCap = StrokeCap.round
-          ..color = c,
-      );
-    }
-  }
-
-  @override
-  bool shouldRepaint(_CometTrailPainter o) => true;
-}
-
-/// The paint trail left while you hold Ctrl+Alt and move the mouse: circle or
-/// wave at something to show Compii what you mean.
-/// Something Compii drew: a circle, underline, box or arrow around an item.
 class _Mark {
   const _Mark(this.kind, this.rect, this.from);
   final String kind;
