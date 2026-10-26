@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../art/halo.dart';
+import '../art/photo_eyes.dart';
 
 export '../art/halo.dart' show HaloForm, HaloFormInfo;
 
@@ -71,6 +72,7 @@ void restoreCompiiLook(SharedPreferences p) {
   if (coat != null) {
     compiiColor.value = parseHex(coat) ?? _legacyCoats[coat] ?? haloBlue;
   }
+  applyPhotoEyes(p.getString('compii_eyes')).ignore();
 }
 
 /// The island and the cursor overlay run as their own processes, so the form and
@@ -220,6 +222,7 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
     super.initState();
     compiiBody.addListener(_changed);
     compiiColor.addListener(_changed);
+    compiiPhotoEyes.addListener(_changed);
   }
 
   void _changed() {
@@ -243,6 +246,7 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
   void dispose() {
     compiiBody.removeListener(_changed);
     compiiColor.removeListener(_changed);
+    compiiPhotoEyes.removeListener(_changed);
     clock.dispose();
     drift.dispose();
     blend.dispose();
@@ -283,8 +287,8 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
           return CustomPaint(
             size: Size.infinite,
             painter: widget.face
-                ? EmberFacePainter(body: body, color: color, pose: pose)
-                : EmberPainter(body: body, color: color, pose: pose, reach: widget.reach),
+                ? EmberFacePainter(body: body, color: color, pose: pose, photo: compiiPhotoEyes.value)
+                : EmberPainter(body: body, color: color, pose: pose, reach: widget.reach, photo: compiiPhotoEyes.value),
           );
         },
       ),
@@ -307,19 +311,22 @@ class _EmberState extends State<Ember> with TickerProviderStateMixin {
 final pointer = ValueNotifier<Offset?>(null);
 
 class EmberPainter extends CustomPainter {
-  EmberPainter({required this.body, required this.color, required this.pose, this.reach});
+  EmberPainter({required this.body, required this.color, required this.pose, this.reach, this.photo});
 
   final CompiiBody body;
   final Color color;
   final HaloPose pose;
   final Offset? reach;
 
+  /// The user's own eyes, when they chose to give Compii theirs.
+  final PhotoEyes? photo;
+
   @override
   void paint(Canvas canvas, Size size) {
     final s = size.shortestSide;
     final centre = Offset(size.width / 2, size.height / 2 - s * .02);
     if (reach != null) _reach(canvas, centre, s);
-    Halo.paint(canvas, centre: centre, span: s * .86, form: body, color: color, pose: pose);
+    Halo.paint(canvas, centre: centre, span: s * .86, form: body, color: color, pose: pose, photo: photo);
   }
 
   /// A thread of light to the thing being pointed at, drawn in the widget's own
@@ -343,7 +350,7 @@ class EmberPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant EmberPainter old) =>
-      old.body != body || old.color != color || old.reach != reach || _changedPose(old.pose, pose);
+      old.body != body || old.color != color || old.reach != reach || old.photo != photo || _changedPose(old.pose, pose);
 }
 
 bool _changedPose(HaloPose a, HaloPose b) =>
@@ -359,11 +366,12 @@ bool _changedPose(HaloPose a, HaloPose b) =>
 
 /// The close-up: Compii in its room, warmed by whatever it is doing.
 class EmberFacePainter extends CustomPainter {
-  EmberFacePainter({required this.body, required this.color, required this.pose});
+  EmberFacePainter({required this.body, required this.color, required this.pose, this.photo});
 
   final CompiiBody body;
   final Color color;
   final HaloPose pose;
+  final PhotoEyes? photo;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -392,6 +400,7 @@ class EmberFacePainter extends CustomPainter {
       form: body,
       color: color,
       pose: pose,
+      photo: photo,
     );
   }
 
@@ -414,5 +423,5 @@ class EmberFacePainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant EmberFacePainter old) =>
-      old.body != body || old.color != color || _changedPose(old.pose, pose);
+      old.body != body || old.color != color || old.photo != photo || _changedPose(old.pose, pose);
 }

@@ -796,6 +796,23 @@ class CoreClient extends ChangeNotifier {
   /// so it does not come back after a restart.
   Future<void> deleteConversation(String taskId) => _request('DELETE', '/tasks/$taskId');
 
+  /// Clear history: every finished conversation, or only one teammate's. Ones still
+  /// working are kept. Returns how many were deleted and how many were kept running.
+  Future<({int deleted, int running})> clearHistory({String botId = ''}) async {
+    final r = Map<String, dynamic>.from(
+      await _request('DELETE', '/tasks', null, {if (botId.isNotEmpty) 'bot_id': botId}) as Map,
+    );
+    return (deleted: (r['deleted'] as num?)?.toInt() ?? 0, running: (r['still_running'] as num?)?.toInt() ?? 0);
+  }
+
+  /// Forget everything Compii saved about the user. Returns how many facts went.
+  Future<int> forgetAllMemory() async =>
+      ((await _request('DELETE', '/memory') as Map)['deleted'] as num?)?.toInt() ?? 0;
+
+  /// Compii back to how it started: name, instructions, look and AI. It can't be deleted.
+  Future<void> resetCompii() async =>
+      _applyBots(Map<String, dynamic>.from(await _request('POST', '/bots/primary/reset') as Map));
+
   /// Send a file to Core so Compii can read it. Streams the bytes; nothing is loaded whole.
   Future<Map<String, dynamic>> uploadFile(String path) async {
     final file = File(path);

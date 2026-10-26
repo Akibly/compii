@@ -14,6 +14,9 @@ import '../console/character.dart';
 import '../updates.dart';
 import 'first_run.dart';
 import 'color_chooser.dart';
+import 'eye_photo.dart';
+import 'deleting.dart';
+import '../art/photo_eyes.dart';
 
 /// One of Compii's bodies, shown wearing the face it will actually use. No name
 /// under it: the shape is the choice, and a screen reader gets a description.
@@ -45,13 +48,7 @@ class _FormTile extends StatelessWidget {
           child: Center(
             child: SizedBox.square(
               dimension: 64,
-              child: Ember(
-                mood: Mood.idle,
-                body: body,
-                animate: false,
-                phase: .3,
-                followPointer: false,
-              ),
+              child: Ember(mood: Mood.idle, body: body, animate: false, phase: .3, followPointer: false),
             ),
           ),
         ),
@@ -60,15 +57,139 @@ class _FormTile extends StatelessWidget {
   }
 }
 
+/// Compii's eyes: its eyes of light, or yours from a photo.
+class _EyesRow extends StatelessWidget {
+  const _EyesRow();
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    return ListenableBuilder(
+      listenable: compiiPhotoEyes,
+      builder: (context, _) {
+        final mine = compiiPhotoEyes.value != null;
+        return Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Eyes', style: context.type.titleSmall),
+                  Text(
+                    mine
+                        ? 'Compii is wearing your eyes. The photo stays on this PC.'
+                        : 'Eyes of light, or your own from a photo — they stay alive either way.',
+                    style: context.type.bodySmall?.copyWith(color: c.muted),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            if (mine) TextButton(onPressed: clearEyePhoto, child: const Text('Back to eyes of light')),
+            FilledButton.tonal(
+              onPressed: () => showEyePhotoPicker(context),
+              child: Text(mine ? 'Change photo' : 'Use my eyes'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// Everything that can be deleted, in one place, each with its own confirmation.
+class _DeleteZone extends StatelessWidget {
+  const _DeleteZone({required this.core});
+  final CoreClient core;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    Widget row(String title, String detail, String action, VoidCallback onTap) => Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: context.type.titleSmall),
+                Text(detail, style: context.type.bodySmall?.copyWith(color: c.muted)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          OutlinedButton(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: c.danger,
+              side: BorderSide(color: c.danger.withValues(alpha: .5)),
+            ),
+            onPressed: onTap,
+            child: Text(action),
+          ),
+        ],
+      ),
+    );
+    return Column(
+      children: [
+        row(
+          'Conversations',
+          'Every finished conversation, with all teammates. Ones still working are kept.',
+          'Delete all…',
+          () => clearHistoryFlow(context, core),
+        ),
+        Divider(height: 1, color: c.border),
+        row(
+          'What Compii remembers',
+          'The facts it saved about you. Also under Memory, one at a time.',
+          'Forget all…',
+          () async {
+            final ok = await confirmDeletion(
+              context,
+              title: 'Forget everything Compii remembers?',
+              detail: 'Every fact Compii saved about you goes. Your files and conversations stay.',
+              confirm: 'Forget all',
+            );
+            if (!ok || !context.mounted) return;
+            try {
+              final n = await core.forgetAllMemory();
+              if (context.mounted) {
+                ScaffoldMessenger.maybeOf(
+                  context,
+                )?.showSnackBar(SnackBar(content: Text('Forgot $n saved fact${n == 1 ? '' : 's'}.')));
+              }
+            } on Object catch (e) {
+              if (context.mounted) {
+                ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text('Couldn’t forget them: $e')));
+              }
+            }
+          },
+        ),
+        Divider(height: 1, color: c.border),
+        row(
+          'Compii itself',
+          'Start over: its memory, its set-up, its conversations — you choose.',
+          'Reset…',
+          () => resetCompiiFlow(context, core),
+        ),
+        Divider(height: 1, color: c.border),
+        row(
+          'Your eyes photo',
+          'If Compii is wearing your eyes, the photo is deleted from this PC.',
+          'Remove',
+          () => clearEyePhoto(),
+        ),
+      ],
+    );
+  }
+}
+
 class _Card extends StatelessWidget {
   const _Card({required this.child});
   final Widget child;
   @override
-  Widget build(BuildContext context) => Container(
-    decoration: Shapes.panel(context.c),
-    clipBehavior: Clip.antiAlias,
-    child: child,
-  );
+  Widget build(BuildContext context) =>
+      Container(decoration: Shapes.panel(context.c), clipBehavior: Clip.antiAlias, child: child);
 }
 
 /// What Compii remembers about you: inspectable and deletable.
@@ -121,8 +242,7 @@ class _MemoryPageState extends State<MemoryPage> {
   void _revealFocus() {
     final found = _focusTile.currentContext;
     if (found != null) {
-      Scrollable.ensureVisible(found, duration: context.motion(240),
-          alignment: .35, curve: Curves.easeOutCubic);
+      Scrollable.ensureVisible(found, duration: context.motion(240), alignment: .35, curve: Curves.easeOutCubic);
     }
   }
 
@@ -167,7 +287,9 @@ class _MemoryPageState extends State<MemoryPage> {
                     tileColor: widget.focusId != null && '${m['id']}' == widget.focusId ? c.accentSoft : null,
                     leading: GlyphTile(glyph: G.bookmark, size: 34, color: c.accent),
                     title: Text('${m['fact']}', style: context.type.bodyMedium),
-                    subtitle: m['at'] == null ? null : Text('Saved ${ago((m['at'] as num).toDouble())} ago', style: context.type.labelMedium),
+                    subtitle: m['at'] == null
+                        ? null
+                        : Text('Saved ${ago((m['at'] as num).toDouble())} ago', style: context.type.labelMedium),
                     trailing: IconButton(
                       tooltip: 'Forget this',
                       icon: const Glyph(G.trash),
@@ -195,11 +317,7 @@ const _kinds = [
   ('spend', 'Spend money', 'Purchases and payments — always asks', G.money),
 ];
 
-const _levels = [
-  ('just_do_it', 'Just do it'),
-  ('ask_once_per_task', 'Ask once'),
-  ('ask_every_time', 'Always ask'),
-];
+const _levels = [('just_do_it', 'Just do it'), ('ask_once_per_task', 'Ask once'), ('ask_every_time', 'Always ask')];
 
 /// The autonomy dial and appearance.
 class SettingsPage extends StatefulWidget {
@@ -241,21 +359,28 @@ class _SettingsPageState extends State<SettingsPage> {
       title: 'Settings',
       subtitle: 'How much Compii may do on its own, and how it looks.',
       children: [
-        SectionHeader('Brain',
-            subtitle: 'Which AI does the thinking. Free local models run on this PC; cloud ones need your own key.',
-            top: 0),
+        SectionHeader(
+          'Brain',
+          subtitle: 'Which AI does the thinking. Free local models run on this PC; cloud ones need your own key.',
+          top: 0,
+        ),
         BrainCard(run: widget.run),
         const SizedBox(height: 14),
         UsageCard(run: widget.run),
         const SizedBox(height: 28),
-        SectionHeader('Autonomy',
-            subtitle: 'For each kind of action, choose whether Compii asks first. Every action is recorded either way.',
-            top: 0),
+        SectionHeader(
+          'Autonomy',
+          subtitle: 'For each kind of action, choose whether Compii asks first. Every action is recorded either way.',
+          top: 0,
+        ),
         if (_loadFailed) LoadFailure(onRetry: _load),
         if (dial != null || !_loadFailed)
           _Card(
             child: dial == null
-                ? const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
+                ? const Padding(
+                    padding: EdgeInsets.all(24),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
                 : Column(
                     children: [
                       for (final (i, (kind, title, sub, icon)) in _kinds.indexed) ...[
@@ -354,7 +479,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: OptionRow(
             glyph: G.chat,
             title: 'How Compii answers',
-            subtitle: 'Character: Compii is the main figure and replies in a speech bubble. Chat: a full message history.',
+            subtitle:
+                'Character: Compii is the main figure and replies in a speech bubble. Chat: a full message history.',
             color: c.muted,
             trailing: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 170),
@@ -425,14 +551,16 @@ class _SettingsPageState extends State<SettingsPage> {
                   },
                 ),
                 const SizedBox(height: 16),
-                ColorChooser(
-                  color: widget.state.color,
-                  onChanged: widget.state.setColor,
-                ),
+                ColorChooser(color: widget.state.color, onChanged: widget.state.setColor),
+                const SizedBox(height: 16),
+                const _EyesRow(),
               ],
             ),
           ),
         ),
+        const SizedBox(height: 28),
+        SectionHeader('Delete and reset', top: 0),
+        _Card(child: _DeleteZone(core: widget.core)),
         const SizedBox(height: 28),
         SectionHeader('Shortcuts', top: 0),
         _Card(
@@ -440,12 +568,18 @@ class _SettingsPageState extends State<SettingsPage> {
             children: [
               for (final (i, (keys, what)) in const [
                 ('Hold Ctrl + Alt', 'Talk to Compii from any app; move the mouse over what you mean, let go to send'),
-                ('Tap Ctrl + Alt', 'With words highlighted: Compii reads them off the app and asks what to do — no copying'),
+                (
+                  'Tap Ctrl + Alt',
+                  'With words highlighted: Compii reads them off the app and asks what to do — no copying',
+                ),
                 ('Hold Ctrl + Win', 'Dictate: your words are typed where your cursor is'),
                 ('Alt + Space', 'Show or hide the Compii window'),
                 ('Ctrl + Alt + Shift + S', 'Emergency stop: stop everything'),
                 ('Say “watch me” … “done”', 'Show Compii a task once; it saves the steps as a skill'),
-                ('Say “say that again” / “hide”', 'Repeat the last answer, or hide the buddy (“show yourself” brings it back)'),
+                (
+                  'Say “say that again” / “hide”',
+                  'Repeat the last answer, or hide the buddy (“show yourself” brings it back)',
+                ),
                 ('Ctrl + N', 'New conversation'),
                 ('Enter / Shift + Enter', 'Send / new line'),
                 ('Esc', 'Close the quick bar'),
@@ -458,7 +592,11 @@ class _SettingsPageState extends State<SettingsPage> {
                       Expanded(child: Text(what, style: context.type.bodyMedium)),
                       Container(
                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                        decoration: BoxDecoration(color: c.sunken, borderRadius: Shapes.r6, border: Border.all(color: c.border)),
+                        decoration: BoxDecoration(
+                          color: c.sunken,
+                          borderRadius: Shapes.r6,
+                          border: Border.all(color: c.border),
+                        ),
                         child: Text(keys, style: context.type.labelMedium?.copyWith(color: c.text)),
                       ),
                     ],
@@ -475,7 +613,8 @@ class _SettingsPageState extends State<SettingsPage> {
           child: OptionRow(
             glyph: G.shield,
             title: 'Save a diagnostic report',
-            subtitle: 'If something isn’t working, save a report and send it to whoever helps you. Keys, tokens and '
+            subtitle:
+                'If something isn’t working, save a report and send it to whoever helps you. Keys, tokens and '
                 'your user name are removed, and nothing is sent automatically.',
             color: c.muted,
             trailing: OutlinedButton(
@@ -556,16 +695,10 @@ class _AboutCardState extends State<AboutCard> {
         '$here. Downloading version ${up.to}${up.percent > 0 ? ' — ${up.percent}%' : ''}…',
         busy,
       ),
-      UpdateStage.applying => (
-        'Closing Compii and putting version ${up.to} in place. It opens again by itself.',
-        busy,
-      ),
+      UpdateStage.applying => ('Closing Compii and putting version ${up.to} in place. It opens again by itself.', busy),
       UpdateStage.problem => (
         '$here. ${up.problem}',
-        OutlinedButton(
-          onPressed: up.canInstall ? up.install : up.check,
-          child: const Text('Try again'),
-        ),
+        OutlinedButton(onPressed: up.canInstall ? up.install : up.check, child: const Text('Try again')),
       ),
     };
   }
@@ -592,7 +725,6 @@ class _AboutCardState extends State<AboutCard> {
   }
 }
 
-
 /// Voice: free and local. Nothing downloads until the user presses a button.
 class VoiceSettings extends StatelessWidget {
   const VoiceSettings({super.key, required this.voice, required this.run});
@@ -617,7 +749,10 @@ class VoiceSettings extends StatelessWidget {
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
-                children: [Text(title, style: context.type.titleSmall), Text(sub, style: context.type.bodySmall)],
+                children: [
+                  Text(title, style: context.type.titleSmall),
+                  Text(sub, style: context.type.bodySmall),
+                ],
               ),
             ),
             const SizedBox(width: 12),
@@ -662,11 +797,21 @@ class VoiceSettings extends StatelessWidget {
             const SizedBox(height: Space.m - 4),
           ],
           Container(
-            decoration: BoxDecoration(color: c.raised, border: Border.all(color: c.border), borderRadius: Shapes.r14),
+            decoration: BoxDecoration(
+              color: c.raised,
+              border: Border.all(color: c.border),
+              borderRadius: Shapes.r14,
+            ),
             child: st == null
                 ? voice.statusFailed
-                    ? Padding(padding: const EdgeInsets.all(Space.s), child: LoadFailure(onRetry: voice.refresh))
-                    : const Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator()))
+                      ? Padding(
+                          padding: const EdgeInsets.all(Space.s),
+                          child: LoadFailure(onRetry: voice.refresh),
+                        )
+                      : const Padding(
+                          padding: EdgeInsets.all(24),
+                          child: Center(child: CircularProgressIndicator()),
+                        )
                 : Column(
                     children: [
                       row(
@@ -675,9 +820,7 @@ class VoiceSettings extends StatelessWidget {
                         voice.canListen
                             ? 'Ready. Hold Ctrl + Alt in any app and talk, or tap Compii here.'
                             : 'Uses Whisper, an open speech model, running on your PC.',
-                        voice.canListen
-                            ? Glyph(G.checkCircle, color: c.success)
-                            : download('listen', 'Download'),
+                        voice.canListen ? Glyph(G.checkCircle, color: c.success) : download('listen', 'Download'),
                       ),
                       Divider(height: 1, color: c.border),
                       row(
@@ -685,7 +828,7 @@ class VoiceSettings extends StatelessWidget {
                         'Hands-free: “Hey Compii”',
                         voice.canListen
                             ? 'Say “Hey Compii” and your request. The mic stays open while this is on, but nothing is recorded or sent anywhere: '
-                                'only short bursts of speech are checked on this PC. Pauses while Compii talks.'
+                                  'only short bursts of speech are checked on this PC. Pauses while Compii talks.'
                             : 'Needs speech recognition first (above).',
                         Switch(
                           value: voice.wakeListening,
@@ -721,13 +864,13 @@ class VoiceSettings extends StatelessWidget {
                         voice.engine == 'fast'
                             ? 'Fast voice (Piper)'
                             : voice.naturalVoice
-                                ? 'Natural voice (Kokoro)'
-                                : 'Windows voice (built in)',
+                            ? 'Natural voice (Kokoro)'
+                            : 'Windows voice (built in)',
                         voice.engine == 'fast'
                             ? 'Compii speaks at the speed the words arrive, so answers never trail behind the text.'
                             : voice.naturalVoice
-                                ? 'An open voice model on your PC. Pick how Compii sounds.'
-                                : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
+                            ? 'An open voice model on your PC. Pick how Compii sounds.'
+                            : 'Works now. Download Kokoro, a free open voice model, for a much more natural sound.',
                         voice.engine != 'fast' && voice.naturalVoice
                             ? ScrollCapped(
                                 child: DropdownButton<String>(
@@ -741,8 +884,8 @@ class VoiceSettings extends StatelessWidget {
                                 ),
                               )
                             : voice.naturalVoice
-                                ? Glyph(G.checkCircle, color: c.success)
-                                : download('speak', 'Get natural voice'),
+                            ? Glyph(G.checkCircle, color: c.success)
+                            : download('speak', 'Get natural voice'),
                       ),
                       Divider(height: 1, color: c.border),
                       row(
@@ -750,15 +893,16 @@ class VoiceSettings extends StatelessWidget {
                         'Speak faster',
                         voice.fastVoice
                             ? 'Piper, a compact voice model that runs faster than real time on this PC. '
-                                'Free, downloaded once, never leaves your PC.'
+                                  'Free, downloaded once, never leaves your PC.'
                             : 'A compact voice model that keeps up with the text instead of trailing behind it. '
-                                'Free, 64 MB, stays on this PC.',
+                                  'Free, 64 MB, stays on this PC.',
                         voice.fastVoice
                             ? Switch(
                                 value: voice.engine == 'fast',
-                                onChanged: (v) => run(() => voice.set({
-                                  'engine': v ? 'fast' : (voice.naturalVoice ? 'natural' : 'windows'),
-                                })),
+                                onChanged: (v) => run(
+                                  () =>
+                                      voice.set({'engine': v ? 'fast' : (voice.naturalVoice ? 'natural' : 'windows')}),
+                                ),
                               )
                             : download('speak_fast', 'Get fast voice'),
                       ),

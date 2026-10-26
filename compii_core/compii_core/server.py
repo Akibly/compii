@@ -1617,6 +1617,49 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         audit.record("conversation_deleted", task=task_id)
         return {"ok": True, "id": task_id}
 
+    def drop_finished(match: Callable[[Any], bool]) -> tuple[list[str], int]:
+        """Delete every finished conversation `match` accepts. Ones still working or
+        waiting on an answer are kept and counted, never cut off mid-sentence."""
+        dropped, busy = [], 0
+        for tid, task in list(agent.tasks.items()):
+            if not match(task):
+                continue
+            if task.status in ("running", "waiting"):
+                busy += 1
+                continue
+            agent.tasks.pop(tid, None)
+            dropped.append(tid)
+        if dropped:
+            save_conversations()
+            for tid in dropped:
+                hub.emit_threadsafe({"type": "task_dropped", "task_id": tid, "at": time.time()})
+            audit.record("conversations_deleted", count=len(dropped))
+        return dropped, busy
+
+    @app.delete("/tasks", dependencies=[Depends(auth)])
+    def drop_conversations(bot_id: str = "", older_than_days: float = 0) -> dict[str, Any]:
+        """Clear history: every finished conversation, or only one teammate's, or only
+        those older than some days."""
+        cutoff = time.time() - older_than_days * 86400 if older_than_days > 0 else None
+        dropped, busy = drop_finished(
+            lambda t: (not bot_id or getattr(t, "bot_id", None) == bot_id)
+            and (cutoff is None or float(getattr(t, "created", 0) or 0) < cutoff))
+        return {"deleted": len(dropped), "still_running": busy}
+
+    @app.post("/bots/primary/reset", dependencies=[Depends(auth)])
+    def reset_compii() -> dict[str, Any]:
+        bots.reset_primary()
+        audit.record("compii_reset")
+        return changed_bots()
+
+    @app.delete("/memory", dependencies=[Depends(auth)])
+    def forget_everything() -> dict[str, int]:
+        gone = sum(1 for m in toolbox.memories() if toolbox.forget(m["id"]))
+        audit.record("memory_cleared", count=gone)
+        return {"deleted": gone}
+
+    _housekeeping_tools(toolbox, bots, drop_finished, forget_everything, reset_compii)
+
     @app.post("/ui/show", dependencies=[Depends(auth)])
     async def ui_show(body: UiShow) -> dict[str, Any]:
         """Relay "show this" to every open Compii window.
@@ -2635,6 +2678,75 @@ def _undo_tool(journal, asks: Callable[[], dict[str, str]] | None = None) -> Too
         [], lambda a: AK.CHANGE if str(a.get("id") or "").strip() else AK.READ, undo_action,
         lambda a: "Putting back a change Compii made" if str(a.get("id") or "").strip()
                   else "Checking what Compii can put back")
+
+
+def _housekeeping_tools(toolbox, bots: Bots, drop_finished, forget_everything, reset_compii) -> None:
+    """Deleting, when the user asks for it in words: conversations, a teammate, or
+    Compii's own memory and set-up. Every one is a DELETE, so it asks first."""
+    from .tools import ToolError, ToolResult
+
+    def delete_conversations(a: dict[str, Any]) -> ToolResult:
+        about = str(a.get("about", "")).strip().lower()
+        who = str(a.get("teammate", "")).strip().lower()
+        bot = next((b for b in bots.items.values() if b.name.lower() == who), None) if who else None
+        if who and bot is None:
+            raise ToolError(f"There's no teammate called \u201c{a.get('teammate')}\u201d.")
+        everything = about in ("all", "everything")
+        words = [] if everything or not about else [w for w in about.split() if len(w) > 1]
+        if not words and bot is None and not everything:
+            raise ToolError("Say which conversations: a few words from them, a teammate, or 'all'.")
+
+        def match(t: Any) -> bool:
+            text = str(getattr(t, "request", "")).lower()
+            return (bot is None or getattr(t, "bot_id", None) == bot.id) and all(w in text for w in words)
+
+        dropped, busy = drop_finished(match)
+        if not dropped and not busy:
+            return ToolResult("No conversation matches that, so nothing was deleted.")
+        note = f" {busy} still working were kept; stop them first to delete them." if busy else ""
+        return ToolResult(f"Deleted {len(dropped)} conversation(s) for good.{note}")
+
+    def delete_teammate(a: dict[str, Any]) -> ToolResult:
+        name = str(a.get("name", "")).strip().lower()
+        bot = next((b for b in bots.items.values() if b.name.lower() == name), None)
+        if bot is None:
+            raise ToolError(f"There's no teammate called \u201c{a.get('name')}\u201d.")
+        if bot.primary:
+            raise ToolError("Compii itself can't be deleted, but it can be reset: use reset_compii.")
+        bots.delete(bot.id)
+        return ToolResult(f"Deleted the teammate {bot.name}. Its past conversations stay unless you delete them too.")
+
+    def reset(a: dict[str, Any]) -> ToolResult:
+        what = {str(w) for w in (a.get("what") or [])} or {"memory", "setup"}
+        done = []
+        if "memory" in what:
+            done.append(f"forgot {forget_everything()['deleted']} saved fact(s)")
+        if "setup" in what:
+            reset_compii()
+            done.append("put its name, instructions, look and AI back to the start")
+        if "conversations" in what:
+            dropped, busy = drop_finished(lambda t: True)
+            done.append(f"deleted {len(dropped)} conversation(s)" + (f", kept {busy} still working" if busy else ""))
+        if not done:
+            raise ToolError("Choose what to reset: memory, setup or conversations.")
+        return ToolResult("Compii reset: " + "; ".join(done) + ".")
+
+    s = {"type": "string"}
+    for t in [
+        Tool("delete_conversations", "Delete conversations for good when the user asks: ones containing some "
+             "words, all of one teammate's, or 'all'. Conversations still working are kept.",
+             {"about": {**s, "description": "Words from the conversations, or 'all'."},
+              "teammate": {**s, "description": "Only this teammate's conversations (its name)."}},
+             [], AK.DELETE, delete_conversations,
+             lambda a: f"Delete conversations about \u201c{a.get('about') or a.get('teammate') or 'all'}\u201d"),
+        Tool("delete_teammate", "Delete one of the user's teammates (bots) by name. Compii itself can't be deleted.",
+             {"name": s}, ["name"], AK.DELETE, delete_teammate, lambda a: f"Delete the teammate {a.get('name')}"),
+        Tool("reset_compii", "Reset Compii when the user asks to start over: forget what it saved about them "
+             "(memory), restore its name, instructions and look (setup), and/or delete every finished conversation.",
+             {"what": {"type": "array", "items": {"type": "string", "enum": ["memory", "setup", "conversations"]}}},
+             [], AK.DELETE, reset, lambda a: f"Reset Compii ({', '.join(a.get('what') or ['memory', 'setup'])})"),
+    ]:
+        toolbox.tools[t.name] = t
 
 
 def _proactive_tools(toolbox, plans: "pro.Proactive", bots: Bots) -> None:

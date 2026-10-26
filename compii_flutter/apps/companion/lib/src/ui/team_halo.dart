@@ -4,6 +4,7 @@ import '../console/character.dart' show Mood;
 import '../console/core_client.dart';
 import 'agent_character.dart';
 import 'bots.dart';
+import 'deleting.dart';
 import 'glyphs.dart';
 import 'shell.dart';
 import 'thread.dart' show Run;
@@ -113,7 +114,8 @@ class _TeamHaloPageState extends State<TeamHaloPage> {
                             bot: b,
                             now: _now(core, b),
                             onOpen: () => widget.state.pickBot(b.primary ? null : b.id),
-                            onEdit: () => showBotEditor(context, core: core, state: widget.state, run: widget.run, bot: b),
+                            onEdit: () =>
+                                showBotEditor(context, core: core, state: widget.state, run: widget.run, bot: b),
                           ),
                         ),
                     ],
@@ -136,7 +138,13 @@ class _TeamHaloPageState extends State<TeamHaloPage> {
 }
 
 class _MemberCard extends StatefulWidget {
-  const _MemberCard({required this.core, required this.bot, required this.now, required this.onOpen, required this.onEdit});
+  const _MemberCard({
+    required this.core,
+    required this.bot,
+    required this.now,
+    required this.onOpen,
+    required this.onEdit,
+  });
   final CoreClient core;
   final BotView bot;
   final TaskView? now;
@@ -225,10 +233,28 @@ class _MemberCardState extends State<_MemberCard> {
                         ],
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Edit ${b.name}',
-                      onPressed: widget.onEdit,
-                      icon: Glyph(G.edit, size: 16, color: c.faint),
+                    PopupMenuButton<String>(
+                      tooltip: 'More for ${b.name}',
+                      icon: Glyph(G.more, size: 16, color: c.faint),
+                      onSelected: (v) => switch (v) {
+                        'edit' => widget.onEdit(),
+                        'clear' => clearHistoryFlow(context, widget.core, bot: b),
+                        _ => deleteTeammateFlow(context, widget.core, b),
+                      },
+                      itemBuilder: (_) => [
+                        const PopupMenuItem(value: 'edit', child: Text('Edit')),
+                        PopupMenuItem(
+                          value: 'clear',
+                          child: Text('Delete ${b.primary ? 'its' : '${b.name}’s'} conversations…'),
+                        ),
+                        PopupMenuItem(
+                          value: 'delete',
+                          child: Text(
+                            b.primary ? 'Reset Compii…' : 'Delete ${b.name}…',
+                            style: TextStyle(color: c.danger),
+                          ),
+                        ),
+                      ],
                     ),
                   ],
                 ),

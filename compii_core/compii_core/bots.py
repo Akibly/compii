@@ -82,7 +82,8 @@ TOOL_PACKS: dict[str, dict[str, Any]] = {
     "knowledge": {
         "label": "Memory & knowledge",
         "description": "Remember, recall, search your own files, skills, snippets, projects and journal.",
-        "tools": ["remember", "recall", "ask_my_files", "catch_me_up", "work_journal", "search_clips",
+        "tools": ["delete_conversations", "delete_teammate", "reset_compii",
+                  "remember", "recall", "ask_my_files", "catch_me_up", "work_journal", "search_clips",
                   "search_screen_memory", "forget_screen_memory", "usage_report", "undo_action", "list_skills",
                   "use_skill", "save_skill", "replay_skill", "start_lesson", "update_lesson", "start_project",
                   "update_project", "project_status", "view_profile", "set_profile", "fill_form", "form_fields",
@@ -508,6 +509,20 @@ class Bots:
             self.items.pop(bot_id, None)
             self.save()
         return True
+
+    def reset_primary(self) -> Bot:
+        """Compii back to how it started: its name, job, instructions, look and AI, and
+        nothing it learned about you as a teammate. It cannot be deleted (something has to
+        answer), so this is what deleting Compii means."""
+        with self._lock:
+            old = self.primary()
+            fresh = self._primary()
+            if old is not None:
+                fresh.id = old.id
+                self.items.pop(old.id, None)
+            self.items[fresh.id] = fresh
+            self.save()
+        return fresh
 
     def add_fact(self, bot_id: str, fact: str) -> str:
         bot = self.items.get(bot_id)

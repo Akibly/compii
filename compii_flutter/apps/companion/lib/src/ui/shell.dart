@@ -9,6 +9,7 @@ import '../art/halo.dart';
 import '../console/character.dart';
 import '../console/core_client.dart';
 import 'bots.dart';
+import 'deleting.dart';
 import 'clips.dart';
 import 'conversation_io.dart';
 import 'pages.dart';
@@ -583,6 +584,10 @@ class _Sidebar extends StatelessWidget {
                             state.markBotSeen(t.botId);
                             state.open(t.id);
                           },
+                          onDelete: () async {
+                            final gone = await deleteConversationFlow(context, core, t);
+                            if (gone && state.selected == t.id) state.go(Section.home);
+                          },
                         ),
                     ],
               ],
@@ -899,11 +904,14 @@ class _HubTabState extends State<_HubTab> {
 }
 
 class _ConversationTile extends StatefulWidget {
-  const _ConversationTile({required this.task, required this.selected, required this.onTap, this.bot});
+  const _ConversationTile({required this.task, required this.selected, required this.onTap, this.bot, this.onDelete});
   final TaskView task;
   final BotView? bot;
   final bool selected;
   final VoidCallback onTap;
+
+  /// Delete this chat, after asking. Offered on hover and by right-click.
+  final VoidCallback? onDelete;
 
   @override
   State<_ConversationTile> createState() => _ConversationTileState();
@@ -946,6 +954,7 @@ class _ConversationTileState extends State<_ConversationTile> {
         onExit: (_) => setState(() => _hover = false),
         child: InkWell(
           onTap: widget.onTap,
+          onSecondaryTap: widget.onDelete,
           borderRadius: Shapes.r6,
           child: AnimatedContainer(
             duration: context.motion(Motion.quick),
@@ -980,8 +989,25 @@ class _ConversationTileState extends State<_ConversationTile> {
                   ),
                 ),
                 const SizedBox(width: 6),
-                Text(waiting ? 'Needs you' : ago(at),
-                    style: context.type.labelSmall?.copyWith(color: waiting ? c.warning : c.faint, letterSpacing: 0)),
+                if (_hover && widget.onDelete != null && !task.active)
+                  Semantics(
+                    button: true,
+                    label: 'Delete $title',
+                    child: InkWell(
+                      onTap: widget.onDelete,
+                      borderRadius: Shapes.r6,
+                      child: Tooltip(
+                        message: 'Delete this chat',
+                        child: Padding(
+                          padding: const EdgeInsets.all(2),
+                          child: Glyph(G.trash, size: 13, color: c.faint),
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  Text(waiting ? 'Needs you' : ago(at),
+                      style: context.type.labelSmall?.copyWith(color: waiting ? c.warning : c.faint, letterSpacing: 0)),
               ],
             ),
           ),

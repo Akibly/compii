@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../console/character.dart' show compiiColor;
+import '../art/photo_eyes.dart';
 import 'halo_cursor.dart';
 
 /// Compii at your cursor, drawn inside one full-screen, click-through overlay (no
@@ -180,6 +181,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
     _sub = widget.events.listen(onEvent);
     widget.points?.addListener(_onPoint);
     compiiColor.addListener(_recolor);
+    compiiPhotoEyes.addListener(_recolor);
     // Read the pointer ~60 times a second; redraw only when something moved,
     // so an idle buddy costs next to nothing.
     _follow = Timer.periodic(const Duration(milliseconds: 16), (_) => _tick());
@@ -193,6 +195,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
   void dispose() {
     widget.points?.removeListener(_onPoint);
     compiiColor.removeListener(_recolor);
+    compiiPhotoEyes.removeListener(_recolor);
     _frame.dispose();
     _follow?.cancel();
     _catchAllSafety?.cancel();
@@ -1122,6 +1125,7 @@ class BuddyLayerState extends State<BuddyLayer> with TickerProviderStateMixin {
                                     engaged: talking || _target != null,
                                     level: listening ? level : 0,
                                     gaze: _gaze,
+                                    photo: compiiPhotoEyes.value,
                                     fade: _dim * (_leaving ? 1 - _returnT : 1),
                                   ),
                                 ),

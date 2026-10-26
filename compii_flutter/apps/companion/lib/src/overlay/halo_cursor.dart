@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../art/halo.dart';
+import '../art/photo_eyes.dart';
 import '../console/character.dart' show Mood;
 
 /// What the cursor companion's eyes wear for each of Core's buddy states.
@@ -29,9 +30,11 @@ class CursorMarkPainter extends CustomPainter {
     this.engaged = false,
     this.level = 0,
     this.gaze = Offset.zero,
+    this.photo,
   });
   final Mood mood;
   final Color color;
+  final PhotoEyes? photo;
 
   /// 0..1, the halo's orbit.
   final double t;
@@ -96,6 +99,8 @@ class CursorMarkPainter extends CustomPainter {
       rig: EyeRig.of(mood),
       unit: 1,
       dim: mood == Mood.offline,
+      photo: photo,
+      gaze: gaze,
     );
     canvas.restore();
   }
@@ -108,6 +113,7 @@ class CursorMarkPainter extends CustomPainter {
       o.fade != fade ||
       o.engaged != engaged ||
       o.level != level ||
+      o.photo != photo ||
       o.gaze != gaze;
 }
 
@@ -209,17 +215,21 @@ class CardEyes extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ExcludeSemantics(
-    child: CustomPaint(
-      size: Size(size * 1.3, size),
-      painter: _EyesPainter(mood, color),
+    child: ListenableBuilder(
+      listenable: compiiPhotoEyes,
+      builder: (context, _) => CustomPaint(
+        size: Size(size * 1.3, size),
+        painter: _EyesPainter(mood, color, compiiPhotoEyes.value),
+      ),
     ),
   );
 }
 
 class _EyesPainter extends CustomPainter {
-  _EyesPainter(this.mood, this.color);
+  _EyesPainter(this.mood, this.color, this.photo);
   final Mood mood;
   final Color color;
+  final PhotoEyes? photo;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -234,9 +244,10 @@ class _EyesPainter extends CustomPainter {
       rig: EyeRig.of(mood),
       unit: 1,
       dim: mood == Mood.offline,
+      photo: photo,
     );
   }
 
   @override
-  bool shouldRepaint(covariant _EyesPainter o) => o.mood != mood || o.color != color;
+  bool shouldRepaint(covariant _EyesPainter o) => o.mood != mood || o.color != color || o.photo != photo;
 }

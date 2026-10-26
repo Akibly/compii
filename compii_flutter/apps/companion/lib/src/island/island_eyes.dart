@@ -6,6 +6,7 @@ import 'package:screen_retriever/screen_retriever.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../art/halo.dart';
+import '../art/photo_eyes.dart';
 import '../console/character.dart' show compiiColor;
 import '../ui/tokens.dart';
 import 'island_controller.dart';
@@ -56,6 +57,7 @@ class _IslandEyesState extends State<IslandEyes> with TickerProviderStateMixin {
   void initState() {
     super.initState();
     compiiColor.addListener(_repaint);
+    compiiPhotoEyes.addListener(_repaint);
   }
 
   @override
@@ -123,6 +125,7 @@ class _IslandEyesState extends State<IslandEyes> with TickerProviderStateMixin {
   @override
   void dispose() {
     compiiColor.removeListener(_repaint);
+    compiiPhotoEyes.removeListener(_repaint);
     _blinkTimer?.cancel();
     _poll?.cancel();
     _blink.dispose();
@@ -162,6 +165,7 @@ class _IslandEyesState extends State<IslandEyes> with TickerProviderStateMixin {
                   _ => 0,
                 },
                 highContrast: hc,
+                photo: compiiPhotoEyes.value,
               ),
             ),
           ),
@@ -209,7 +213,9 @@ class _EyesPainter extends CustomPainter {
     required this.pupil,
     required this.tilt,
     required this.highContrast,
+    this.photo,
   });
+  final PhotoEyes? photo;
   final Color iris;
   final double open, joy, pupil, tilt;
   final Offset gaze;
@@ -228,7 +234,9 @@ class _EyesPainter extends CustomPainter {
       color: highContrast ? Colors.white : iris,
       rig: EyeRig(open: open, wide: pupil, tilt: tilt, joy: joy),
       unit: 1,
-      dim: open < .05,
+      dim: open < .05 && photo == null,
+      photo: photo,
+      gaze: gaze,
     );
   }
 
@@ -240,5 +248,6 @@ class _EyesPainter extends CustomPainter {
       old.gaze != gaze ||
       old.pupil != pupil ||
       old.tilt != tilt ||
-      old.highContrast != highContrast;
+      old.highContrast != highContrast ||
+      old.photo != photo;
 }
