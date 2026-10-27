@@ -24,6 +24,11 @@ class PhoneNotifier extends ChangeNotifier {
   bool permission = false;
   bool enabled = true;
 
+  /// The phone's own link to the PC is running: it posts approvals, answers
+  /// and briefs even with the app closed, so this notifier stops posting copies
+  /// of them and keeps only the widget.
+  bool linked = false;
+
   bool _started = false;
   bool _disposed = false;
   final Set<String> _postedWaiting = {};
@@ -42,6 +47,7 @@ class PhoneNotifier extends ChangeNotifier {
       // defaults
     }
     permission = await alerts.notificationsAllowed();
+    await _link();
     for (final t in core.ordered) {
       if (!t.active && t.finalText != null) _doneTold.add(_doneKey(t));
     }
@@ -62,6 +68,25 @@ class PhoneNotifier extends ChangeNotifier {
       // ask anyway
     }
     permission = await alerts.requestNotifications();
+    await _link();
+    if (!_disposed) notifyListeners();
+  }
+
+  /// Start (or stop) the background link to match: paired, alerts on, allowed.
+  Future<void> _link() async {
+    final remote = core.remote;
+    if (enabled && permission && remote != null) {
+      linked = await alerts.startLink(remote);
+    } else if (linked) {
+      await alerts.stopLink();
+      linked = false;
+    }
+  }
+
+  /// The phone was unpaired: nothing may keep talking to that PC.
+  Future<void> unlink() async {
+    await alerts.stopLink();
+    linked = false;
     if (!_disposed) notifyListeners();
   }
 
@@ -74,6 +99,7 @@ class PhoneNotifier extends ChangeNotifier {
       permission = await alerts.requestNotifications();
       if (!permission) await alerts.openNotificationSettings();
     }
+    await _link();
     try {
       await (await SharedPreferences.getInstance()).setBool(_enabledKey, on);
     } on Object {
@@ -171,6 +197,7 @@ class PhoneNotifier extends ChangeNotifier {
   }
 
   void _post(String tag, String title, String body, String destination) {
+    if (linked) return; // the link posts these, with buttons, even when the app is gone
     unawaited(alerts.notify(tag: tag, title: title, body: body, destination: destination));
   }
 

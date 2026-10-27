@@ -47,6 +47,18 @@ class FakeAlerts implements PhoneAlerts {
 
   @override
   Future<void> openNotificationSettings() async {}
+
+  final List<String> link = [];
+  bool linkWorks = false;
+
+  @override
+  Future<bool> startLink(RemoteLink remote) async {
+    link.add('start ${remote.pc}');
+    return linkWorks;
+  }
+
+  @override
+  Future<void> stopLink() async => link.add('stop');
 }
 
 class FakeCore extends CoreClient {
@@ -190,6 +202,50 @@ void main() {
     expect(alerts.notes.single['body'], 'Two things need you today.');
     expect(alerts.notes.single['destination'], 'task:t6');
 
+    notifier.dispose();
+    core.dispose();
+  });
+
+  test('paired with alerts on, the background link takes over and the app stops posting copies', () async {
+    final core = FakeCore()
+      ..remote = const RemoteLink(host: '100.64.0.2', port: 8766, fingerprint: 'ab', token: 'dev', pc: 'Desk');
+    final alerts = FakeAlerts()..linkWorks = true;
+    final notifier = PhoneNotifier(core, alerts);
+    await notifier.start();
+    expect(alerts.link, ['start Desk']);
+    expect(notifier.linked, isTrue);
+    notifier.setForeground(false);
+
+    final task = TaskView(id: 't1', request: 'Send the invoice', status: 'waiting');
+    task.events.add({'type': 'approval_needed', 'approval_id': 'a1', 'label': 'Email Sam'});
+    core.tasks['t1'] = task;
+    core.ping();
+    expect(alerts.notes, isEmpty, reason: 'the link posts it, with Approve and Deny, so no duplicate');
+
+    await notifier.setEnabled(false);
+    expect(alerts.link.last, 'stop', reason: 'alerts off: the link stops too');
+    await notifier.setEnabled(true);
+    expect(alerts.link.last, 'start Desk');
+    await notifier.unlink();
+    expect(alerts.link.last, 'stop', reason: 'forgetting the PC ends the link');
+    expect(notifier.linked, isFalse);
+
+    notifier.dispose();
+    core.dispose();
+  });
+
+  test('without a working link the app keeps posting its own alerts', () async {
+    final core = FakeCore()
+      ..remote = const RemoteLink(host: '100.64.0.2', port: 8766, fingerprint: 'ab', token: 'dev', pc: 'Desk');
+    final alerts = FakeAlerts(); // linkWorks false: e.g. not Android
+    final notifier = PhoneNotifier(core, alerts);
+    await notifier.start();
+    notifier.setForeground(false);
+    final task = TaskView(id: 't1', request: 'Send the invoice', status: 'waiting');
+    task.events.add({'type': 'approval_needed', 'approval_id': 'a1', 'label': 'Email Sam'});
+    core.tasks['t1'] = task;
+    core.ping();
+    expect(alerts.notes, hasLength(1));
     notifier.dispose();
     core.dispose();
   });

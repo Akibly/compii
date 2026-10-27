@@ -37,6 +37,16 @@ class MainActivity : FlutterActivity() {
     private var pendingDestination: String? = null
     private var permissionResult: MethodChannel.Result? = null
 
+    override fun onResume() {
+        super.onResume()
+        CompiiLink.appVisible = true
+    }
+
+    override fun onPause() {
+        CompiiLink.appVisible = false
+        super.onPause()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         setUpSpeech(flutterEngine)
@@ -129,6 +139,27 @@ class MainActivity : FlutterActivity() {
                 }
                 "openNotificationSettings" -> {
                     openNotificationSettings()
+                    result.success(true)
+                }
+                "startLink" -> {
+                    val hosts = call.argument<List<String>>("hosts") ?: emptyList()
+                    CompiiLink.save(this, CompiiLink.Config(
+                        hosts,
+                        call.argument<Int>("port") ?: 0,
+                        call.argument<String>("fingerprint") ?: "",
+                        call.argument<String>("token") ?: "",
+                        call.argument<String>("pc") ?: "your PC",
+                    ))
+                    try {
+                        CompiiLink.start(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "stopLink" -> {
+                    CompiiLink.stop(this)
+                    CompiiLink.clear(this)
                     result.success(true)
                 }
                 else -> result.notImplemented()

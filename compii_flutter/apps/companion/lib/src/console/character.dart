@@ -385,9 +385,9 @@ class EmberFacePainter extends CustomPainter {
           center: const Alignment(0, -.15),
           radius: 1.25,
           colors: [
-            Color.lerp(EmberPalette.room, color, dim ? .03 : .16)!,
-            const Color(0xFF0A0710),
-            const Color(0xFF050308),
+            Color.lerp(const Color(0xFF0B0D16), color, dim ? .04 : .2)!,
+            const Color(0xFF07080D),
+            const Color(0xFF050507),
           ],
           stops: const [0, .62, 1],
         ).createShader(Offset.zero & size),

@@ -2445,6 +2445,21 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
     def projects_view() -> list[dict[str, Any]]:
         return [prov.asdict(p) for p in sorted(projects.items.values(), key=lambda p: -p.updated)]
 
+    @app.get("/phone/signals", dependencies=[Depends(auth)])
+    async def phone_signals(since: float = 0, wait: float = 0, pending: str = "") -> dict[str, Any]:
+        """The paired phone's push channel, as a long poll: returns as soon as something is
+        newer than `since` or the set of pending approvals differs from `pending`, else after
+        `wait` seconds (at most 55) with nothing. See phone_push.py."""
+        from . import phone_push
+
+        known = sorted(p for p in pending.split(",") if p)
+        deadline = time.monotonic() + max(0.0, min(wait, 55.0))
+        while True:
+            out = phone_push.signals(list(agent.tasks.values()), list(plans.inbox), since)
+            if out["signals"] or out["pending"] != known or time.monotonic() >= deadline:
+                return out
+            await asyncio.sleep(1)
+
     @app.post("/approvals/{approval_id}", dependencies=[Depends(auth)])
     def decide(approval_id: str, body: Decision, x_compii_token: str = Header("")) -> dict[str, bool]:
         if body.always and not secrets.compare_digest(x_compii_token, token):

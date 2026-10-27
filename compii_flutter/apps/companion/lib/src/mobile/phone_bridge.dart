@@ -3,6 +3,8 @@ import 'dart:io';
 
 import 'package:flutter/services.dart';
 
+import '../console/core_client.dart' show RemoteLink;
+
 /// What the phone shell needs from Android: alerts when the app is away, a
 /// home-screen widget, and text or links shared into Compii from other apps.
 abstract interface class PhoneAlerts {
@@ -20,6 +22,12 @@ abstract interface class PhoneAlerts {
   Future<void> cancelAll();
   Future<void> widget({required String headline, required String detail, String meta = ''});
   Future<void> openNotificationSettings();
+
+  /// Keep a link to the paired PC while the app is closed, so approvals (with
+  /// Approve and Deny buttons), answers and briefs still arrive. True when it
+  /// is running.
+  Future<bool> startLink(RemoteLink link);
+  Future<void> stopLink();
 }
 
 /// The real Android side. On any other platform every call is a quiet no-op,
@@ -84,4 +92,18 @@ class PhoneBridge implements PhoneAlerts {
 
   @override
   Future<void> openNotificationSettings() => _call('openNotificationSettings');
+
+  @override
+  Future<bool> startLink(RemoteLink link) async =>
+      await _call<bool>('startLink', {
+        'hosts': link.hosts,
+        'port': link.port,
+        'fingerprint': link.fingerprint,
+        'token': link.token,
+        'pc': link.pc,
+      }) ??
+      false;
+
+  @override
+  Future<void> stopLink() => _call('stopLink');
 }

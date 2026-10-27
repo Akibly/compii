@@ -111,9 +111,10 @@ class FaceStage extends StatelessWidget {
     // Tap the face to talk; tap again to send, or to interrupt it.
     final VoidCallback? talkToFace =
         voice == null ? null : () => voice.speaking ? voice.quiet() : voice.toggle();
-    const glass = Color(0xF2FFFFFF);
+    // Black glass around the face, as everywhere else in Compii.
+    const glass = Color(0xE60E0E12);
     return Scaffold(
-      backgroundColor: const Color(0xFF1B1550),
+      backgroundColor: const Color(0xFF050507),
       body: Stack(
         children: [
           Positioned.fill(
@@ -133,7 +134,11 @@ class FaceStage extends StatelessWidget {
             left: 12,
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              decoration: BoxDecoration(color: const Color(0x99140F3D), borderRadius: BorderRadius.circular(20)),
+              decoration: BoxDecoration(
+                color: const Color(0xCC0E0E12),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0x1FFFFFFF)),
+              ),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -170,14 +175,18 @@ class FaceStage extends StatelessWidget {
                 constraints: const BoxConstraints(maxWidth: 460),
                 child: waiting.isNotEmpty
                     ? Theme(
-                        data: compiiTheme(Brightness.light),
+                        data: compiiTheme(Brightness.dark),
                         child: SingleChildScrollView(
                           child: ApprovalCard(approval: waiting.first.pendingApproval!, core: core, run: _run, compact: true),
                         ),
                       )
                     : Container(
                         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                        decoration: BoxDecoration(color: glass, borderRadius: BorderRadius.circular(16)),
+                        decoration: BoxDecoration(
+                          color: glass,
+                          borderRadius: BorderRadius.circular(18),
+                          border: Border.all(color: const Color(0x1FFFFFFF)),
+                        ),
                         child: Semantics(
                           liveRegion: true,
                           child: Text(
@@ -185,7 +194,7 @@ class FaceStage extends StatelessWidget {
                             textAlign: TextAlign.center,
                             maxLines: 3,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Color(0xFF15122E), fontWeight: FontWeight.w600, fontSize: 14),
+                            style: const TextStyle(color: Color(0xFFF5F5F7), fontWeight: FontWeight.w500, fontSize: 15, height: 1.35),
                           ),
                         ),
                       ),
@@ -197,7 +206,7 @@ class FaceStage extends StatelessWidget {
             right: 12,
             bottom: 12,
             child: Theme(
-              data: compiiTheme(Brightness.light),
+              data: compiiTheme(Brightness.dark),
               child: Builder(
                 builder: (context) => Row(
                   children: [

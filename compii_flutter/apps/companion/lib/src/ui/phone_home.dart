@@ -9,6 +9,7 @@ import '../mobile/outbox.dart';
 import '../mobile/phone_automation.dart';
 import '../mobile/phone_bridge.dart';
 import '../mobile/phone_notifier.dart';
+import 'phone_digest.dart';
 import 'automation.dart';
 import 'chrome.dart';
 import 'glyphs.dart';
@@ -17,7 +18,7 @@ import 'shell.dart';
 import 'thread.dart';
 import 'tokens.dart';
 
-const _night = Color(0xFF1B1550);
+const _night = Color(0xFF050507);
 
 /// The phone, paired with a PC: talk to Compii, follow and answer its
 /// conversations, approve what it asks, and glance at or act on the PC.
@@ -157,6 +158,7 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
     );
     if (ok == true) {
       await _outbox.clear();
+      await _notifier.unlink(); // nothing keeps talking to a PC you forgot
       await widget.onForget();
     }
   }
@@ -326,7 +328,14 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
               bottom: false,
               child: Column(
                 children: [
-                  if (core.unauthorized) _RemovedBanner(pc: core.remote!.pc, onPair: widget.onForget),
+                  if (core.unauthorized)
+                    _RemovedBanner(
+                      pc: core.remote!.pc,
+                      onPair: () async {
+                        await _notifier.unlink(); // the PC removed this phone: stop the link too
+                        await widget.onForget();
+                      },
+                    ),
                   if (waiting.isNotEmpty) _ApprovalBanner(tasks: waiting, onOpen: _showApprovals),
                   if (!core.unauthorized && core.status != CoreStatus.online)
                     _OfflineBar(core: core, waiting: _outbox.count, onRetry: _outbox.flush),
@@ -656,6 +665,7 @@ class _ChatsTab extends StatelessWidget {
           padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
           child: Row(children: [Expanded(child: Text('Conversations', style: context.type.headlineSmall))]),
         ),
+        DigestCard(core: core),
         if (pending.isNotEmpty)
           _PendingCard(pending: pending, problem: problem, online: core.status == CoreStatus.online, onRetry: onRetry),
         Expanded(
