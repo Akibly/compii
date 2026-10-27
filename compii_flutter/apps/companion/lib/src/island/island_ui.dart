@@ -662,6 +662,10 @@ class _AskCardState extends State<_AskCard> {
                   const SizedBox(height: 8),
                 ],
                 if (c.newsCount > 0) ...[_NewsRow(controller: c), const SizedBox(height: 8)],
+                if (c.continuing case final prior?) ...[
+                  _ContinuingRow(controller: c, task: prior),
+                  const SizedBox(height: 8),
+                ],
                 if (_panel == _Panel.history)
                   Padding(
                     padding: const EdgeInsets.only(bottom: 8),
@@ -675,7 +679,7 @@ class _AskCardState extends State<_AskCard> {
                       },
                       onNew: () {
                         setState(() => _panel = _Panel.none);
-                        c.openAsk();
+                        c.openAsk(fresh: true);
                       },
                     ),
                   ),
@@ -1226,7 +1230,7 @@ class _ConversationCardState extends State<_ConversationCard> {
             },
             onNew: () {
               setState(() => _history = false);
-              c.openAsk();
+              c.openAsk(fresh: true);
             },
             maxItems: 8,
             maxHeight: math.min(280, widget.maxHeight * .5),
@@ -1319,7 +1323,7 @@ class _ConversationCardState extends State<_ConversationCard> {
             ),
           ),
           _Foot(
-            children: [TextButton(onPressed: c.openAsk, child: const Text('Ask something else'))],
+            children: [TextButton(onPressed: () => c.openAsk(fresh: true), child: const Text('Ask something else'))],
           ),
         ] else ...[
           Expanded(
@@ -1355,7 +1359,7 @@ class _ConversationCardState extends State<_ConversationCard> {
                   icon: const Glyph(G.external, size: 15),
                   label: const Text('Open in Compii'),
                 ),
-                TextButton(onPressed: c.openAsk, child: const Text('New ask')),
+                TextButton(onPressed: () => c.openAsk(fresh: true), child: const Text('New ask')),
                 TextButton(onPressed: c.dismissFinished, child: Text(failed ? 'Dismiss' : 'Done')),
               ],
             ),
@@ -1916,6 +1920,46 @@ class _NewsRow extends StatelessWidget {
             Glyph(G.chevronRight, size: 15, color: c.success),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Which conversation the next ask lands in, so carrying on is never a surprise, and the
+/// one tap that gives the next words a thread of their own instead.
+class _ContinuingRow extends StatelessWidget {
+  const _ContinuingRow({required this.controller, required this.task});
+  final IslandController controller;
+  final TaskView task;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.c;
+    final about = task.request.split('\n').first.trim();
+    return Container(
+      padding: const EdgeInsets.fromLTRB(10, 2, 2, 2),
+      decoration: BoxDecoration(color: c.accentSoft, borderRadius: Shapes.r12),
+      child: Row(
+        children: [
+          Glyph(G.chat, size: 15, color: c.accent),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Semantics(
+              label: 'Carrying on the conversation about $about',
+              excludeSemantics: true,
+              child: Text(
+                'Carrying on: $about',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: context.type.labelMedium?.copyWith(color: c.accent, height: 1.35),
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: controller.newTopic,
+            child: const Text('New topic'),
+          ),
+        ],
       ),
     );
   }

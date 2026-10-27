@@ -8,7 +8,7 @@ import 'island_platform.dart';
 /// What the island can ask Compii to do. One seam so a widget test can drive
 /// every flow without a running Core or a native window.
 abstract class IslandActions {
-  Future<String> start(String text, {String? botId, List<String> attachments = const []});
+  Future<String> start(String text, {String? botId, List<String> attachments = const [], bool followOn = false});
   Future<void> reply(String taskId, String text, {List<String> attachments = const []});
   Future<void> stop(String taskId);
   Future<void> decide(String approvalId, {required bool approved});
@@ -36,8 +36,8 @@ class CoreIslandActions implements IslandActions {
   final IslandPlatform platform;
 
   @override
-  Future<String> start(String text, {String? botId, List<String> attachments = const []}) =>
-      core.startConversation(text, botId: botId, attachments: attachments);
+  Future<String> start(String text, {String? botId, List<String> attachments = const [], bool followOn = false}) =>
+      core.startConversation(text, botId: botId, attachments: attachments, followOn: followOn);
 
   @override
   Future<void> reply(String taskId, String text, {List<String> attachments = const []}) =>

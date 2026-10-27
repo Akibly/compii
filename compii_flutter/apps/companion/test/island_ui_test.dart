@@ -100,6 +100,7 @@ class _Actions implements IslandActions {
     String text, {
     String? botId,
     List<String> attachments = const [],
+    bool followOn = false,
   }) async {
     starts.add(text);
     return 't1';

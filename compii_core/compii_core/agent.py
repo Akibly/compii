@@ -340,6 +340,16 @@ MAX_EVENTS_PER_TASK = 500  # a runaway task's event feed can't grow forever
 AMBIENT_TTL = 120
 SOURCES_TIMEOUT = 3  # seconds the saved instructions get before the turn answers without them
 AMBIENT_TIMEOUT = 2  # seconds the desktop reading gets; a turn never waits on a hung UIA call
+# A quick ask (the island, the voice shortcut, the phone) this soon after the last exchange
+# carries that conversation on instead of opening another one: one train of thought, one thread.
+FOLLOW_ON_SECONDS = 600
+# A new conversation started this soon after another one is told what was just said there,
+# so "and tomorrow?" means something even when it landed in a thread of its own.
+BRIDGE_SECONDS = 1800
+BRIDGE_TURNS = 6  # the last few things said, not the whole thread
+# "New topic: …" / "start over" at the front of a quick ask: the user wants a clean thread.
+FRESH_START = re.compile(r"^\s*(?:ok(?:ay)?[,\s]+)?(?:new (?:topic|conversation|question|chat)|start over|fresh start)"
+                         r"\b[\s,.:;!-]*", re.I)
 
 Emit = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -654,6 +664,36 @@ class Agent:
             self._trim()  # routines and watches must not grow this forever
         task.runner = asyncio.create_task(self._run(task, request, attachments))
         return task
+
+    def recent_conversation(self, bot_id: str | None = None, within: float = FOLLOW_ON_SECONDS,
+                            exclude: str | None = None) -> Task | None:
+        """The conversation the user was in last, if it was used in the last `within` seconds.
+
+        Only threads the user had themselves: a routine firing, a watch, or a job one teammate
+        handed another is not what "what we were just talking about" means."""
+        cutoff = time.time() - within
+        best: Task | None = None
+        for t in self.tasks.values():
+            if t.id == exclude or not _with_user(t) or t.active < cutoff:
+                continue
+            if bot_id is not None and (t.owner_id or t.bot_id) != bot_id:
+                continue
+            if best is None or t.active > best.active:
+                best = t
+        return best
+
+    def carry_on(self, request: str, bot_id: str | None = None, screen: dict[str, Any] | None = None,
+                 attachments: list[str] | None = None, context_off: list[str] | None = None) -> Task | None:
+        """A quick ask said soon after the last answer is the next line of that conversation,
+        the way a person hears it. Returns the conversation it went to, or None when it should
+        start one of its own: nothing recent, a team thread, a thread still working, or the
+        user said "new topic"."""
+        if FRESH_START.match(request):
+            return None
+        last = self.recent_conversation(bot_id)
+        if last is None or last.team or last.status in ("running", "waiting"):
+            return None
+        return self.reply(last.id, request, screen=screen, attachments=attachments, context_off=context_off)
 
     def _used(self, task: Task) -> None:
         """Mark a turn as the most recently used one.
@@ -998,7 +1038,25 @@ class Agent:
                 bundle.add_text("desktop", line, kind="observation", scope="screen_aware",
                                 sensitivity="personal", expires=time.time() + AMBIENT_TTL,
                                 why="Open on this PC when you asked")
+        if not from_coach and (task is None or (not task.messages and _with_user(task))):
+            self._bridge(bundle, task)
         return bundle
+
+    def _bridge(self, bundle: ContextBundle, task: Task | None) -> None:
+        """A brand-new conversation hears the end of the one the user was just in. Without
+        it every new thread starts from nothing, and a follow-up that happened to open one
+        ("and tomorrow?", "send it to him") is a question about nothing at all."""
+        last = self.recent_conversation(within=BRIDGE_SECONDS, exclude=task.id if task else None)
+        if last is None:
+            return
+        said = _exchange(last, self._bot_name(last.bot_id))
+        if not said:
+            return
+        if last.status in ("running", "waiting"):
+            said += "\n(That conversation is still going.)"
+        bundle.add_text("earlier_chat", said, kind="conversation", scope="conversations", sensitivity="personal",
+                        at=last.active, expires=last.active + BRIDGE_SECONDS,
+                        why="What you were just talking about with Compii")
 
     async def _gather(self, task: Task, from_coach: bool = False) -> ContextBundle:
         """The items this turn is answered with, minus what the user refused for this chat."""
@@ -2220,6 +2278,34 @@ class Agent:
         task.status = status
         self._used(task)
         await self.emit(task, "task_finished", status=status, text=text)
+
+
+def _with_user(task: Task) -> bool:
+    """A conversation the user had themselves, from any surface, rather than one a routine,
+    a watch or another teammate started."""
+    origin = task.origin or {}
+    return task.parent_id is None and not origin.get("routine") and not origin.get("watch")
+
+
+def _exchange(task: Task, name: str) -> str:
+    """The last few things said in a conversation, in order: the user's words and the answers,
+    without tool steps or anything Compii said to the model itself."""
+    said: list[str] = []
+    for e in task.events:
+        kind = e.get("type")
+        if kind == "task_started":
+            text, who = str(e.get("request") or ""), "User"
+        elif kind == "user_message":
+            text, who = str(e.get("text") or ""), "User"
+        elif kind == "task_finished":
+            text, who = str(e.get("text") or ""), name
+        else:
+            continue
+        text = " ".join(text.split())
+        if not text or text.startswith(COACH_NOTE):
+            continue
+        said.append(f"{who}: {text[:300 if who == 'User' else 500]}")
+    return "\n".join(said[-BRIDGE_TURNS:])
 
 
 def _secret_in(name: str, args: dict[str, Any]) -> bool:

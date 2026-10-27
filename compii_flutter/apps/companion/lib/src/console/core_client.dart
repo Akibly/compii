@@ -188,6 +188,18 @@ class TaskView {
 
   bool get active => status == 'running' || status == 'waiting';
 
+  /// When anything last happened here, in Core's seconds: what "a few minutes ago" is measured by.
+  double get lastAt {
+    for (final e in events.reversed) {
+      if (e['at'] case final num at) return at.toDouble();
+    }
+    return 0;
+  }
+
+  /// A thread the user had themselves, rather than one a routine, a watch or another
+  /// teammate started: what a quick ask can carry on.
+  bool get withUser => !fromRoutine && !fromWatch && parentId == null && !delegated;
+
   /// The approval Compii is waiting on, if any.
   Map<String, dynamic>? get pendingApproval {
     final resolved = events
@@ -663,15 +675,24 @@ class CoreClient extends ChangeNotifier {
 
   /// Start a conversation; returns its id. `botId` picks which teammate answers first,
   /// and `team` (2–6 ids) opens a shared thread where they can hand work to each other.
+  ///
+  /// `followOn` is for quick asks (the island, voice, the phone): when the user was talking
+  /// to this teammate minutes ago, Core carries that conversation on and returns its id,
+  /// so one train of thought stays one thread instead of a new one per sentence.
   Future<String> startConversation(String request, {String? botId, List<String>? team,
-      List<String> attachments = const [], List<String> contextOff = const []}) async =>
+      List<String> attachments = const [], List<String> contextOff = const [], bool followOn = false}) async =>
       (await _request('POST', '/tasks', {
         'request': request,
         'bot_id': ?botId,
         if (team != null && team.length > 1) 'team': team,
         if (attachments.isNotEmpty) 'attachments': attachments,
         if (contextOff.isNotEmpty) 'context_off': contextOff,
+        if (followOn) 'follow_on': true,
       }))['id'] as String;
+
+  /// Seconds after the last exchange in which a quick ask still carries it on (Core's
+  /// FOLLOW_ON_SECONDS), so the island can say which thread the next words will land in.
+  static const followOnSeconds = 600;
 
   Future<void> createBot({
     required String name,

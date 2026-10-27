@@ -147,6 +147,9 @@ class IslandController extends ChangeNotifier {
 
   String? _taskId;
   String? _botId;
+  // The user asked for a clean thread ("New ask", "New topic"): the next ask opens one
+  // instead of carrying on the conversation they were just in.
+  bool _fresh = false;
   String _pendingAsk = '';
   int _awaitingFrom = 0;
   bool _screenContext = false;
@@ -218,6 +221,29 @@ class IslandController extends ChangeNotifier {
   /// An ask was accepted but Core has not announced the thread yet. The card
   /// shows this instead of claiming the conversation is gone.
   bool get starting => _taskId != null && task == null;
+
+  /// The conversation the next ask carries on, as Core decides it: the last one the user
+  /// had with this teammate, finished a few minutes ago. Null when the ask will open a
+  /// new thread - nothing recent, still working, a team chat, or they asked for a new topic.
+  TaskView? get continuing {
+    if (_fresh) return null;
+    final who = _botId ?? core.primaryBot?.id;
+    final now = DateTime.now().millisecondsSinceEpoch / 1000;
+    TaskView? last;
+    for (final t in core.tasks.values) {
+      if (!t.withUser || (who != null && t.threadOwnerId != who)) continue;
+      if (now - t.lastAt > CoreClient.followOnSeconds) continue;
+      if (last == null || t.lastAt > last.lastAt) last = t;
+    }
+    if (last == null || last.active || last.isTeam) return null;
+    return last;
+  }
+
+  /// Start the next ask in a thread of its own.
+  void newTopic() {
+    _fresh = true;
+    notifyListeners();
+  }
 
   BotView? get agent {
     final id = _botId;
@@ -407,8 +433,10 @@ class IslandController extends ChangeNotifier {
 
   Future<void> toggle() => _card ? collapse() : openAsk();
 
-  /// The hotkey and a tap on an idle capsule open a fresh, fast ask.
-  Future<void> openAsk({bool stealFocus = true}) async {
+  /// The hotkey and a tap on an idle capsule open a fast ask. It carries on the
+  /// conversation the user was just in unless `fresh` (a "New ask" button) says otherwise.
+  Future<void> openAsk({bool stealFocus = true, bool fresh = false}) async {
+    _fresh = fresh;
     _taskId = null;
     _pendingAsk = '';
     _error = null;
@@ -645,7 +673,8 @@ class IslandController extends ChangeNotifier {
       }
       final sent = text.isEmpty ? 'Take a look at what I attached.' : text;
       if (ask) {
-        final id = await actions.start(sent, botId: _botId, attachments: files);
+        final id = await actions.start(sent, botId: _botId, attachments: files, followOn: !_fresh);
+        _fresh = false;
         _taskId = id;
         _pendingAsk = sent;
         _attachedAt = DateTime.now();

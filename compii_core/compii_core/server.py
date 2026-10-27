@@ -87,6 +87,9 @@ class NewTask(BaseModel):
     attachments: list[str] = []
     # Context items the user struck off before sending (ids from GET /context).
     context_off: list[str] = []
+    # A quick ask (island, voice, phone, palette): carry on the conversation the user was just
+    # in with this teammate, if it was minutes ago, instead of opening another thread.
+    follow_on: bool = False
 
 
 class BotNew(BaseModel):
@@ -456,7 +459,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             await hub.emit({"type": "voice_command", "task_id": "", "at": time.time(), "text": text})
         else:
             primary = bots.primary()
-            agent.start(text, bot_id=primary.id if primary else None)
+            bot_id = primary.id if primary else None
+            if agent.carry_on(text, bot_id=bot_id) is None:
+                agent.start(text, bot_id=bot_id)
 
     voice.on_command = lambda text: hub.loop and asyncio.run_coroutine_threadsafe(hands_free(text), hub.loop)
 
@@ -1539,8 +1544,14 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             # Its old conversations stay open to the user; starting a new one with a teammate
             # they put away is not what "archived" means. Bring it back first, from the directory.
             raise HTTPException(409, f"{bot.name} is archived. Bring them back before asking for anything new.")
-        screen = await asyncio.to_thread(screen_for, request)
-        return task_view(agent.start(voice.annotate(request), bot_id=bot.id, team=team, attachments=files,
+        # With files attached, "this" means them, not whatever is on the PC screen.
+        screen = None if files else await asyncio.to_thread(screen_for, request)
+        said = voice.annotate(request)
+        if body.follow_on and not team:
+            went = agent.carry_on(said, bot_id=bot.id, screen=screen, attachments=files, context_off=body.context_off)
+            if went is not None:
+                return task_view(went)
+        return task_view(agent.start(said, bot_id=bot.id, team=team, attachments=files,
                                      screen=screen, context_off=body.context_off))
 
     @app.get("/context", dependencies=[Depends(auth)])
@@ -1560,7 +1571,7 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
         if not text:
             raise HTTPException(400, "Empty message")
         try:
-            screen = await asyncio.to_thread(screen_for, text)
+            screen = None if files else await asyncio.to_thread(screen_for, text)
             return task_view(agent.reply(task_id, voice.annotate(text), attachments=files, screen=screen,
                                          context_off=body.context_off))
         except KeyError as e:

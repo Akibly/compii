@@ -102,6 +102,7 @@ class _Platform implements IslandPlatform {
 
 class _Actions implements IslandActions {
   final starts = <({String text, String? botId, List<String> files})>[];
+  final followOns = <bool>[];
   final replies = <({String id, String text, List<String> files})>[];
   final stops = <String>[];
   final retries = <String>[];
@@ -117,10 +118,11 @@ class _Actions implements IslandActions {
   final picked = <Map<String, dynamic>>[];
 
   @override
-  Future<String> start(String text, {String? botId, List<String> attachments = const []}) async {
+  Future<String> start(String text, {String? botId, List<String> attachments = const [], bool followOn = false}) async {
     final failure = failStart;
     if (failure != null) throw failure;
     starts.add((text: text, botId: botId, files: List.of(attachments)));
+    followOns.add(followOn);
     return 't1';
   }
 
@@ -640,6 +642,40 @@ void main() {
       expect(c.starting, isFalse);
       expect(c.stage, IslandStage.working);
       expect(c.speaker?.name, 'Ana');
+    });
+
+    test('the hotkey ask carries on what was just said; New ask and New topic start afresh', () async {
+      final now = DateTime.now().millisecondsSinceEpoch / 1000;
+      core.put(_task(id: 't0', status: 'done', request: 'Weather in Accra?', events: [
+        {'type': 'task_finished', 'status': 'done', 'text': 'Sunny.', 'at': now - 30},
+      ]));
+      await c.openAsk();
+      expect(c.continuing?.id, 't0');
+      c.draft.text = 'and tomorrow?';
+      await c.send();
+      expect(actions.followOns.last, isTrue);
+
+      await c.openAsk(fresh: true);
+      expect(c.continuing, isNull);
+      c.draft.text = 'Plan my week';
+      await c.send();
+      expect(actions.followOns.last, isFalse);
+
+      await c.openAsk();
+      c.newTopic();
+      expect(c.continuing, isNull);
+      c.draft.text = 'Something else';
+      await c.send();
+      expect(actions.followOns.last, isFalse);
+    });
+
+    test('a conversation from an hour ago is not carried on', () async {
+      final now = DateTime.now().millisecondsSinceEpoch / 1000;
+      core.put(_task(id: 't0', status: 'done', events: [
+        {'type': 'task_finished', 'status': 'done', 'text': 'Sorted.', 'at': now - 3600},
+      ]));
+      await c.openAsk();
+      expect(c.continuing, isNull);
     });
 
     test('a done turn becomes a restrained finished card, a failed one stays failed', () async {

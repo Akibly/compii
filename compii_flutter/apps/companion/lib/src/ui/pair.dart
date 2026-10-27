@@ -56,12 +56,7 @@ class _PhoneAppState extends State<PhoneApp> {
     final voice = PhoneVoice(core);
     voice.onHeard = (text) async {
       try {
-        final latest = core.ordered.firstOrNull;
-        if (latest != null && !latest.active) {
-          await core.reply(latest.id, text);
-        } else {
-          await core.startConversation(text);
-        }
+        await core.startConversation(text, followOn: true);
         widget.state.fail(null);
       } catch (e) {
         widget.state.fail(e);

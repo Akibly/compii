@@ -104,7 +104,7 @@ class Outbox extends ChangeNotifier {
     final kind = '${a['kind']}';
     if (kind == 'ask') {
       final text = '${a['text'] ?? ''}'.trim();
-      if (text.isNotEmpty) await core.startConversation(text);
+      if (text.isNotEmpty) await core.startConversation(text, followOn: true);
     } else if (kind == 'reply') {
       final text = '${a['text'] ?? ''}'.trim();
       if (text.isNotEmpty) await core.reply('${a['task']}', text);

@@ -137,12 +137,13 @@ Future<void> main(List<String> args) async {
 }
 
 /// Where a spoken request goes: the quick bar's conversation, the open
-/// conversation as a follow-up, or a new conversation.
+/// conversation as a follow-up, or the one the user was just in. Core only opens a
+/// new thread when nothing was said minutes ago.
 Future<void> _deliver(String text, CoreClient core, AppState state, QuickMode? quick) async {
   try {
     if (quick != null && quick.active) {
       if (quick.task == null) {
-        quick.task = await core.startConversation(text);
+        quick.task = await core.startConversation(text, followOn: true);
         await quick.expand();
       } else {
         await core.reply(quick.task!, text);
@@ -153,7 +154,7 @@ Future<void> _deliver(String text, CoreClient core, AppState state, QuickMode? q
     if (open != null && !open.active) {
       await core.reply(open.id, text);
     } else {
-      state.open(await core.startConversation(text));
+      state.open(await core.startConversation(text, followOn: true));
     }
   } catch (e) {
     state.fail(e);

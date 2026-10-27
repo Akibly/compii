@@ -245,11 +245,7 @@ class FaceStage extends StatelessWidget {
                         run: _run,
                         onSend: onSend ??
                             (text) => _run(() async {
-                                  if (latest != null && !latest.active) {
-                                    await core.reply(latest.id, text);
-                                  } else {
-                                    await core.startConversation(text);
-                                  }
+                                  await core.startConversation(text, followOn: true);
                                 }),
                       ),
                     ),
