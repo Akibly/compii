@@ -57,8 +57,15 @@ class VoiceController extends ChangeNotifier {
   bool get naturalVoice => status?['natural_voice'] == true;
   bool get fastVoice => status?['fast_voice'] == true;
 
-  /// Which speech engine is doing the talking: Kokoro, Piper, or Windows.
-  String get engine => '${(status?['settings'] as Map?)?['engine'] ?? 'natural'}';
+  /// Which speech engine is chosen: "cloud" (online neural voices), "natural"
+  /// (Kokoro), "fast" (Piper) or "windows".
+  String get engine => '${(status?['settings'] as Map?)?['engine'] ?? 'cloud'}';
+
+  /// The online voices to choose from, id → what Settings shows.
+  Map<String, String> get cloudVoices => {
+    for (final e in (status?['cloud_voices'] as Map? ?? const {}).entries) '${e.key}': '${e.value}',
+  };
+  String get cloudVoice => '${(status?['settings'] as Map?)?['cloud_voice'] ?? ''}';
 
   /// How Compii answers: "voice", "sound", "caption" or "off".
   String get outputMode => '${(status?['settings'] as Map?)?['output_mode'] ?? 'voice'}';

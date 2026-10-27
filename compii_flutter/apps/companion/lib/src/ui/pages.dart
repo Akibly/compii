@@ -860,6 +860,40 @@ class VoiceSettings extends StatelessWidget {
                       ),
                       Divider(height: 1, color: c.border),
                       row(
+                        G.cloud,
+                        'Online voice',
+                        'Natural voices made on Microsoft’s servers: free, and nothing runs on this PC. '
+                            'What Compii says is sent to Microsoft to be spoken. Off, or offline: this PC’s voice.',
+                        Switch(
+                          value: voice.engine == 'cloud',
+                          onChanged: (v) => run(
+                            () => voice.set({'engine': v ? 'cloud' : (voice.naturalVoice ? 'natural' : 'windows')}),
+                          ),
+                        ),
+                      ),
+                      if (voice.engine == 'cloud' && voice.cloudVoices.isNotEmpty) ...[
+                        Divider(height: 1, color: c.border),
+                        row(
+                          G.speaker,
+                          'Online voice to use',
+                          'How Compii sounds when it speaks.',
+                          ScrollCapped(
+                            child: DropdownButton<String>(
+                              value: voice.cloudVoices.containsKey(voice.cloudVoice)
+                                  ? voice.cloudVoice
+                                  : voice.cloudVoices.keys.first,
+                              underline: const SizedBox.shrink(),
+                              items: [
+                                for (final e in voice.cloudVoices.entries)
+                                  DropdownMenuItem(value: e.key, child: Text(e.value)),
+                              ],
+                              onChanged: (v) => run(() => voice.set({'cloud_voice': v})),
+                            ),
+                          ),
+                        ),
+                      ],
+                      Divider(height: 1, color: c.border),
+                      row(
                         G.wave,
                         voice.engine == 'fast'
                             ? 'Fast voice (Piper)'

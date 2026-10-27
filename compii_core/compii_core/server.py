@@ -48,7 +48,7 @@ from .policy import ActionKind, Autonomy, Policy
 from .screen import desktop_now, make_dpi_aware
 from . import sight
 from .tools import Toolbox, ToolError, default_roots
-from .voice import Voice, spoken_reply
+from .voice import CLOUD_VOICES, Voice, spoken_reply
 from .remote import Pairing, RemoteHost, _is_overlay, pairing_link, reach_addresses
 from . import proactive as pro
 from .tools import Tool
@@ -332,6 +332,7 @@ class VoiceSettingsBody(BaseModel):
     output_mode: str | None = None
     wake_word: bool | None = None
     engine: str | None = None
+    cloud_voice: str | None = None
     voice: str | None = None
     speed: float | None = None
     cloud_listening: bool | None = None
@@ -2322,7 +2323,9 @@ def build_app(brain: Brain | None = None, workspace: Path | None = None, roots: 
             voice.settings.output_mode = body.output_mode
         if body.voice is not None:
             voice.settings.voice = body.voice
-        if body.engine in ("natural", "fast", "windows"):
+        if body.cloud_voice is not None and body.cloud_voice in CLOUD_VOICES:
+            voice.settings.cloud_voice = body.cloud_voice
+        if body.engine in ("cloud", "natural", "fast", "windows"):
             voice.stop_speaking()
             voice.settings.engine = body.engine
             voice.warm_up()  # switching engines shouldn't cost the first reply its opening words
@@ -2853,7 +2856,8 @@ def _restore_voice(voice: Voice, path: Path) -> None:
         return
     if "speak_replies" in saved and "output_mode" not in saved:  # the switch it replaced
         saved["output_mode"] = "voice" if saved["speak_replies"] else "off"
-    for key in ("output_mode", "voice", "speed", "engine", "cloud_listening", "screen_aware", "see_pictures"):
+    for key in ("output_mode", "voice", "speed", "engine", "cloud_voice", "cloud_listening", "screen_aware",
+                "see_pictures"):
         if key in saved:
             setattr(voice.settings, key, saved[key])
     if saved.get("wake_word") and voice.can_listen():

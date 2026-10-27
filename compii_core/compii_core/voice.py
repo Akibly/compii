@@ -96,6 +96,22 @@ class _SpokenStream:
     said_any: bool = False
 
 
+# Microsoft's online neural voices (the ones Edge reads aloud with): free, no
+# account, natural, and made on Microsoft's servers instead of this PC. Kept to a
+# few that sound best; the key is the voice id, the value what Settings shows.
+CLOUD_VOICES = {
+    "en-US-AvaMultilingualNeural": "Ava — warm, US",
+    "en-US-AndrewMultilingualNeural": "Andrew — calm, US",
+    "en-US-EmmaMultilingualNeural": "Emma — bright, US",
+    "en-US-BrianMultilingualNeural": "Brian — relaxed, US",
+    "en-GB-SoniaNeural": "Sonia — British",
+    "en-GB-RyanNeural": "Ryan — British",
+    "en-AU-NatashaNeural": "Natasha — Australian",
+    "fr-FR-VivienneMultilingualNeural": "Vivienne — French",
+}
+CLOUD_RETRY_SECONDS = 300  # after the cloud voice fails, use this PC's voice for a while
+
+
 @dataclass
 class VoiceSettings:
     # How Compii answers when it isn't in the conversation window:
@@ -104,9 +120,11 @@ class VoiceSettings:
     output_mode: str = "voice"
     voice: str = "compii_warm"
     speed: float = 1.05
+    # "cloud" is Microsoft's online neural voices (free, natural, nothing runs on this PC);
     # "natural" uses Kokoro when downloaded, "fast" uses Piper (real-time on a CPU),
     # "windows" is the instant built-in voice.
-    engine: str = "natural"
+    engine: str = "cloud"
+    cloud_voice: str = "en-US-AvaMultilingualNeural"
     # "Hey Compii": off until the user turns it on (the mic stays open while it's on).
     wake_word: bool = False
     # Recognise speech on Groq (fast, accurate, spares your CPU) when a Groq key is stored;
@@ -184,6 +202,41 @@ class Voice:
     def uses_fast_voice(self) -> bool:
         return self.settings.engine == "fast" and self.has_fast_voice()
 
+    _cloud_down_at = 0.0
+
+    def uses_cloud_voice(self) -> bool:
+        """The cloud voice, unless it failed a moment ago: then this PC's voice
+        speaks until it is worth trying again."""
+        return self.settings.engine == "cloud" and time.monotonic() - self._cloud_down_at > CLOUD_RETRY_SECONDS
+
+    def cloud_failed(self, error: Exception) -> None:
+        first = time.monotonic() - self._cloud_down_at > CLOUD_RETRY_SECONDS
+        self._cloud_down_at = time.monotonic()
+        if first:
+            self.emit({"type": "voice_error", "what": "cloud_voice",
+                       "error": f"The online voice didn't answer ({error}); using this PC's voice for now."})
+
+    def cloud_phrase(self, phrase: str) -> tuple[np.ndarray, int]:
+        """One phrase from Microsoft's neural voices, decoded to samples here."""
+        import asyncio
+
+        import edge_tts
+
+        rate = f"{round((self.settings.speed - 1) * 100):+d}%"
+        voice = self.settings.cloud_voice if self.settings.cloud_voice in CLOUD_VOICES else next(iter(CLOUD_VOICES))
+
+        async def fetch() -> bytes:
+            parts = []
+            async for chunk in edge_tts.Communicate(phrase, voice, rate=rate).stream():
+                if chunk["type"] == "audio":
+                    parts.append(chunk["data"])
+            return b"".join(parts)
+
+        mp3 = asyncio.run(asyncio.wait_for(fetch(), 12))
+        if not mp3:
+            raise RuntimeError("no audio came back")
+        return _decode_mp3(mp3)
+
     @property
     def announces(self) -> bool:
         """Does Compii answer at all when something finishes? Only the "off" mode says nothing."""
@@ -222,8 +275,9 @@ class Voice:
             "speak_hq": (self.models / KOKORO_HQ[0]).exists(),
             "natural_voice": self.has_natural_voice(),
             "fast_voice": self.has_fast_voice(),
-            "engine": "piper" if self.uses_fast_voice() else ("kokoro" if self.uses_natural_voice() else
-                                                               ("windows" if sys.platform == "win32" else "none")),
+            "engine": "cloud" if self.uses_cloud_voice() else "piper" if self.uses_fast_voice() else (
+                "kokoro" if self.uses_natural_voice() else ("windows" if sys.platform == "win32" else "none")),
+            "cloud_voices": CLOUD_VOICES,
             "listening": self._listening,
             "wake_listening": bool(self._wake and self._wake.running),
             "speaking": self._speaker.speaking,
@@ -852,7 +906,7 @@ class _Speaker:
             generation = self._generation
             try:
                 self._set(True)
-                if self.voice.uses_fast_voice() or self.voice.uses_natural_voice():
+                if self.voice.uses_cloud_voice() or self.voice.uses_fast_voice() or self.voice.uses_natural_voice():
                     self._speak_chain(job, generation)
                 elif sys.platform == "win32":
                     self._speak_windows(job, generation)
@@ -873,7 +927,18 @@ class _Speaker:
         """Synthesize ahead: the next phrase is made ready while the current one plays.
         Words for the same answer that arrive mid-sentence join the same chain, so a
         streamed reply sounds continuous instead of restarting at every sentence."""
-        make = self._piper_phrase if self.voice.uses_fast_voice() else self._kokoro_phrase
+        local = self._piper_phrase if self.voice.has_fast_voice() and not self.voice.has_natural_voice() \
+            else self._kokoro_phrase if self.voice.has_natural_voice() else None
+        if self.voice.uses_fast_voice():
+            local = self._piper_phrase
+
+        def make(phrase: str) -> tuple[np.ndarray, int] | None:
+            if self.voice.uses_cloud_voice():
+                try:
+                    return self.voice.cloud_phrase(phrase)
+                except Exception as e:  # noqa: BLE001 - offline or blocked: this PC's voice carries on
+                    self.voice.cloud_failed(e)
+            return local(phrase) if local else None
         ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=3)
 
         def produce() -> None:
@@ -1068,6 +1133,24 @@ def speakable(text: str) -> str:
     t = re.sub(r"\.\s*\.", ".", t)
     t = re.sub(r"\s{2,}", " ", t).strip(" .")
     return t + ("." if t and t[-1] not in ".!?" else "")
+
+
+def _decode_mp3(data: bytes) -> tuple[np.ndarray, int]:
+    """MP3 bytes to mono float samples, with the decoder Whisper already brings."""
+    import io
+
+    import av
+
+    with av.open(io.BytesIO(data)) as box:
+        stream = box.streams.audio[0]
+        rate = stream.rate or 24000
+        frames = [f.to_ndarray().astype(np.float32) for f in box.decode(stream)]
+    if not frames:
+        raise RuntimeError("the online voice sent no audio")
+    pcm = np.concatenate([f if f.ndim == 1 else f.mean(axis=0) for f in frames])
+    if np.abs(pcm).max() > 1.5:  # integer samples: scale to -1..1
+        pcm = pcm / 32768.0
+    return pcm.astype(np.float32), rate
 
 
 def _phrases(text: str, longest: int = 220) -> list[str]:

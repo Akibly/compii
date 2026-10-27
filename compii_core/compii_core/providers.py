@@ -31,26 +31,28 @@ PRESETS: dict[str, dict[str, str]] = {
                "model": "gemini-2.5-flash", "key": "gemini", "where": "cloud", "price": "free tier",
                "signup": "https://aistudio.google.com/apikey"},
     "nvidia": {"label": "NVIDIA", "base_url": "https://integrate.api.nvidia.com/v1",
-               "model": "nvidia/nemotron-3-super-120b-a12b", "key": "nvidia", "where": "cloud", "price": "free tier",
+               "model": "nvidia/nemotron-3-ultra-550b-a55b", "key": "nvidia", "where": "cloud", "price": "free tier",
                "signup": "https://build.nvidia.com/settings/api-keys"},
     "ollama_cloud": {"label": "Ollama Cloud", "base_url": "https://ollama.com/v1", "model": "gpt-oss:120b",
                      "key": "ollama", "where": "cloud", "price": "free tier", "signup": "https://ollama.com/settings/keys"},
     "mistral": {"label": "Mistral", "base_url": "https://api.mistral.ai/v1", "model": "mistral-small-latest",
                 "key": "mistral", "where": "cloud", "price": "free tier", "signup": "https://console.mistral.ai/api-keys"},
-    "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "model": "", "key": "openrouter",
+    "openrouter": {"label": "OpenRouter", "base_url": "https://openrouter.ai/api/v1",
+                   "model": "nvidia/nemotron-3-ultra-550b-a55b:free", "key": "openrouter",
                    "where": "cloud", "price": "free models", "signup": "https://openrouter.ai/keys"},
     "aihubmix": {"label": "AIHubMix", "base_url": "https://api.aihubmix.com/v1", "model": "coding-minimax-m3-free",
                  "key": "aihubmix", "where": "cloud", "price": "free models", "signup": "https://console.aihubmix.com/"},
     "opencode_go": {"label": "OpenCode Go (free models)", "base_url": "https://opencode.ai/inference/go/openai/v1",
                     "model": "deepseek-v4.1-flash", "key": "opencode", "where": "cloud", "price": "free tier",
                     "signup": "https://opencode.ai/auth", "models_url": "https://opencode.ai/inference/go/v1/models"},
-    "opencode_zen": {"label": "OpenCode Zen", "base_url": "https://opencode.ai/zen/v1", "model": "claude-opus-4-8",
+    "opencode_zen": {"label": "OpenCode Zen", "base_url": "https://opencode.ai/zen/v1", "model": "claude-sonnet-5-5",
                      "key": "opencode", "where": "cloud", "price": "paid", "signup": "https://opencode.ai/auth"},
     "ollama": {"label": "Ollama on this PC", "base_url": "http://127.0.0.1:11434/v1", "model": "qwen3:4b",
                "key": "", "where": "local", "price": "free", "signup": "https://ollama.com/download"},
     "lmstudio": {"label": "LM Studio on this PC", "base_url": "http://127.0.0.1:1234/v1", "model": "",
                  "key": "", "where": "local", "price": "free", "signup": "https://lmstudio.ai"},
-    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "", "key": "openai", "where": "cloud",
+    "openai": {"label": "OpenAI", "base_url": "https://api.openai.com/v1", "model": "gpt-5.4-mini", "key": "openai",
+               "where": "cloud",
                "price": "paid", "signup": "https://platform.openai.com/api-keys"},
     "custom": {"label": "Other OpenAI-compatible", "base_url": "", "model": "", "key": "custom", "where": "cloud",
                "price": "", "signup": ""},
@@ -262,7 +264,9 @@ class OpenAICompatBrain:
                     # Over a free plan's limit: wait only if it clears almost at once;
                     # otherwise hand over to the backup straight away instead of stalling.
                     wait = _retry_after(r.headers)
-                    if wait is None or wait > 2:
+                    if wait is None:
+                        wait = 1.2 * (attempt + 1)  # no hint: a per-second limit clears in a moment
+                    if wait > 2:
                         break
                 await asyncio.sleep(wait)
         if r.status_code >= 400:
@@ -271,9 +275,9 @@ class OpenAICompatBrain:
                 detail = detail.get("message", detail) if isinstance(detail, dict) else detail
             except ValueError:
                 detail = r.text
-            raise RuntimeError(f"{self.model} at {self.base_url} said {r.status_code}: {str(detail)[:300]}")
+            raise RuntimeError(f"{self.model} at {self.base_url}: {explain_refusal(r.status_code, str(detail))}")
         data = r.json()
-        return _chat_reply((data.get("choices") or [{}])[0], data.get("usage"))
+        return refuse_billing_text(_chat_reply((data.get("choices") or [{}])[0], data.get("usage")), self.base_url)
 
     async def step_stream(self, system: str, messages: list[dict[str, Any]], tools: list[dict[str, Any]],
                           on_text: Any) -> BrainReply:
@@ -299,15 +303,17 @@ class OpenAICompatBrain:
                     wait = 1.5 * (attempt + 1)
                     if r.status_code == 429:
                         wait = _retry_after(r.headers)
-                        if wait is None or wait > 2:
-                            raise RuntimeError(f"{self.model} at {self.base_url} said 429: {str(detail)[:300]}")
+                        if wait is None:
+                            wait = 1.2 * (attempt + 1)
+                        if wait > 2:
+                            raise RuntimeError(f"{self.model} at {self.base_url}: {explain_refusal(429, str(detail))}")
                     await asyncio.sleep(wait)
                     continue
                 if r.status_code >= 400:
                     await r.aread()
                     detail = _error_text(r)
                     await r.aclose()
-                    raise RuntimeError(f"{self.model} at {self.base_url} said {r.status_code}: {str(detail)[:300]}")
+                    raise RuntimeError(f"{self.model} at {self.base_url}: {explain_refusal(r.status_code, str(detail))}")
                 # Some OpenAI-compatible servers ignore stream=true and answer with plain JSON.
                 if "application/json" in r.headers.get("content-type", ""):
                     raw = await r.aread()
@@ -379,7 +385,7 @@ class OpenAICompatBrain:
             calls.append(call)
             blocks.append({"type": "tool_use", "id": call.id, "name": call.name, "input": call.input})
         stop = "max_tokens" if finish == "length" else "tool_use" if calls else "end_turn"
-        return recover_tool_call(BrainReply(blocks, text, calls, stop, usage), tools)
+        return recover_tool_call(refuse_billing_text(BrainReply(blocks, text, calls, stop, usage), self.base_url), tools)
 
 
 def _chat_reply(choice: Any, usage: Any = None) -> BrainReply:
@@ -415,6 +421,45 @@ def _error_text(r: Any) -> Any:
         return detail.get("message", detail) if isinstance(detail, dict) else detail
     except ValueError:
         return r.text
+
+
+# What a provider's refusal means for the user, in their words. Matched on the status and
+# the provider's own message; the original text is kept after it.
+_HINTS: list[tuple[int | None, str, str]] = [
+    (401, "", "The key was refused: it may be revoked, expired or mistyped. Paste a fresh key in Settings → Brain."),
+    (402, "", "This model needs paid credits on your account. Pick a free model in Settings → Brain."),
+    (None, "Global regions", "This OpenCode Go model needs “Global” regions: turn it on in your OpenCode workspace's "
+                             "Privacy settings, or pick another model."),
+    (None, "subscription is required", "Your account doesn't include this model: it needs that provider's "
+                                       "subscription. Pick another model or provider."),
+    (None, "trains on request", "This model trains on what you send, which your account settings don't allow. "
+                                "Pick another model."),
+    (None, "Free usage limit", "The free allowance on this account is used up for now. Try again later or pick "
+                               "another provider."),
+    (None, "Model access is disabled", "This model isn't available on your account. Pick another model."),
+    (404, "Not found for account", "This model isn't enabled for your account. Pick another model in Settings → Brain."),
+    (429, "", "The provider is rate-limiting this account right now. Compii retried; try again in a minute or "
+              "pick another provider."),
+]
+
+
+def explain_refusal(status: int, detail: str) -> str:
+    """A refusal, said plainly first, the provider's own words after."""
+    for code, needle, hint in _HINTS:
+        if (code is None or code == status) and (not needle or needle.lower() in detail.lower()):
+            return f"{hint} ({status}: {detail[:240]})"
+    return f"{status}: {detail[:300]}"
+
+
+def refuse_billing_text(reply: BrainReply, base_url: str) -> BrainReply:
+    """Some gateways send a quota or billing notice as an ordinary answer; Compii must
+    never read that out as if it were its own reply."""
+    t = reply.text or ""
+    if "aihubmix" in base_url and ("aihubmix.com/topup" in t or "can only try 10 times" in t):
+        raise RuntimeError("AIHubMix: accounts that haven't been topped up get only 10 free tries, and they're "
+                           "used up. Top up at console.aihubmix.com/topup, or pick another provider. "
+                           f"(They said: {t[:200]})")
+    return reply
 
 
 def _retry_after(headers: Any) -> float | None:
@@ -637,9 +682,32 @@ def make_brain(choice: BrainChoice, keys: KeyStore) -> Any:
         return _tag(OllamaBrain(c.base_url, c.model), c.provider, c.model)
     if c.provider == "nvidia":
         # Thinking off: Compii answers out loud, so speed matters more than long reasoning.
-        return _tag(OpenAICompatBrain(c.base_url, c.model, key, extra={
-            "chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.6, "top_p": 0.95,
-            "max_tokens": 4096}), c.provider, c.model)
+        # Which models a free NVIDIA account may call varies (many answer 404 "not found for
+        # account"), so gpt-oss-20b, which every account has, stands behind the chosen one.
+        extra = {"chat_template_kwargs": {"enable_thinking": False}, "temperature": 0.6, "top_p": 0.95,
+                 "max_tokens": 4096}
+        main = _tag(OpenAICompatBrain(c.base_url, c.model, key, extra=extra), c.provider, c.model)
+        if c.model == "openai/gpt-oss-20b":
+            return main
+        backup = "openai/gpt-oss-20b"
+        return FallbackBrain(main, _tag(OpenAICompatBrain(c.base_url, backup, key, extra={"max_tokens": 4096}),
+                                        c.provider, backup))
+    if c.provider == "mistral" and c.model != "open-mistral-nemo":
+        # Mistral's free tier caps its bigger models per account (429 from the first request)
+        # while the small ones keep answering, so Nemo stands behind whichever was chosen.
+        main = _tag(OpenAICompatBrain(c.base_url, c.model, key), c.provider, c.model)
+        return FallbackBrain(main, _tag(OpenAICompatBrain(c.base_url, "open-mistral-nemo", key),
+                                        c.provider, "open-mistral-nemo"))
+    if c.provider == "openrouter":
+        # Without a limit OpenRouter reserves the model's whole output window up front, and a
+        # free account is refused (402) before a word is written. Free models are often busy,
+        # so a second free one stands behind the first.
+        extra = {"max_tokens": 4096}
+        main = _tag(OpenAICompatBrain(c.base_url, c.model, key, extra=extra), c.provider, c.model)
+        backup = "nvidia/nemotron-3.5-lightning:free"
+        if c.model == backup:
+            return main
+        return FallbackBrain(main, _tag(OpenAICompatBrain(c.base_url, backup, key, extra=extra), c.provider, backup))
     if c.provider == "groq" and c.model.startswith("openai/gpt-oss"):
         # Spoken answers: brief reasoning is plenty and much faster. Each model has its own
         # free per-minute limit, so the other gpt-oss model stands in before any slower backup.

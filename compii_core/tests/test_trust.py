@@ -88,7 +88,9 @@ def test_cloud_brains_need_a_key_and_local_ones_do_not():
         prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys)
     assert isinstance(prov.make_brain(prov.BrainChoice("ollama"), keys), prov.OllamaBrain)
     keys.set("openrouter", "sk-or-test")
-    assert prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys).api_key == "sk-or-test"
+    # Free tiers come with a backup model; the key is the user's either way.
+    brain = prov.make_brain(prov.BrainChoice("openrouter", "some/model"), keys)
+    assert brain.primary.api_key == brain.backup.api_key == "sk-or-test"
 
 
 def test_opencode_go_uses_its_free_models_with_the_same_key_as_zen(monkeypatch):
@@ -453,12 +455,12 @@ async def test_nvidia_sends_its_key_and_turns_thinking_off():
             "content": None, "reasoning_content": "secret scratch thoughts",
             "tool_calls": [{"id": "n1", "type": "function", "function": {"name": "ping", "arguments": "{\"word\": \"hi\"}"}}]}}]})
 
-    brain.transport = httpx.MockTransport(handle)
+    brain.primary.transport = brain.backup.transport = httpx.MockTransport(handle)
     r = await prov.probe(brain)
     body = json.loads(seen[0].content)
     assert r["tools"] and seen[0].headers["Authorization"] == "Bearer nvapi-test"
     assert str(seen[0].url) == "https://integrate.api.nvidia.com/v1/chat/completions"
-    assert body["model"] == "nvidia/nemotron-3-super-120b-a12b"
+    assert body["model"] == "nvidia/nemotron-3-ultra-550b-a55b"
     assert body["chat_template_kwargs"] == {"enable_thinking": False}
     reply = await brain.step("s", [{"role": "user", "content": "x"}], [])
     assert "secret" not in reply.text
@@ -466,7 +468,7 @@ async def test_nvidia_sends_its_key_and_turns_thinking_off():
 
 def test_keys_can_also_come_from_the_environment(monkeypatch):
     monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-from-env")
-    assert prov.make_brain(prov.BrainChoice("nvidia"), MemoryKeyStore()).api_key == "nvapi-from-env"
+    assert prov.make_brain(prov.BrainChoice("nvidia"), MemoryKeyStore()).primary.api_key == "nvapi-from-env"
     keys = MemoryKeyStore()
     keys.set("nvidia", "nvapi-from-settings")
-    assert prov.make_brain(prov.BrainChoice("nvidia"), keys).api_key == "nvapi-from-settings"
+    assert prov.make_brain(prov.BrainChoice("nvidia"), keys).primary.api_key == "nvapi-from-settings"

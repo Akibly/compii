@@ -746,6 +746,10 @@ def test_listening_needs_the_model_first(tmp_path):
     v = quiet_voice(tmp_path)
     with pytest.raises(RuntimeError, match="Settings"):
         v.start_listening()
+    # Speaking needs no download: the online voice is ready, and this PC's built-in voice is
+    # the fallback once it is switched off.
+    assert v.status()["engine"] == "cloud"
+    v.settings.engine = "natural"
     assert v.status()["engine"] in ("windows", "none")
 
 
