@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -97,7 +99,18 @@ Future<String?> takePhoto({bool gallery = false}) async {
     maxHeight: 2400,
     imageQuality: 85,
   );
-  return shot?.path;
+  if (shot == null) return null;
+  // The picker names it like scaled_661f6b2e-….jpg; Compii and you see this name.
+  final t = DateTime.now();
+  String two(int n) => n.toString().padLeft(2, '0');
+  final ext = shot.path.contains('.') ? shot.path.substring(shot.path.lastIndexOf('.')) : '.jpg';
+  final named = '${File(shot.path).parent.path}/photo-${t.year}-${two(t.month)}-${two(t.day)}-'
+      '${two(t.hour)}.${two(t.minute)}.${two(t.second)}$ext';
+  try {
+    return (await File(shot.path).rename(named)).path;
+  } on FileSystemException {
+    return shot.path;
+  }
 }
 
 bool isPhotoPath(String path) => RegExp(r'\.(jpe?g|png|webp|bmp|gif|heic|heif)$', caseSensitive: false).hasMatch(path);

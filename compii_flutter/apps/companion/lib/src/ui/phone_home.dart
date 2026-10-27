@@ -345,21 +345,26 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
                 ],
               ),
             ),
-            bottomNavigationBar: NavigationBar(
-              selectedIndex: _tab,
-              onDestinationSelected: (i) => setState(() => _tab = i),
-              destinations: [
-                const NavigationDestination(icon: Glyph(G.mic), label: 'Talk'),
-                NavigationDestination(
-                  icon: Badge(
-                    isLabelVisible: waiting.isNotEmpty || core.ordered.any((t) => t.active),
-                    backgroundColor: waiting.isNotEmpty ? context.c.warning : context.c.accent,
-                    child: const Glyph(G.chat),
+            // On Talk the bar is part of the night around the face, not a light strip under it.
+            bottomNavigationBar: Theme(
+              data: _tab == 0 ? compiiTheme(Brightness.dark) : Theme.of(context),
+              child: NavigationBar(
+                backgroundColor: _tab == 0 ? _night : null,
+                selectedIndex: _tab,
+                onDestinationSelected: (i) => setState(() => _tab = i),
+                destinations: [
+                  const NavigationDestination(icon: Glyph(G.mic), label: 'Talk'),
+                  NavigationDestination(
+                    icon: Badge(
+                      isLabelVisible: waiting.isNotEmpty || core.ordered.any((t) => t.active),
+                      backgroundColor: waiting.isNotEmpty ? context.c.warning : context.c.accent,
+                      child: const Glyph(G.chat),
+                    ),
+                    label: 'Chats',
                   ),
-                  label: 'Chats',
-                ),
-                const NavigationDestination(icon: Glyph(G.monitor), label: 'PC'),
-              ],
+                  const NavigationDestination(icon: Glyph(G.monitor), label: 'PC'),
+                ],
+              ),
             ),
           );
         },

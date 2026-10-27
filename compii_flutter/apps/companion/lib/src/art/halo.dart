@@ -317,27 +317,34 @@ class Halo {
       _turn(c, 70),
       c,
     ];
+    // Drawn in pixels, not in the halo's unit space: Android's renderer clips a
+    // blur that is scaled up a few hundred times to a square box around it.
+    final px = unit > 0 ? 1 / unit : 1.0;
+    canvas.save();
+    canvas.scale(1 / px);
+    final ring = body.transform(Matrix4.diagonal3Values(px, px, 1).storage);
     final shader = SweepGradient(
       colors: colors,
       transform: GradientRotation(orbit * 2 * math.pi),
-    ).createShader(const Rect.fromLTWH(-.5, -.5, 1, 1));
+    ).createShader(Rect.fromLTWH(-.5 * px, -.5 * px, px, px));
     canvas.drawPath(
-      body,
+      ring,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = .09
+        ..strokeWidth = .09 * px
         ..shader = shader
         ..color = Colors.white.withValues(alpha: (.55 * glow).clamp(0.0, 1.0))
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(.06, unit * 4)),
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(.06, unit * 4) * px),
     );
     canvas.drawPath(
-      body,
+      ring,
       Paint()
         ..style = PaintingStyle.stroke
-        ..strokeWidth = .03
+        ..strokeWidth = .03 * px
         ..shader = shader
-        ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(.014, unit * 1.5)),
+        ..maskFilter = MaskFilter.blur(BlurStyle.normal, math.max(.014, unit * 1.5) * px),
     );
+    canvas.restore();
   }
 
   /// The glass: near-black, faintly tinted, lit from above, with an edge that
