@@ -17,6 +17,7 @@ import time
 import urllib.request
 from collections import deque
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -45,8 +46,13 @@ PIPER_FILES = {
 }
 DOWNLOAD_SIZES_MB = {"listen": 145, "speak": 120, "listen_hq": 465, "speak_hq": 170, "speak_fast": 64}
 # How much of a reply is worth saying out loud, and how it is cut while it is still being written.
-SPOKEN_SENTENCES = 2
-SPOKEN_CHARS = 280
+# A reply is said in full (code, tables and links are left to the bubble); only a
+# report far longer than anyone wants read aloud stops at a sensible place.
+SPOKEN_SENTENCES = 40
+SPOKEN_CHARS = 2400
+# The online voice is fetched this many phrases ahead, in parallel: one request
+# takes about as long as the phrase lasts, so one at a time leaves gaps.
+CLOUD_AHEAD = 4
 # Capitalised words that aren't names; anything else capitalised gets a second, sharper listen.
 COMMON_CAPS = {"downloads", "documents", "desktop", "pictures", "monday", "tuesday", "wednesday", "thursday",
                "friday", "saturday", "sunday", "january", "february", "march", "april", "june", "july", "august",
@@ -232,7 +238,7 @@ class Voice:
                     parts.append(chunk["data"])
             return b"".join(parts)
 
-        mp3 = asyncio.run(asyncio.wait_for(fetch(), 12))
+        mp3 = asyncio.run(asyncio.wait_for(fetch(), 15))
         if not mp3:
             raise RuntimeError("no audio came back")
         return _decode_mp3(mp3)
@@ -244,7 +250,15 @@ class Voice:
 
     def warm_up(self) -> None:
         """Load the voice model in the background so the first reply isn't slow."""
-        if self.uses_fast_voice():
+        if self.settings.engine == "cloud":
+            def run_cloud() -> None:
+                try:
+                    import av  # noqa: F401 - the decoder, loaded once now
+                    import edge_tts  # noqa: F401
+                except Exception:  # noqa: BLE001 - warm-up is best effort
+                    pass
+            threading.Thread(target=run_cloud, daemon=True).start()
+        elif self.uses_fast_voice():
             def run_fast() -> None:
                 try:
                     for _ in self._piper().synthesize("Ready."):
@@ -731,8 +745,8 @@ class Voice:
             self._speaker.say(text)
 
     def say_stream(self, task_id: str, draft: str) -> None:
-        """Say a reply while it is still being written: whole sentences only, and
-        only the first couple, so speech starts long before the answer is finished."""
+        """Say a reply while it is still being written, whole sentences only, so
+        speech starts long before the answer is finished."""
         draft = draft.strip()
         if not draft or self.settings.output_mode != "voice":
             return
@@ -938,8 +952,18 @@ class _Speaker:
                     return self.voice.cloud_phrase(phrase)
                 except Exception as e:  # noqa: BLE001 - offline or blocked: this PC's voice carries on
                     self.voice.cloud_failed(e)
-            return local(phrase) if local else None
-        ready: queue.Queue[tuple[np.ndarray, int] | None] = queue.Queue(maxsize=3)
+            if local is None:
+                return None
+            try:
+                return local(phrase)
+            except Exception as e:  # noqa: BLE001 - a broken local voice skips the phrase, never the answer
+                self.voice.emit({"type": "voice_error", "what": "speak", "error": str(e)})
+                return None
+
+        # Phrases are made in order but several at once; playback takes them in order.
+        ahead = CLOUD_AHEAD if self.voice.uses_cloud_voice() else 1
+        pool = ThreadPoolExecutor(max_workers=ahead)
+        ready: queue.Queue[Future | None] = queue.Queue(maxsize=ahead + 1)
 
         def produce() -> None:
             text: str | None = first
@@ -948,25 +972,37 @@ class _Speaker:
                     for phrase in _phrases(text):
                         if generation != self._generation:
                             return
-                        audio = make(phrase)
-                        if audio is not None and not self._offer(ready, audio, generation):
+                        if not self._offer(ready, pool.submit(make, phrase), generation):
                             return
                     text = self._next_text(generation)
             finally:
                 self._offer(ready, None, generation)
 
         threading.Thread(target=produce, daemon=True).start()
-        while generation == self._generation:
-            try:
-                item = ready.get(timeout=0.2)
-            except queue.Empty:
-                continue
-            if item is None or generation != self._generation:
-                return
-            samples, rate = item
-            samples = _trim(samples)
-            pause = np.zeros(int(rate * 0.10), dtype=samples.dtype)  # a breath between sentences
-            self._play(np.concatenate([samples, pause]), rate, generation)
+        try:
+            while generation == self._generation:
+                try:
+                    item = ready.get(timeout=0.2)
+                except queue.Empty:
+                    continue
+                if item is None or generation != self._generation:
+                    return
+                while not item.done() and generation == self._generation:
+                    time.sleep(0.02)
+                if generation != self._generation:
+                    return
+                audio = item.result()
+                if audio is None:
+                    continue
+                self._play_phrase(audio, generation)
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+    def _play_phrase(self, audio: tuple[np.ndarray, int], generation: int) -> None:
+        samples, rate = audio
+        samples = _trim(samples)
+        pause = np.zeros(int(rate * 0.10), dtype=samples.dtype)  # a breath between sentences
+        self._play(np.concatenate([samples, pause]), rate, generation)
 
     def _offer(self, ready: queue.Queue, item: Any, generation: int) -> bool:
         """Put a phrase on the playback queue without hanging when speech is stopped."""
@@ -1172,8 +1208,9 @@ def _phrases(text: str, longest: int = 220) -> list[str]:
                 chunk = f"{chunk} {part}".strip()
         if chunk:
             out.append(chunk)
-    # A long first sentence: start with its opening clause (whole sentences sound most natural).
-    if out and len(out[0]) > 110 and "," in out[0][:90]:
+    # A long first sentence: start with its opening clause, so the first sound comes
+    # quickly (whole sentences sound most natural, so only the first is split).
+    if out and len(out[0]) > 70 and "," in out[0][:70]:
         head, _, rest = out[0].partition(",")
         out[0:1] = [head + ",", rest.strip()]
     return out

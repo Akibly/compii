@@ -38,10 +38,19 @@ def test_speech_starts_before_the_answer_is_finished(tmp_path):
     assert speaker.stops == 1  # a new answer takes the floor
 
     voice.say_stream("t1", "The report is ready. It covers five sources. Want me to send it?")
-    assert speaker.fed == ["The report is ready.", "It covers five sources."]
+    assert speaker.fed == ["The report is ready.", "It covers five sources."]  # the last may still grow
 
     voice.finish_stream("t1", "The report is ready. It covers five sources. Want me to send it?")
-    assert speaker.said == [] and speaker.fed == ["The report is ready.", "It covers five sources."]
+    assert speaker.said == [] and speaker.fed == ["The report is ready.", "It covers five sources.", "Want me to send it?"]
+
+
+def test_the_whole_answer_is_said(tmp_path):
+    voice, speaker = _voice(tmp_path)
+    voice.settings.output_mode = "voice"
+    answer = " ".join(f"Sentence number {n} is here." for n in range(1, 9))
+    voice.say_stream("t4", answer[:60])
+    voice.finish_stream("t4", answer)
+    assert " ".join(speaker.fed) == answer
 
 
 def test_a_new_step_after_a_tool_call_is_said_too(tmp_path):
