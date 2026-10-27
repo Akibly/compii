@@ -10,7 +10,7 @@ Reference: [Flutter platform integration](https://docs.flutter.dev/platform-inte
 
 ## Proposed repository organization
 
-Create the new implementation in `compii_flutter/` after planning. Keep current Bluey Swift source untouched as a reference until a deliberate migration decision.
+The implementation lives in `compii_flutter/` (app) and `compii_core/` (service).
 
 ```text
 compii_flutter/
@@ -75,7 +75,7 @@ Desktop owns provider secrets and tool execution. Phone is a thin client: it sen
 
 Persist task transitions transactionally. Recover interrupted tasks as paused, then re-observe before resuming. Never replay an external write simply because its acknowledgement was lost. Files and research artifacts live under an application-managed project directory; database holds metadata. Semantic indexing can follow local full-text search; any embedding provider use is disclosed and configured separately.
 
-No mandatory Compii cloud account in V1. Cloud model/search calls still require internet. Credential storage is OS-backed; do not copy Bluey's plaintext key-file approach. If local history is not encrypted, disclose that accurately; do not equate keychain storage with full database encryption.
+No mandatory Compii cloud account in V1. Cloud model/search calls still require internet. Credential storage is OS-backed; never keep keys in plaintext files. If local history is not encrypted, disclose that accurately; do not equate keychain storage with full database encryption.
 
 ## Constraints and engineering gates
 

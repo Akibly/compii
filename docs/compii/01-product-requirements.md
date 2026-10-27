@@ -97,15 +97,12 @@ Windows desktop first, Android companion in the same V1 milestone; all tested de
 
 ## Evidence and references
 
-The Bluey repository is a reference implementation, currently cloned at repository root: Swift Mac/iPhone apps, screen reading, actions, phone protocol, notes and research. Its source is not the Flutter implementation. Preserve its history and license; preserve separate font licenses if assets are reused.
-
-- [Bluey source](https://github.com/rbrown101010/bluey-by-riley)
 - [HeyClicky](https://www.heyclicky.com/), [changelog](https://www.heyclicky.com/changelog), [trust](https://www.heyclicky.com/trust): screen guidance, agents and real reliability issues; vendor claims, not independent testing.
 - [Clacky](https://raynanwuyep.com/clacky): routines and scoped file undo.
 - [OpenClicky](https://github.com/prasanthsasikumar/openclicky), [ClickyX](https://github.com/unn-Known1/clickyX): provider and desktop ecosystem references.
 - [Omi](https://www.omi.me/): memory and meeting workflows.
 - [Khanmigo](https://khanmigo.ai/): guided learning.
 - [Public discussion](https://www.reddit.com/r/macapps/comments/1srzk5a/has_anyone_tried_clicky/): anecdotal feedback, not a representative survey.
-- User's Bluey screenshot: phone with large eyes and small desktop pointer. [Supplied Short](https://youtube.com/shorts/IEYzYopNGVQ): fetch was throttled; video contents were not verified.
+- User's reference screenshot: phone with large eyes and small desktop pointer. [Supplied Short](https://youtube.com/shorts/IEYzYopNGVQ): fetch was throttled; video contents were not verified.
 
 The product must be differentiated through a tested learning-to-action transition and reliable outcomes, not merely through features competitors already describe. That transition is measured by M01–M05 and the benchmark gates above.

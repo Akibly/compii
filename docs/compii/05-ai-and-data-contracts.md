@@ -6,7 +6,7 @@ Version 1.0 · 15 October 2026 · Normative baseline for future implementation
 
 Separate interfaces: Reasoner, VisionReasoner, Transcriber, SpeechSynthesizer, RealtimeConversation, SearchProvider and optional Embedder. Each declares capabilities, limits, model identity, streaming support, timeout and billing destination. An OpenAI-compatible endpoint is a protocol option, not proof of vision/tool/audio compatibility.
 
-Initial reasoning/vision targets: OpenAI and Anthropic adapters. Confirm model availability through provider documentation and live opt-in smoke tests at implementation time; do not copy hard-coded Bluey model IDs blindly. Gemini, compatible endpoints and local servers follow the same adapter contract. A provider with no speech API can still use separately selected transcription and speech services.
+Initial reasoning/vision targets: OpenAI and Anthropic adapters. Confirm model availability through provider documentation and live opt-in smoke tests at implementation time; do not hard-code model IDs blindly. Gemini, compatible endpoints and local servers follow the same adapter contract. A provider with no speech API can still use separately selected transcription and speech services.
 
 Never silently reroute user content to another provider. Configure fallback permission per data class and provider. Unsupported functions are disabled with an explanation. Estimated cost and actual reported usage are stored separately; unavailable pricing is unknown, not zero.
 

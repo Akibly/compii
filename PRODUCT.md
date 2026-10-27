@@ -24,7 +24,7 @@ Teach me, With me and For me. Multiple model providers. Desktop works without a 
 
 ## Evidence
 
-Original Swift Bluey implementation and six planning documents. Generated concept is a design reference, not a functioning application screenshot.
+Six planning documents. Generated concept is a design reference, not a functioning application screenshot.
 
 ## Accessibility
 

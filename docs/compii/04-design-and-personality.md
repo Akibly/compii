@@ -14,7 +14,7 @@ Name: Compii. Character: Wisp. Brand promise: your companion for learning and do
 
 Wisp is an organic lilac spirit with a rounded upper body and curved tapered tail. Large white eyes, dark plum pupils, subtle brows and a small expressive mouth provide readability. No robot shell, faceplate, antenna, mechanical joints or metal. Avoid fur and photoreal materials; use a clean shape-and-gradient treatment reproducible in Flutter. Small side wisps may express gestures without becoming mechanical limbs.
 
-The two dots in the final `ii` may evoke eyes in a wordmark exploration. Keep the product name readable. Do not copy Bluey's blueberry silhouette or another product's mascot. Reuse behavioral ideas from the reference, not its brand identity.
+The two dots in the final `ii` may evoke eyes in a wordmark exploration. Keep the product name readable. Do not copy another product's mascot or brand identity.
 
 ## Phone presentations — explicit user decision
 
@@ -80,4 +80,4 @@ Sample lines:
 
 ## Asset provenance
 
-`assets/compii-wisp-concept.png` was created using the built-in image-generation tool, guided by the user's Bluey screenshot. Prompt brief: original organic lilac Wisp with large white eyes, small desktop companion and speech bubble, large-face landscape phone, ivory/plum/lavender palette, no robotic elements. This is a direction reference; production paths, expression parameters and exact sizes still need implementation and review. The concept does not illustrate the alternative Full-body phone view, which is explicitly required above.
+`assets/compii-wisp-concept.png` was created using the built-in image-generation tool, guided by the user's reference screenshot. Prompt brief: original organic lilac Wisp with large white eyes, small desktop companion and speech bubble, large-face landscape phone, ivory/plum/lavender palette, no robotic elements. This is a direction reference; production paths, expression parameters and exact sizes still need implementation and review. The concept does not illustrate the alternative Full-body phone view, which is explicitly required above.

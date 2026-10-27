@@ -138,8 +138,6 @@ uv run compii-core
 cd ../compii_flutter/apps/companion
 flutter run -d macos
 
-# Or build and launch the native Swift macOS companion:
-./scripts/build-mac.sh
 ```
 
 The app finds Core on `127.0.0.1:8765`, connects and reconnects on its own. Without any key, set `COMPII_BRAIN="rehearsal"` and Core answers with a scripted task so you can drive the whole interface for free — the app labels that mode clearly as a rehearsal, not AI.
