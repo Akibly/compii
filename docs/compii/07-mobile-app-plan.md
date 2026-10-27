@@ -147,7 +147,10 @@ The pattern: the phone is where the agent **reaches you** (brief, alerts, approv
 1. Real push notifications (FCM) with approve/deny actions — #1, #2, #6, #11.
 2. Morning brief and evening recap on the phone — #3, #4 (Core already makes both).
 3. The Halo face as the Talk tab, online voice on the phone — #16, #17, #20.
-4. Camera "what is this?" and document snap — #31, #34.
-5. Home-screen widget and share sheet — #61, #63.
+4. Camera "what is this?" and document snap — #31, #34. **Done:** camera button on Talk, "What is this?" and
+   "Snap a document" on the PC tab; Core's `look_at_photo` reads photos with the free NVIDIA vision model
+   (local OCR without a key).
+5. Home-screen widget and share sheet — #61, #63. **Done:** Camera on the widget; photos, PDFs and Office files
+   arrive from the share sheet (text and links already did).
 
 Phase 3 (cloud Core) is the biggest decision: it changes Compii from "an app on my PC" to "an assistant that is always on". It needs hosting, accounts and a privacy story, so it deserves its own plan before any code.

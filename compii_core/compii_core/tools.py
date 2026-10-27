@@ -96,6 +96,8 @@ class Toolbox:
         self.see_item: Callable[[str], dict[str, Any] | None] | None = None
         # Reads the screen by picture: (question, whole screen?) -> {"text", "snap"} or None.
         self.read_screen: Callable[..., dict[str, Any] | None] | None = None
+        # Reads a photo file: (path, question) -> what it shows and every word in it (set by the server).
+        self.read_photo: Callable[[Path, str], str] | None = None
         # The latest screen snapshot (screen-aware turns): point_at accepts its ids.
         self.snapshot: dict[str, Any] | None = None
         self.tools: dict[str, Tool] = {t.name: t for t in self._build()}
@@ -162,7 +164,24 @@ class Toolbox:
         p = self.path(a["path"])
         if not p.is_file():
             raise ToolError(f"{p} does not exist.")
+        from .vision import is_photo
+
+        if is_photo(p):  # a picture has no text to read as text: look at it instead
+            return self.look_at_photo({"path": str(p)})
         return ToolResult(self._file_text(p))
+
+    def look_at_photo(self, a: dict[str, Any]) -> ToolResult:
+        """What a photo shows, and every word in it - a document, a receipt, a sign, a thing."""
+        from .vision import is_photo
+
+        p = self.path(a["path"])
+        if not p.is_file():
+            raise ToolError(f"{p} does not exist.")
+        if not is_photo(p):
+            raise ToolError(f"{p.name} isn't a photo; read it with read_file.")
+        if self.read_photo is None:
+            raise ToolError("Compii can't look at photos here.")
+        return ToolResult(self.read_photo(p, a.get("question") or "What is this?"))
 
     def _file_text(self, p: Path) -> str:
         """The words inside a file, whatever kind it is."""
@@ -1262,6 +1281,13 @@ class Toolbox:
                   "full": {"type": "boolean", "description": "true to read every monitor; default is the window in front."},
                   "window": {**s, "description": "Look at this app instead of the one in front, by part of its title, e.g. 'Excel'."}},
                  [], ActionKind.READ, self.look_at_screen, lambda a: "Look at the screen"),
+            Tool("look_at_photo", "Look at a photo file (one the user attached, snapped on their phone, or saved): "
+                 "answers the question about it, says what kind of thing it is, and copies every word in it exactly. "
+                 "Use it for 'what is this?', reading or translating a photographed document, receipt, label or sign, "
+                 "and before filing, summarising or typing up anything from a picture.",
+                 {"path": {**s, "description": "The photo's full path, e.g. an attachment's path."},
+                  "question": {**s, "description": "What to find out, e.g. 'What is this?' or 'Read this document'."}},
+                 ["path"], ActionKind.READ, self.look_at_photo, lambda a: f"Look at {_short(a['path'])}"),
             Tool("clipboard", "Read the text on the clipboard, or put text on it so the user can paste it somewhere.",
                  {"text": {**s, "description": "Text to copy onto the clipboard. Leave out to read what is there."}},
                  [], lambda a: ActionKind.CHANGE if a.get("text") is not None else ActionKind.READ,

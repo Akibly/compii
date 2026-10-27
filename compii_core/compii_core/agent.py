@@ -37,7 +37,7 @@ QUICK_TOOLS = ["point_at", "draw_on_screen", "start_walkthrough", "search_web", 
                "start_lesson", "update_lesson", "search_in_files", "clipboard", "look_at_screen", "view_profile",
                "ask_my_files", "catch_me_up", "work_journal", "usage_report", "second_opinion", "undo_action",
                "read_selection", "update_plan", "create_document", "world_time", "weather", "forget_memory",
-               "activity_log", "delete_conversations", "reset_compii"]
+               "activity_log", "delete_conversations", "reset_compii", "look_at_photo"]
 MORE_TOOLS = {
     "name": "more_tools",
     "description": "Unlock all of Compii's tools (files and folders, spreadsheets, email, routines and reminders, "
@@ -2302,8 +2302,8 @@ def _attachment_note(files: list[dict[str, Any]]) -> str:
     if not files:
         return ""
     lines = [
-        "The user attached these files from this PC. Read the ones the task needs with read_file (read_pdf for "
-        "scanned PDFs); never guess what is inside them.",
+        "The user attached these files. Read the ones the task needs with read_file (read_pdf for scanned PDFs, "
+        "look_at_photo for photos and pictures); never guess what is inside them.",
         *(f"- {f['name']} - {f['path']} ({f['size']} bytes)" for f in files),
     ]
     return "\n\n" + guard.wrap_untrusted("attachments", "\n".join(lines))

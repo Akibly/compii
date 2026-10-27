@@ -61,6 +61,20 @@
             android:textSize="12sp" />
 
         <TextView
+            android:id="@+id/widget_camera"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="6dp"
+            android:background="@drawable/widget_button"
+            android:paddingLeft="12dp"
+            android:paddingTop="5dp"
+            android:paddingRight="12dp"
+            android:paddingBottom="5dp"
+            android:text="Camera"
+            android:textColor="#FFFFFF"
+            android:textSize="12sp" />
+
+        <TextView
             android:id="@+id/widget_chats"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

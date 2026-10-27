@@ -92,7 +92,8 @@ def private_foreground() -> bool:
     return bool(hwnd) and private_window(hwnd, title)
 
 
-def _ask(png: bytes, prompt: str, key: str, transport: Any = None, max_tokens: int = 900, timeout: float = 8) -> str:
+def _ask(png: bytes, prompt: str, key: str, transport: Any = None, max_tokens: int = 900, timeout: float = 8,
+         mime: str = "image/png") -> str:
     import httpx
 
     body = {
@@ -100,7 +101,7 @@ def _ask(png: bytes, prompt: str, key: str, transport: Any = None, max_tokens: i
         "chat_template_kwargs": {"enable_thinking": False},
         "messages": [{"role": "user", "content": [
             {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64," + base64.b64encode(png).decode()}},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64," + base64.b64encode(png).decode()}},
         ]}],
     }
     with httpx.Client(timeout=timeout, transport=transport) as c:  # never stall Compii
@@ -185,6 +186,54 @@ def read(png: bytes, question: str, key: str, transport: Any = None, window: str
         key, transport, max_tokens=1400, timeout=20))
     return {"summary": str(data.get("answer", ""))[:800], "text": str(data.get("text", ""))[:4000],
             "items": list(data.get("items") or [])[:8]}
+
+
+PHOTO_TYPES = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".tif", ".tiff"}
+
+
+def is_photo(path: Any) -> bool:
+    from pathlib import Path
+
+    return Path(str(path)).suffix.lower() in PHOTO_TYPES
+
+
+def photo_pixels(path: Any) -> np.ndarray:
+    """A photo as upright RGB pixels, at most OCR_MAX_WIDTH wide (phones save them sideways)."""
+    from PIL import Image, ImageOps
+
+    with Image.open(path) as im:
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        if im.width > OCR_MAX_WIDTH:
+            im = im.resize((OCR_MAX_WIDTH, round(im.height * OCR_MAX_WIDTH / im.width)))
+        return np.asarray(im)
+
+
+def photo_jpeg(pixels: np.ndarray, max_side: int = MAX_WIDTH) -> bytes:
+    """The photo for the vision model: a JPEG small enough to send quickly, sharp enough to read."""
+    import io
+
+    from PIL import Image
+
+    im = Image.fromarray(pixels)
+    im.thumbnail((max_side, max_side))
+    out = io.BytesIO()
+    im.save(out, "JPEG", quality=85)
+    return out.getvalue()
+
+
+def photo(jpeg: bytes, question: str, key: str, transport: Any = None) -> dict[str, Any]:
+    """Look at a photo the user took or sent: answer the question, copy every word in it
+    exactly (a document, a receipt, a sign) and say what kind of thing it is."""
+    data = _json(_ask(jpeg, (
+        f"The user took or sent this photo and asks: \"{question}\"\n"
+        "Look carefully. Reply only with JSON: {\"kind\": \"one or two words: document, receipt, screen, sign, "
+        "whiteboard, label, object, place, person, food, plant, animal, other\", \"answer\": \"a direct answer to the "
+        "question in one to five sentences, based only on what is visible\", \"text\": \"every word in the photo "
+        "copied exactly, in reading order, keeping line breaks, at most 120 lines; empty if there is none\"}. "
+        "If something can't be made out, say so rather than guessing. Never identify a real person by name."),
+        key, transport, max_tokens=2600, timeout=40, mime="image/jpeg"))
+    return {"kind": str(data.get("kind", ""))[:40], "answer": str(data.get("answer", ""))[:1200],
+            "text": str(data.get("text", ""))[:12000]}
 
 
 def check(png: bytes, done_when: str, key: str, transport: Any = None) -> tuple[bool, str]:

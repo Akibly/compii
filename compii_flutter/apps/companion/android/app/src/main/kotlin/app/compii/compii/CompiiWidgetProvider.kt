@@ -10,7 +10,7 @@ import android.widget.RemoteViews
 
 /**
  * A small live card on the home screen: what Compii is doing on the PC, and
- * one tap to talk or to see the conversations. The phone writes the words; the
+ * one tap to talk, to show Compii a photo, or to see the conversations. The phone writes the words; the
  * provider only draws them.
  */
 class CompiiWidgetProvider : AppWidgetProvider() {
@@ -27,6 +27,7 @@ class CompiiWidgetProvider : AppWidgetProvider() {
             views.setOnClickPendingIntent(R.id.widget_root, open(context, id * 10 + 1, "talk"))
             views.setOnClickPendingIntent(R.id.widget_talk, open(context, id * 10 + 2, "talk"))
             views.setOnClickPendingIntent(R.id.widget_chats, open(context, id * 10 + 3, "chats"))
+            views.setOnClickPendingIntent(R.id.widget_camera, open(context, id * 10 + 4, "camera"))
             appWidgetManager.updateAppWidget(id, views)
         }
     }

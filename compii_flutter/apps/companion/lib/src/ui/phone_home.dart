@@ -9,6 +9,7 @@ import '../mobile/outbox.dart';
 import '../mobile/phone_automation.dart';
 import '../mobile/phone_bridge.dart';
 import '../mobile/phone_notifier.dart';
+import 'phone_camera.dart';
 import 'phone_digest.dart';
 import 'automation.dart';
 import 'chrome.dart';
@@ -303,7 +304,7 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
         builder: (context, _) {
           final waiting = _waiting;
           final pages = [
-            _TalkTab(core: core, state: widget.state, voice: widget.voice, menu: _menu(), onSend: _talkSend),
+            _TalkTab(core: core, state: widget.state, voice: widget.voice, menu: _menu(), onSend: _talkSend, onCamera: _photo),
             _ChatsTab(
               core: core,
               state: widget.state,
@@ -320,6 +321,7 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
               onForget: _confirmForget,
               onOpenLink: _openLink,
               onCopyToPc: _copyToPc,
+              onPhoto: (ask) => _photo(ask: ask),
             ),
           ];
           return Scaffold(
@@ -401,10 +403,13 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
         ],
       );
 
-  /// Taps on notifications and the widget, and text shared from other apps.
+  /// Taps on notifications and the widget, and text, photos and files shared from other apps.
   void _signal(Map<String, dynamic> event) {
     if (!mounted) return;
-    if (event['type'] == 'share') {
+    final files = '${event['files'] ?? ''}'.split('\n').where((p) => p.isNotEmpty).toList();
+    if (event['type'] == 'share' && files.isNotEmpty) {
+      unawaited(_photo(shared: files));
+    } else if (event['type'] == 'share') {
       _shareSheet('${event['text'] ?? ''}');
     } else if (event['type'] == 'open') {
       _destination('${event['destination'] ?? ''}');
@@ -416,6 +421,9 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
       unawaited(_showAutomation());
     } else if (dest == 'talk') {
       setState(() => _tab = 0);
+    } else if (dest == 'camera') {
+      setState(() => _tab = 0);
+      unawaited(_photo());
     } else if (dest.startsWith('task:')) {
       setState(() => _tab = 1);
       _openChat(dest.substring(5));
@@ -509,6 +517,51 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
     }
   }
 
+  /// Show Compii a photo: take one (or pick one you have), choose what to ask,
+  /// and the answer opens as a chat. Photos and files shared from other apps
+  /// come in as `shared`. Looking happens on the PC, so it needs the PC.
+  Future<void> _photo({List<String>? shared, PhotoAsk? ask}) async {
+    final pc = core.remote!.pc;
+    var paths = shared;
+    var choice = ask;
+    if (choice == null) {
+      final photos = paths == null || paths.every(isPhotoPath);
+      final picked = await choosePhotoAsk(context, pc: pc, shared: paths?.length ?? 0, photos: photos);
+      if (picked == null || !mounted) return;
+      choice = picked.ask;
+      if (picked.gallery) {
+        final path = await takePhoto(gallery: true);
+        if (path == null || !mounted) return;
+        return _photo(shared: [path]);
+      }
+    }
+    if (paths == null) {
+      final path = await takePhoto();
+      if (path == null || !mounted) return;
+      paths = [path];
+    }
+    final files = paths;
+    final what = choice;
+    await _run(() async {
+      if (core.status != CoreStatus.online) {
+        throw CoreError('Compii looks at photos on $pc, and it isn’t reachable right now. Try again when it’s on.');
+      }
+      _done(files.length == 1 ? 'Sending it to $pc…' : 'Sending ${files.length} to $pc…');
+      final up = [for (final p in files) await core.uploadFile(p)];
+      if (what == PhotoAsk.save) {
+        _done(up.length == 1 ? 'Saved on $pc as ${up.first['name']}.' : 'Saved ${up.length} files on $pc.');
+        return;
+      }
+      final id = await core.startConversation(
+        what.request([for (final u in up) '${u['name']}']),
+        attachments: [for (final u in up) '${u['path']}'],
+      );
+      if (!mounted) return;
+      setState(() => _tab = 1);
+      _openChat(id);
+    });
+  }
+
   /// The approvals tray, shared by the banner and notification taps.
   void _showApprovals() {
     showModalBottomSheet<void>(
@@ -547,12 +600,20 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
 // ---- Talk -------------------------------------------------------------------------------------
 
 class _TalkTab extends StatelessWidget {
-  const _TalkTab({required this.core, required this.state, required this.voice, required this.menu, required this.onSend});
+  const _TalkTab({
+    required this.core,
+    required this.state,
+    required this.voice,
+    required this.menu,
+    required this.onSend,
+    required this.onCamera,
+  });
   final CoreClient core;
   final AppState state;
   final PhoneVoice voice;
   final Widget menu;
   final Future<void> Function(String text) onSend;
+  final Future<void> Function() onCamera;
 
   @override
   Widget build(BuildContext context) {
@@ -563,6 +624,26 @@ class _TalkTab extends StatelessWidget {
       child: Stack(
         children: [
           FaceStage(core: core, state: state, onExit: null, menu: menu, onSend: onSend, allowOffline: true),
+          // Show Compii something: the camera, beside the face.
+          Positioned(
+            right: Space.xl,
+            bottom: 140,
+            child: Tooltip(
+              message: 'Show Compii a photo',
+              child: Material(
+                color: const Color(0xCC0E0E12),
+                shape: const CircleBorder(side: BorderSide(color: Color(0x1FFFFFFF))),
+                child: InkWell(
+                  customBorder: const CircleBorder(),
+                  onTap: onCamera,
+                  child: const Padding(
+                    padding: EdgeInsets.all(14),
+                    child: Glyph(G.camera, size: 22, color: Color(0xFFF5F5F7)),
+                  ),
+                ),
+              ),
+            ),
+          ),
           if (problem != null || captioning)
             Positioned(
               left: Space.xl,
@@ -866,6 +947,7 @@ class _PcTab extends StatefulWidget {
     required this.onForget,
     required this.onOpenLink,
     required this.onCopyToPc,
+    required this.onPhoto,
   });
   final CoreClient core;
   final Run run;
@@ -873,6 +955,7 @@ class _PcTab extends StatefulWidget {
   final Future<void> Function() onForget;
   final Future<void> Function(String url) onOpenLink;
   final Future<void> Function(String text) onCopyToPc;
+  final Future<void> Function(PhotoAsk ask) onPhoto;
 
   @override
   State<_PcTab> createState() => _PcTabState();
@@ -1002,6 +1085,8 @@ class _PcTabState extends State<_PcTab> {
           children: [
             _Action(glyph: G.eye, label: 'What’s on screen?', onTap: () => widget.onAsk(
                 'Look at my PC screen and tell me briefly what’s on it and anything that needs my attention.')),
+            _Action(glyph: G.camera, label: 'What is this?', onTap: () => widget.onPhoto(PhotoAsk.what)),
+            _Action(glyph: G.file, label: 'Snap a document', onTap: () => widget.onPhoto(PhotoAsk.document)),
             _Action(glyph: G.globe, label: 'Open a link', onTap: _sendLink),
             _Action(glyph: G.doc, label: 'Copy to PC', onTap: _sendText),
             _Action(glyph: G.search, label: 'Find a file', onTap: _find),

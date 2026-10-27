@@ -70,7 +70,8 @@ TOOL_PACKS: dict[str, dict[str, Any]] = {
     "screen": {
         "label": "Screen & apps",
         "description": "See the screen, read windows, click, type, point and show what it means.",
-        "tools": ["screenshot", "look_at_screen", "clipboard", "list_windows", "focus_window", "read_window",
+        "tools": ["screenshot", "look_at_screen", "look_at_photo", "clipboard", "list_windows", "focus_window",
+                  "read_window",
                   "read_selection", "click_on", "type_into", "press_keys", "point_at", "draw_on_screen",
                   "start_walkthrough", "open_item"],
     },

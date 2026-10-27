@@ -30,6 +30,7 @@ dependencies = [
   "piper-tts>=1.8.0",
   "tzdata>=2025.2 ; sys_platform == 'win32'",
   "edge-tts>=7.0",
+  "pillow>=11",  # photos sent from the phone
 ]
 
 [dependency-groups]

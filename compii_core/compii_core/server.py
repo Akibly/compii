@@ -3032,9 +3032,33 @@ def _wire_seeing(agent, toolbox, voice, hub, vision_key) -> None:
         if hub.loop is not None:
             asyncio.run_coroutine_threadsafe(go(), hub.loop)
 
+    def read_photo(path: Path, question: str) -> str:
+        """A photo the user sent: the vision model when there is a key, else the words local OCR finds."""
+        pixels = vis.photo_pixels(path)
+        seen = None
+        if vision_key():
+            try:
+                seen = vis.photo(vis.photo_jpeg(pixels), question, vision_key())
+            except Exception:  # noqa: BLE001 - local OCR is still a real look
+                seen = None
+        if seen and (seen["answer"] or seen["text"]):
+            lines = [f"Looked at the photo {path.name}" + (f" (a {seen['kind']})" if seen["kind"] else "") + ".",
+                     seen["answer"]]
+            if seen["text"]:
+                lines += ["Words in the photo, exactly as written:", seen["text"]]
+            return "\n".join(line for line in lines if line)
+        boxes = read_words(vis.ocr_png(pixels))
+        words = "\n".join(str(line.get("text", "")) for line in (boxes or {}).get("lines", []) if line.get("text"))
+        if not words:
+            raise ToolError(f"Couldn't make out {path.name}: no vision model is set up (add an NVIDIA key in "
+                            "Settings, free) and local OCR found no words in it.")
+        return (f"Read the photo {path.name} with local OCR only (no vision model, so nothing about what it shows "
+                f"besides its words; they may have small mistakes):\n{words}")
+
     agent.look_at = look_at
     toolbox.see_item = see_item
     toolbox.read_screen = read_screen
+    toolbox.read_photo = read_photo
     agent.coach = Coach(lambda png, done_when: vis.check(png, done_when, vision_key()), step_done,
                         lambda: can_see(), emit=hub.emit_threadsafe)
 

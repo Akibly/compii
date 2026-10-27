@@ -23,7 +23,7 @@ UNTRUSTED_TOOLS = {"read_file", "search_in_files", "compare_documents", "ask_my_
                    "list_folder", "find_files", "find_duplicate_files", "unzip", "read_pdf", "list_windows",
                    "focus_window", "run_python", "form_fields", "view_profile",
                    "click_on", "type_into", "fill_form", "fill_pdf_form", "browser_click", "browser_fill",
-                   "weather", "activity_log"}
+                   "weather", "activity_log", "look_at_photo"}
 
 # The one rule for "this is a secret": never typed, never stored in the profile, never filled into a form.
 SECRET_FIELD = re.compile(

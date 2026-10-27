@@ -356,9 +356,12 @@ class MainActivity : FlutterActivity() {
             intent.removeExtra("compii_dest")
         }
         when (intent.action) {
-            Intent.ACTION_SEND -> {
+            Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> {
                 val text = intent.getStringExtra(Intent.EXTRA_TEXT)?.trim().orEmpty()
-                if (text.isNotEmpty()) {
+                val files = sharedFiles(intent)
+                if (files.isNotEmpty()) {
+                    deliver(mapOf("type" to "share", "files" to files.joinToString("\n"), "text" to text))
+                } else if (text.isNotEmpty()) {
                     val event = mutableMapOf("type" to "share", "text" to text)
                     intent.getStringExtra(Intent.EXTRA_SUBJECT)?.takeIf { it.isNotBlank() }?.let { event["subject"] = it }
                     deliver(event)
@@ -369,6 +372,55 @@ class MainActivity : FlutterActivity() {
                 if (text.isNotEmpty()) deliver(mapOf("type" to "share", "text" to text))
             }
         }
+    }
+
+    /**
+     * Copies what another app shared into this app's cache, so Flutter can send it
+     * to the PC as an ordinary file. At most 10 files of 64 MB each; names are the
+     * file's own display name, never a path.
+     */
+    private fun sharedFiles(intent: Intent): List<String> {
+        val uris = mutableListOf<Uri>()
+        if (intent.action == Intent.ACTION_SEND_MULTIPLE) {
+            @Suppress("DEPRECATION")
+            intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.let { uris.addAll(it) }
+        } else {
+            @Suppress("DEPRECATION")
+            (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let { uris.add(it) }
+        }
+        val folder = java.io.File(cacheDir, "shared").apply { mkdirs() }
+        val out = mutableListOf<String>()
+        for ((i, uri) in uris.take(10).withIndex()) {
+            try {
+                var name = "shared-${System.currentTimeMillis()}-$i"
+                contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                    if (it.moveToFirst()) it.getString(0)?.takeIf { n -> n.isNotBlank() }?.let { n -> name = n }
+                }
+                if ('.' !in name) {
+                    contentResolver.getType(uri)?.let { type ->
+                        android.webkit.MimeTypeMap.getSingleton().getExtensionFromMimeType(type)?.let { name += ".$it" }
+                    }
+                }
+                val file = java.io.File(folder, name.replace(Regex("[\\\\/:*?\"<>|]"), "_"))
+                contentResolver.openInputStream(uri)?.use { input ->
+                    file.outputStream().use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        var total = 0L
+                        while (true) {
+                            val n = input.read(buffer)
+                            if (n < 0) break
+                            total += n
+                            if (total > 64L * 1024 * 1024) throw java.io.IOException("too large")
+                            output.write(buffer, 0, n)
+                        }
+                    }
+                }
+                if (file.length() > 0) out.add(file.absolutePath) else file.delete()
+            } catch (e: Exception) {
+                // One file that can't be read (gone, too large, not allowed) doesn't stop the rest.
+            }
+        }
+        return out
     }
 
     private fun deliver(event: Map<String, String>) {
