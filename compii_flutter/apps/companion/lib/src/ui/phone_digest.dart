@@ -97,7 +97,7 @@ class _DigestCardState extends State<DigestCard> {
             children: [
               Glyph(G.sun, size: 16, color: c.muted),
               const SizedBox(width: 8),
-              Expanded(child: Text('Today', style: context.type.titleSmall)),
+              Expanded(child: Text('Your day', style: context.type.titleSmall)),
               TextButton(
                 onPressed: _asking || widget.core.status != CoreStatus.online ? null : _briefNow,
                 child: Text(_asking ? 'Asking…' : 'Brief me now'),

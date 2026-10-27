@@ -72,3 +72,13 @@ def test_every_spoken_request_is_marked_as_possibly_misheard():
     assert "unsure of: synia" in doubt
     typed = Voice.annotate(_Heard("something else"), "open the report")
     assert typed == "open the report", "typed text is not what was heard, so it is not marked"
+
+
+def test_the_note_on_spoken_requests_is_never_shown():
+    from compii_core.agent import _shown
+    from compii_core.voice import Voice
+
+    said = Voice.annotate(_Heard("Okay say hi."), "Okay say hi.")
+    assert _shown(said) == "Okay say hi."
+    assert _shown("Old one.\n\n(Spoken request. Something.)") == "Old one."
+    assert _shown("Plain (with brackets) text.") == "Plain (with brackets) text."

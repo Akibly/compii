@@ -2365,7 +2365,7 @@ def _screen_note(said: str) -> str:
 
 def _shown(text: str) -> str:
     """What the user said, without notes meant only for the AI."""
-    return text.split("\n\n(Spoken request.")[0]
+    return re.split(r"\n\n\(Spoken[ ,]", text)[0]
 
 
 def _attachment_files(paths: list[str] | None) -> list[dict[str, Any]]:

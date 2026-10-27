@@ -10,12 +10,13 @@ import '../console/character.dart';
 import '../console/core_client.dart';
 import 'glyphs.dart';
 import 'phone_home.dart';
+import 'phone_kit.dart';
 import 'phone_voice.dart';
 import 'shell.dart';
 import 'tokens.dart';
 
 const _linkKey = 'remote_link';
-const _night = Color(0xFF1B1550);
+const _night = Color(0xFF050507);
 
 /// The app on a phone (or on Windows with `--remote`, for testing): pair
 /// once with a PC, then the screen is Compii's face, connected to that PC.
@@ -101,9 +102,10 @@ class _PhoneAppState extends State<PhoneApp> {
     builder: (context, _) => MaterialApp(
       title: 'Compii',
       debugShowCheckedModeBanner: false,
-      theme: compiiTheme(Brightness.light),
+      // The phone is always the Halo night: the face, the chats and the PC in one place.
+      theme: compiiTheme(Brightness.dark),
       darkTheme: compiiTheme(Brightness.dark),
-      themeMode: widget.state.themeMode,
+      themeMode: ThemeMode.dark,
       home: _core == null
           ? PairScreen(onPaired: _paired)
           : PhoneHome(core: _core!, state: widget.state, voice: _voice!, onForget: _forget),
@@ -165,100 +167,150 @@ class _PairScreenState extends State<PairScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const white = TextStyle(color: Colors.white);
-    return Scaffold(
-      backgroundColor: _night,
-      body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 440),
-            child: ListView(
-              padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
-              children: [
-                SizedBox(
-                  height: 190,
-                  child: Ember(mood: _busy ? Mood.thinking : (_error != null ? Mood.problem : Mood.happy), followPointer: false),
-                ),
-                const SizedBox(height: 8),
-                Text('Pair with your PC',
-                    textAlign: TextAlign.center,
-                    style: context.type.headlineSmall?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
-                const SizedBox(height: 8),
-                Text(
-                  'On your PC open Compii → Settings → Phones → Pair a phone, then scan the code. '
-                  'Pair on the same Wi-Fi. To use Compii when you’re out too, install Tailscale on both first.',
-                  textAlign: TextAlign.center,
-                  style: white.copyWith(color: Colors.white70),
-                ),
-                const SizedBox(height: 20),
-                if (_scanning)
-                  ClipRRect(
-                    borderRadius: Shapes.r20,
-                    child: SizedBox(
-                      height: 300,
-                      child: MobileScanner(
-                        onDetect: (capture) {
-                          for (final b in capture.barcodes) {
-                            final v = b.rawValue;
-                            if (v != null && v.startsWith('compii://pair')) {
-                              _use(v);
-                              return;
-                            }
-                          }
-                        },
+    final c = context.c;
+    Widget step(String n, String text) => Padding(
+          padding: const EdgeInsets.only(bottom: 10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: const Color(0x33FFFFFF))),
+                child: Text(n, style: context.type.labelSmall?.copyWith(color: c.muted)),
+              ),
+              const SizedBox(width: 12),
+              Expanded(child: Text(text, style: context.type.bodyMedium?.copyWith(color: c.muted, height: 1.4))),
+            ],
+          ),
+        );
+    return AnnotatedRegion(
+      value: phoneSystemUi,
+      child: Scaffold(
+        backgroundColor: _night,
+        body: SafeArea(
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 440),
+              child: ListView(
+                padding: const EdgeInsets.fromLTRB(24, 12, 24, 32),
+                children: [
+                  if (!_scanning)
+                    SizedBox(
+                      height: 220,
+                      child: Ember(
+                        mood: _busy ? Mood.thinking : (_error != null ? Mood.problem : Mood.happy),
+                        followPointer: false,
                       ),
                     ),
-                  )
-                else if (canScan)
-                  FilledButton.icon(
-                    onPressed: _busy ? null : () => setState(() => _scanning = true),
-                    icon: const Glyph(G.eye, color: Colors.white),
-                    label: const Padding(padding: EdgeInsets.symmetric(vertical: 14), child: Text('Scan the QR code')),
-                  ),
-                const SizedBox(height: 20),
-                Theme(
-                  data: compiiTheme(Brightness.dark),
-                  child: Column(
-                    children: [
-                      TextField(
-                        controller: _name,
-                        decoration: const InputDecoration(labelText: 'This phone’s name (shown on the PC)'),
+                  Text('Meet Compii on your phone',
+                      textAlign: TextAlign.center,
+                      style: context.type.headlineMedium?.copyWith(fontWeight: FontWeight.w600, letterSpacing: -.3)),
+                  const SizedBox(height: 8),
+                  Text('Pair once with the PC Compii runs on. Then talk, approve and follow its work from anywhere.',
+                      textAlign: TextAlign.center, style: context.type.bodyMedium?.copyWith(color: c.muted, height: 1.45)),
+                  const SizedBox(height: 22),
+                  if (_scanning)
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(22),
+                      child: SizedBox(
+                        height: 320,
+                        child: MobileScanner(
+                          onDetect: (capture) {
+                            for (final b in capture.barcodes) {
+                              final v = b.rawValue;
+                              if (v != null && v.startsWith('compii://pair')) {
+                                _use(v);
+                                return;
+                              }
+                            }
+                          },
+                        ),
                       ),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _paste,
-                        minLines: 1,
-                        maxLines: 3,
-                        decoration: InputDecoration(
-                          labelText: canScan ? 'Or paste the pairing link' : 'Paste the pairing link',
-                          hintText: 'compii://pair?…',
-                          suffixIcon: IconButton(
-                            tooltip: 'Paste',
-                            icon: const Glyph(G.doc),
-                            onPressed: () async {
-                              final d = await Clipboard.getData(Clipboard.kTextPlain);
-                              if (d?.text != null) _paste.text = d!.text!;
-                            },
+                    )
+                  else
+                    Container(
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 6),
+                      decoration: BoxDecoration(
+                        color: c.raised,
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: c.border),
+                      ),
+                      child: Column(
+                        children: [
+                          step('1', 'On your PC, open Compii → Settings → Phones → Pair a phone.'),
+                          step('2', 'Be on the same Wi-Fi. (For anywhere, install Tailscale on both first.)'),
+                          step('3', 'Scan the code it shows.'),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 16),
+                  if (canScan)
+                    SizedBox(
+                      height: 52,
+                      child: FilledButton.icon(
+                        style: FilledButton.styleFrom(
+                          backgroundColor: const Color(0xFFF5F5F7),
+                          foregroundColor: const Color(0xFF0A0A0D),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                        ),
+                        onPressed: _busy ? null : () => setState(() => _scanning = !_scanning),
+                        icon: Glyph(_scanning ? G.close : G.camera, color: const Color(0xFF0A0A0D)),
+                        label: Text(_busy ? 'Pairing…' : _scanning ? 'Stop scanning' : 'Scan the code',
+                            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                  const SizedBox(height: 8),
+                  Theme(
+                    data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+                    child: ExpansionTile(
+                      tilePadding: EdgeInsets.zero,
+                      initiallyExpanded: !canScan,
+                      title: Text('Paste a pairing link instead', style: context.type.bodyMedium?.copyWith(color: c.muted)),
+                      childrenPadding: const EdgeInsets.only(bottom: 8),
+                      children: [
+                        TextField(
+                          controller: _name,
+                          decoration: const InputDecoration(labelText: 'This phone’s name (shown on the PC)'),
+                        ),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _paste,
+                          minLines: 1,
+                          maxLines: 3,
+                          decoration: InputDecoration(
+                            labelText: 'Pairing link',
+                            hintText: 'compii://pair?…',
+                            suffixIcon: IconButton(
+                              tooltip: 'Paste',
+                              icon: const Glyph(G.clipboard),
+                              onPressed: () async {
+                                final d = await Clipboard.getData(Clipboard.kTextPlain);
+                                if (d?.text != null) _paste.text = d!.text!;
+                              },
+                            ),
+                          ),
+                          onSubmitted: _use,
+                        ),
+                        const SizedBox(height: 12),
+                        SizedBox(
+                          width: double.infinity,
+                          height: 48,
+                          child: OutlinedButton(
+                            onPressed: _busy ? null : () => _use(_paste.text),
+                            child: Text(_busy ? 'Pairing…' : 'Pair'),
                           ),
                         ),
-                        onSubmitted: _use,
-                      ),
-                      const SizedBox(height: 12),
-                      OutlinedButton(
-                        onPressed: _busy ? null : () => _use(_paste.text),
-                        child: Padding(
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                          child: Text(_busy ? 'Pairing…' : 'Pair'),
-                        ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                if (_error != null) ...[
-                  const SizedBox(height: 16),
-                  Text(_error!, textAlign: TextAlign.center, style: const TextStyle(color: Color(0xFFFFB4A9))),
+                  if (_error != null) ...[
+                    const SizedBox(height: 12),
+                    Text(_error!, textAlign: TextAlign.center, style: TextStyle(color: c.danger)),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
         ),

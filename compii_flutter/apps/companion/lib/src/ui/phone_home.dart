@@ -11,8 +11,8 @@ import '../mobile/phone_bridge.dart';
 import '../mobile/phone_notifier.dart';
 import 'phone_camera.dart';
 import 'phone_digest.dart';
+import 'phone_kit.dart';
 import 'automation.dart';
-import 'chrome.dart';
 import 'glyphs.dart';
 import 'phone_voice.dart';
 import 'shell.dart';
@@ -304,12 +304,23 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
         builder: (context, _) {
           final waiting = _waiting;
           final pages = [
-            _TalkTab(core: core, state: widget.state, voice: widget.voice, menu: _menu(), onSend: _talkSend, onCamera: _photo),
+            _TalkTab(
+              core: core,
+              state: widget.state,
+              voice: widget.voice,
+              menu: _menu(),
+              onSend: _talkSend,
+              onCamera: _photo,
+              onAsk: ask,
+              onBrief: () => _run(core.briefNow),
+            ),
             _ChatsTab(
               core: core,
               state: widget.state,
               onOpen: _openChat,
               onAsk: ask,
+              onDelete: _deleteChat,
+              onSettings: _showSettings,
               pending: _outbox.pending,
               problem: _outbox.problem,
               onRetry: _outbox.flush,
@@ -322,10 +333,13 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
               onOpenLink: _openLink,
               onCopyToPc: _copyToPc,
               onPhoto: (ask) => _photo(ask: ask),
+              onSettings: _showSettings,
             ),
           ];
-          return Scaffold(
-            backgroundColor: _tab == 0 ? _night : context.c.canvas,
+          return AnnotatedRegion<SystemUiOverlayStyle>(
+            value: phoneSystemUi,
+            child: Scaffold(
+            backgroundColor: _night,
             body: SafeArea(
               bottom: false,
               child: Column(
@@ -345,11 +359,13 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
                 ],
               ),
             ),
-            // On Talk the bar is part of the night around the face, not a light strip under it.
-            bottomNavigationBar: Theme(
-              data: _tab == 0 ? compiiTheme(Brightness.dark) : Theme.of(context),
+            // One night from top to bottom: the bar is part of it, with a hairline above.
+            bottomNavigationBar: DecoratedBox(
+              decoration: const BoxDecoration(border: Border(top: BorderSide(color: Color(0x0FFFFFFF)))),
               child: NavigationBar(
-                backgroundColor: _tab == 0 ? _night : null,
+                backgroundColor: _night,
+                indicatorColor: const Color(0x1AFFFFFF),
+                height: 68,
                 selectedIndex: _tab,
                 onDestinationSelected: (i) => setState(() => _tab = i),
                 destinations: [
@@ -366,46 +382,139 @@ class _PhoneHomeState extends State<PhoneHome> with WidgetsBindingObserver {
                 ],
               ),
             ),
+          ),
           );
         },
       );
 
-  Widget _menu() => PopupMenuButton<String>(
-        tooltip: 'More',
+  Widget _menu() => IconButton(
+        tooltip: 'Settings',
+        onPressed: _showSettings,
         icon: const Glyph(G.sliders, color: Colors.white),
-        onSelected: (v) async {
-          switch (v) {
-            case 'voice':
-            case 'sound':
-            case 'caption':
-            case 'off':
-              await widget.voice.setMode(v);
-            case 'alerts':
-              await _notifier.setEnabled(!_notifier.enabled);
-            case 'alert-settings':
-              await _notifier.openSettings();
-            case 'automation':
-              await _showAutomation();
-            case 'forget':
-              await _confirmForget();
-          }
-        },
-        itemBuilder: (_) => [
-          PopupMenuItem(enabled: false, child: Text('Connected to ${core.remote!.pc}')),
-          for (final (mode, label) in const [('voice', 'Speak replies'), ('sound', 'A chime, with the words'), ('caption', 'Words on screen only'), ('off', 'Stay quiet')])
-            CheckedPopupMenuItem(value: mode, checked: widget.voice.outputMode == mode, child: Text(label)),
-          const PopupMenuDivider(),
-          CheckedPopupMenuItem(
-            value: 'alerts',
-            checked: _notifier.enabled,
-            child: const Text('Notify me when away'),
-          ),
-          const PopupMenuItem(value: 'alert-settings', child: Text('Android alert settings')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(value: 'automation', child: Text('On this phone…')),
-          const PopupMenuDivider(),
-          const PopupMenuItem(value: 'forget', child: Text('Forget this PC')),
-        ],
+      );
+
+  Future<void> _deleteChat(TaskView t) async {
+    await _run(() async {
+      await core.deleteConversation(t.id);
+      _done('Deleted “${chatTitle(t.request)}”.');
+    });
+  }
+
+  /// Everything you set on the phone, in one sheet: how Compii answers, when it
+  /// may notify you, what it can do on this phone, and the PC it's paired with.
+  Future<void> _showSettings() => showModalBottomSheet<void>(
+        context: context,
+        isScrollControlled: true,
+        showDragHandle: true,
+        backgroundColor: _night,
+        builder: (context) => ListenableBuilder(
+          listenable: Listenable.merge([widget.voice, _notifier, core]),
+          builder: (context, _) {
+            final c = context.c;
+            String hm(int m) => TimeOfDay(hour: m ~/ 60, minute: m % 60).format(context);
+            Future<void> pick(bool from) async {
+              final m = from ? _notifier.quietFrom : _notifier.quietTo;
+              final t = await showTimePicker(context: context, initialTime: TimeOfDay(hour: m ~/ 60, minute: m % 60));
+              if (t == null) return;
+              await (from
+                  ? _notifier.setQuiet(from: t.hour * 60 + t.minute)
+                  : _notifier.setQuiet(to: t.hour * 60 + t.minute));
+            }
+
+            return SafeArea(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * .88),
+                child: ListView(
+                  shrinkWrap: true,
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 20),
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(6, 0, 6, 0),
+                      child: Text('Settings', style: context.type.headlineSmall),
+                    ),
+                    const GroupLabel('When Compii answers'),
+                    HaloGroup(children: [
+                      for (final (mode, label, sub) in const [
+                        ('voice', 'Speak replies', 'Out loud, and written'),
+                        ('sound', 'A chime', 'Then the words on screen'),
+                        ('caption', 'Words only', 'Nothing out loud'),
+                        ('off', 'Stay quiet', 'Answers wait in Chats'),
+                      ])
+                        HaloRow(
+                          title: label,
+                          subtitle: sub,
+                          onTap: () => widget.voice.setMode(mode),
+                          trailing: widget.voice.outputMode == mode
+                              ? Glyph(G.check, size: 18, color: c.accent)
+                              : const SizedBox(width: 18),
+                        ),
+                    ]),
+                    const GroupLabel('Notifications'),
+                    HaloGroup(children: [
+                      HaloRow(
+                        glyph: G.bell,
+                        title: 'Notify me when I’m away',
+                        subtitle: _notifier.permission ? 'Answers, approvals and questions' : 'Android hasn’t allowed it yet',
+                        onTap: () => _notifier.setEnabled(!_notifier.enabled),
+                        trailing: Switch(value: _notifier.enabled, onChanged: _notifier.setEnabled),
+                      ),
+                      HaloRow(
+                        glyph: G.clock,
+                        title: 'Quiet hours',
+                        subtitle: _notifier.quiet
+                            ? '${hm(_notifier.quietFrom)} to ${hm(_notifier.quietTo)} · only what needs you'
+                            : 'Only approvals and questions at night',
+                        onTap: () => _notifier.setQuiet(on: !_notifier.quiet),
+                        trailing: Switch(value: _notifier.quiet, onChanged: (v) => _notifier.setQuiet(on: v)),
+                      ),
+                      if (_notifier.quiet) ...[
+                        HaloRow(title: 'Starts', onTap: () => pick(true),
+                            trailing: Text(hm(_notifier.quietFrom), style: context.type.bodyLarge?.copyWith(color: c.accent))),
+                        HaloRow(title: 'Ends', onTap: () => pick(false),
+                            trailing: Text(hm(_notifier.quietTo), style: context.type.bodyLarge?.copyWith(color: c.accent))),
+                      ],
+                      HaloRow(glyph: G.external, title: 'Android notification settings', onTap: _notifier.openSettings),
+                    ]),
+                    const GroupLabel('This phone'),
+                    HaloGroup(children: [
+                      HaloRow(
+                        glyph: G.phone,
+                        title: 'On this phone…',
+                        subtitle: 'Let Compii read and use apps here, with your OK',
+                        onTap: () {
+                          Navigator.pop(context);
+                          _showAutomation();
+                        },
+                      ),
+                    ]),
+                    GroupLabel('Paired PC'),
+                    HaloGroup(children: [
+                      HaloRow(
+                        glyph: G.monitor,
+                        title: core.remote!.pc,
+                        subtitle: core.status != CoreStatus.online
+                            ? 'Not connected'
+                            : core.viaAnywhere
+                                ? 'Connected from anywhere'
+                                : 'Connected on your Wi-Fi',
+                        chevron: false,
+                      ),
+                      HaloRow(
+                        glyph: G.power,
+                        title: 'Forget this PC',
+                        danger: true,
+                        onTap: () {
+                          Navigator.pop(context);
+                          _confirmForget();
+                        },
+                      ),
+                    ]),
+                  ],
+                ),
+              ),
+            );
+          },
+        ),
       );
 
   /// Taps on notifications and the widget, and text, photos and files shared from other apps.
@@ -612,6 +721,8 @@ class _TalkTab extends StatelessWidget {
     required this.menu,
     required this.onSend,
     required this.onCamera,
+    required this.onAsk,
+    required this.onBrief,
   });
   final CoreClient core;
   final AppState state;
@@ -619,6 +730,8 @@ class _TalkTab extends StatelessWidget {
   final Widget menu;
   final Future<void> Function(String text) onSend;
   final Future<void> Function() onCamera;
+  final Future<void> Function(String text) onAsk;
+  final Future<void> Function() onBrief;
 
   @override
   Widget build(BuildContext context) {
@@ -629,26 +742,30 @@ class _TalkTab extends StatelessWidget {
       child: Stack(
         children: [
           FaceStage(core: core, state: state, onExit: null, menu: menu, onSend: onSend, allowOffline: true),
-          // Show Compii something: the camera, beside the face.
-          Positioned(
-            right: Space.xl,
-            bottom: 140,
-            child: Tooltip(
-              message: 'Show Compii a photo',
-              child: Material(
-                color: const Color(0xCC0E0E12),
-                shape: const CircleBorder(side: BorderSide(color: Color(0x1FFFFFFF))),
-                child: InkWell(
-                  customBorder: const CircleBorder(),
-                  onTap: onCamera,
-                  child: const Padding(
-                    padding: EdgeInsets.all(14),
-                    child: Glyph(G.camera, size: 22, color: Color(0xFFF5F5F7)),
-                  ),
+          // Ways to start, above the composer: show a photo, look at the PC, get the brief.
+          if (!captioning && problem == null)
+            Positioned(
+              left: 0,
+              right: 0,
+              bottom: 92,
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: Space.l),
+                child: Row(
+                  children: [
+                    HaloChip(glyph: G.camera, label: 'Show a photo', onTap: onCamera),
+                    const SizedBox(width: 8),
+                    HaloChip(
+                      glyph: G.eye,
+                      label: 'What’s on my PC?',
+                      onTap: () => onAsk('Look at my PC screen and tell me briefly what’s on it and anything that needs me.'),
+                    ),
+                    const SizedBox(width: 8),
+                    HaloChip(glyph: G.sun, label: 'Brief me', onTap: onBrief),
+                  ],
                 ),
               ),
             ),
-          ),
           if (problem != null || captioning)
             Positioned(
               left: Space.xl,
@@ -712,7 +829,11 @@ class _Heard extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-        decoration: BoxDecoration(color: const Color(0xCC140F3D), borderRadius: Shapes.r16),
+        decoration: BoxDecoration(
+          color: const Color(0xE60E0E12),
+          borderRadius: Shapes.r16,
+          border: Border.all(color: const Color(0x1FFFFFFF)),
+        ),
         child: Text(
           text.isEmpty ? (busy ? 'Sending…' : 'Listening…') : text,
           textAlign: TextAlign.center,
@@ -723,12 +844,14 @@ class _Heard extends StatelessWidget {
 
 // ---- Chats ------------------------------------------------------------------------------------
 
-class _ChatsTab extends StatelessWidget {
+class _ChatsTab extends StatefulWidget {
   const _ChatsTab({
     required this.core,
     required this.state,
     required this.onOpen,
     required this.onAsk,
+    required this.onDelete,
+    required this.onSettings,
     required this.pending,
     required this.problem,
     required this.onRetry,
@@ -737,42 +860,166 @@ class _ChatsTab extends StatelessWidget {
   final AppState state;
   final void Function(String id) onOpen;
   final Future<void> Function(String text) onAsk;
+  final Future<void> Function(TaskView task) onDelete;
+  final VoidCallback onSettings;
   final List<Map<String, dynamic>> pending;
   final String? problem;
   final Future<void> Function() onRetry;
 
   @override
+  State<_ChatsTab> createState() => _ChatsTabState();
+}
+
+class _ChatsTabState extends State<_ChatsTab> {
+  final _search = TextEditingController();
+  bool _searching = false;
+
+  @override
+  void dispose() {
+    _search.dispose();
+    super.dispose();
+  }
+
+  bool _matches(TaskView t, String q) =>
+      q.isEmpty ||
+      t.request.toLowerCase().contains(q) ||
+      (t.finalText ?? '').toLowerCase().contains(q);
+
+  Future<bool> _confirmDelete(TaskView t) async =>
+      await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Delete this conversation?'),
+          content: Text('“${chatTitle(t.request)}” is removed from your PC too. Files it made stay where they are.'),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Keep it')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: context.c.danger, foregroundColor: Colors.white),
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Delete'),
+            ),
+          ],
+        ),
+      ) ==
+      true;
+
+  @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final list = core.ordered;
+    final q = _search.text.trim().toLowerCase();
+    final all = widget.core.ordered.where((t) => _matches(t, q)).toList();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final needs = [for (final t in all) if (ChatState.of(t) case ChatState.needsYou || ChatState.asking) t];
+    final working = [for (final t in all) if (ChatState.of(t) == ChatState.working) t];
+    final rest = [for (final t in all) if (!needs.contains(t) && !working.contains(t)) t];
+    final todays = [for (final t in rest) if (!(lastMoved(t)?.isBefore(today) ?? false)) t];
+    final earlier = [for (final t in rest) if (!todays.contains(t)) t];
+
+    Widget group(String label, List<TaskView> tasks, {Color? edge}) => Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            GroupLabel(label),
+            HaloGroup(
+              edge: edge,
+              children: [
+                for (final t in tasks)
+                  Dismissible(
+                    key: ValueKey('chat-${t.id}'),
+                    direction: t.active ? DismissDirection.none : DismissDirection.endToStart,
+                    confirmDismiss: (_) => _confirmDelete(t),
+                    onDismissed: (_) => widget.onDelete(t),
+                    background: Container(
+                      color: c.danger,
+                      alignment: Alignment.centerRight,
+                      padding: const EdgeInsets.only(right: 20),
+                      child: const Glyph(G.trash, color: Colors.white),
+                    ),
+                    child: _ChatTile(task: t, onTap: () => widget.onOpen(t.id)),
+                  ),
+              ],
+            ),
+          ],
+        );
+
     return Column(
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-          child: Row(children: [Expanded(child: Text('Conversations', style: context.type.headlineSmall))]),
-        ),
-        DigestCard(core: core),
-        if (pending.isNotEmpty)
-          _PendingCard(pending: pending, problem: problem, online: core.status == CoreStatus.online, onRetry: onRetry),
-        Expanded(
-          child: list.isEmpty
-              ? Center(
-                  child: Padding(
-                    padding: const EdgeInsets.all(32),
-                    child: Text('Nothing yet. Ask Compii anything below; it works on your PC while you’re away.',
-                        textAlign: TextAlign.center, style: context.type.bodyMedium?.copyWith(color: c.muted)),
-                  ),
+          padding: const EdgeInsets.fromLTRB(20, 10, 8, 0),
+          child: _searching
+              ? Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _search,
+                        autofocus: true,
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(hintText: 'Search conversations', isDense: true),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () => setState(() {
+                        _searching = false;
+                        _search.clear();
+                      }),
+                      child: const Text('Cancel'),
+                    ),
+                  ],
                 )
-              : ListView.separated(
-                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 12),
-                  itemCount: list.length,
-                  separatorBuilder: (_, _) => const SizedBox(height: 8),
-                  itemBuilder: (context, i) => _ChatTile(task: list[i], onTap: () => onOpen(list[i].id)),
+              : Row(
+                  children: [
+                    Expanded(child: Text('Chats', style: context.type.headlineMedium?.copyWith(fontWeight: FontWeight.w600))),
+                    IconButton(tooltip: 'Search', onPressed: () => setState(() => _searching = true), icon: const Glyph(G.search)),
+                    IconButton(tooltip: 'Settings', onPressed: widget.onSettings, icon: const Glyph(G.sliders)),
+                  ],
                 ),
+        ),
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
+            children: [
+              if (!_searching) ...[const SizedBox(height: 8), DigestCard(core: widget.core)],
+              if (widget.pending.isNotEmpty)
+                _PendingCard(
+                  pending: widget.pending,
+                  problem: widget.problem,
+                  online: widget.core.status == CoreStatus.online,
+                  onRetry: widget.onRetry,
+                ),
+              if (all.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 48, 24, 24),
+                  child: Text(
+                    q.isNotEmpty
+                        ? 'No conversation mentions “${_search.text.trim()}”.'
+                        : 'Nothing yet. Ask Compii anything below; it works on your PC while you’re away.',
+                    textAlign: TextAlign.center,
+                    style: context.type.bodyMedium?.copyWith(color: c.muted),
+                  ),
+                ),
+              if (needs.isNotEmpty) group('Needs you', needs, edge: const Color(0xFFFFC58A)),
+              if (working.isNotEmpty) group('Working', working),
+              if (todays.isNotEmpty) group('Today', todays),
+              if (earlier.isNotEmpty) group('Earlier', earlier),
+              if (all.isNotEmpty && !_searching)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text('Swipe left on a finished chat to delete it.',
+                      textAlign: TextAlign.center, style: context.type.bodySmall?.copyWith(color: c.faint)),
+                ),
+            ],
+          ),
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 0, 12, 10),
-          child: Composer(core: core, state: state, onSend: onAsk, autofocus: false, allowOffline: true, hint: 'Ask Compii to do something on your PC…'),
+          child: Composer(
+            core: widget.core,
+            state: widget.state,
+            onSend: widget.onAsk,
+            autofocus: false,
+            allowOffline: true,
+            hint: 'Ask Compii to do something…',
+          ),
         ),
       ],
     );
@@ -845,47 +1092,62 @@ class _ChatTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.c;
-    final waiting = task.pendingApproval != null;
-    final (label, color, glyph) = waiting
-        ? ('Needs your OK', c.warning, G.hand)
-        : task.pendingQuestion != null
-            ? ('Asking you something', c.warning, G.chat)
-            : task.active
-            ? ('Working…', c.accent, G.sync)
-            : task.status == 'failed'
-                ? ('Didn’t finish', c.danger, G.alert)
-                : ('Done', c.success, G.checkCircle);
-    final preview = task.finalText ?? (task.last?['text'] as String?) ?? '';
-    return Material(
-      color: c.raised,
-      borderRadius: Shapes.r16,
-      child: InkWell(
-        borderRadius: Shapes.r16,
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-          child: Row(
-            children: [
-              GlyphTile(glyph: glyph, size: 38, color: color),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(task.request, maxLines: 1, overflow: TextOverflow.ellipsis, style: context.type.titleSmall),
-                    const SizedBox(height: 2),
-                    Text(
-                      preview.isEmpty ? label : '$label · $preview',
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: context.type.bodySmall?.copyWith(color: c.muted),
-                    ),
-                  ],
+    final state = ChatState.of(task);
+    final color = state.color(context);
+    final when = lastMoved(task);
+    final ask = task.pendingApproval?['label'] ?? task.pendingQuestion?['question'];
+    final preview = (ask ?? task.finalText ?? (task.last?['text'] as String?) ?? '').toString();
+    return InkWell(
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 13, 14, 13),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  color: color,
+                  shape: BoxShape.circle,
+                  boxShadow: [if (state != ChatState.done) BoxShadow(color: color.withValues(alpha: .6), blurRadius: 6)],
                 ),
               ),
-              Glyph(G.chevronRight, size: 18, color: c.faint),
-            ],
-          ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(chatTitle(task.request),
+                            maxLines: 1, overflow: TextOverflow.ellipsis,
+                            style: context.type.bodyLarge?.copyWith(fontWeight: FontWeight.w600)),
+                      ),
+                      if (when != null) ...[
+                        const SizedBox(width: 8),
+                        Text(shortWhen(when), style: context.type.bodySmall?.copyWith(color: c.faint)),
+                      ],
+                    ],
+                  ),
+                  const SizedBox(height: 3),
+                  Text.rich(
+                    TextSpan(children: [
+                      TextSpan(text: state.label, style: TextStyle(color: color, fontWeight: FontWeight.w500)),
+                      if (preview.isNotEmpty) TextSpan(text: ' · ${preview.replaceAll(RegExp(r'\s+'), ' ')}'),
+                    ]),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: context.type.bodyMedium?.copyWith(color: c.muted, height: 1.35),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -906,9 +1168,11 @@ class _ChatPage extends StatelessWidget {
         builder: (context, _) {
           final task = core.tasks[taskId];
           return Scaffold(
-            backgroundColor: context.c.canvas,
+            backgroundColor: _night,
             appBar: AppBar(
-              title: Text(task?.request ?? 'Conversation', maxLines: 1, overflow: TextOverflow.ellipsis),
+              backgroundColor: _night,
+              surfaceTintColor: Colors.transparent,
+              title: Text(task == null ? 'Conversation' : chatTitle(task.request), maxLines: 1, overflow: TextOverflow.ellipsis),
               actions: [
                 if (task != null && task.active)
                   IconButton(tooltip: 'Stop', onPressed: () => run(() => core.stop(taskId)), icon: const Glyph(G.stop)),
@@ -953,6 +1217,7 @@ class _PcTab extends StatefulWidget {
     required this.onOpenLink,
     required this.onCopyToPc,
     required this.onPhoto,
+    required this.onSettings,
   });
   final CoreClient core;
   final Run run;
@@ -961,6 +1226,7 @@ class _PcTab extends StatefulWidget {
   final Future<void> Function(String url) onOpenLink;
   final Future<void> Function(String text) onCopyToPc;
   final Future<void> Function(PhotoAsk ask) onPhoto;
+  final VoidCallback onSettings;
 
   @override
   State<_PcTab> createState() => _PcTabState();
@@ -1053,21 +1319,44 @@ class _PcTabState extends State<_PcTab> {
     final c = context.c;
     final link = core.remote!;
     final online = core.status == CoreStatus.online;
-    final via = !online ? 'Not connected' : core.viaAnywhere ? 'Connected from anywhere (Tailscale)' : 'Connected on your Wi-Fi';
+    final via = !online ? 'Not connected' : core.viaAnywhere ? 'Connected from anywhere' : 'On your Wi-Fi';
     final anywhere = link.hosts.any(isOverlayAddress);
     return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 24),
       children: [
-        Text(link.pc, style: context.type.headlineSmall),
-        const SizedBox(height: 4),
-        Row(
-          children: [
-            Glyph(G.dot, size: 10, color: online ? c.success : c.faint),
-            const SizedBox(width: 6),
-            Expanded(child: Text(via, style: context.type.bodySmall?.copyWith(color: c.muted))),
-          ],
+        Padding(
+          padding: const EdgeInsets.fromLTRB(8, 0, 0, 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(link.pc, maxLines: 1, overflow: TextOverflow.ellipsis,
+                        style: context.type.headlineMedium?.copyWith(fontWeight: FontWeight.w600)),
+                    const SizedBox(height: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: (online ? const Color(0xFF7EE2AE) : c.faint).withValues(alpha: .12),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Glyph(G.dot, size: 8, color: online ? const Color(0xFF7EE2AE) : c.faint),
+                          const SizedBox(width: 6),
+                          Text(via, style: context.type.labelMedium?.copyWith(color: online ? const Color(0xFF7EE2AE) : c.faint)),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              IconButton(tooltip: 'Settings', onPressed: widget.onSettings, icon: const Glyph(G.sliders)),
+            ],
+          ),
         ),
-        const SizedBox(height: 14),
         _ScreenCard(
           shot: _shot,
           error: _shotError,
@@ -1077,36 +1366,40 @@ class _PcTabState extends State<_PcTab> {
           onPeek: _peek,
           onLive: _setLive,
         ),
-        const SizedBox(height: 18),
-        Text('Do on the PC', style: context.type.titleMedium),
-        const SizedBox(height: 10),
-        GridView.count(
-          crossAxisCount: 2,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: 2.3,
-          children: [
-            _Action(glyph: G.eye, label: 'What’s on screen?', onTap: () => widget.onAsk(
-                'Look at my PC screen and tell me briefly what’s on it and anything that needs my attention.')),
-            _Action(glyph: G.camera, label: 'What is this?', onTap: () => widget.onPhoto(PhotoAsk.what)),
-            _Action(glyph: G.file, label: 'Snap a document', onTap: () => widget.onPhoto(PhotoAsk.document)),
-            _Action(glyph: G.globe, label: 'Open a link', onTap: _sendLink),
-            _Action(glyph: G.doc, label: 'Copy to PC', onTap: _sendText),
-            _Action(glyph: G.search, label: 'Find a file', onTap: _find),
-            _Action(glyph: G.bell, label: 'Brief me now', onTap: () => widget.run(core.briefNow)),
-            _Action(glyph: G.stop, label: 'Stop everything', danger: true, onTap: () async {
+        const GroupLabel('Show Compii'),
+        HaloGroup(children: [
+          HaloRow(glyph: G.camera, title: 'What is this?', subtitle: 'Take a photo and ask about it',
+              onTap: () => widget.onPhoto(PhotoAsk.what)),
+          HaloRow(glyph: G.file, title: 'Snap a document', subtitle: 'Summary, deadlines, and the text saved on the PC',
+              onTap: () => widget.onPhoto(PhotoAsk.document)),
+        ]),
+        const GroupLabel('On the PC'),
+        HaloGroup(children: [
+          HaloRow(glyph: G.eye, title: 'What’s on screen?', onTap: () => widget.onAsk(
+              'Look at my PC screen and tell me briefly what’s on it and anything that needs my attention.')),
+          HaloRow(glyph: G.search, title: 'Find a file', onTap: _find),
+          HaloRow(glyph: G.globe, title: 'Open a link', subtitle: 'In its browser, ready when you sit down', onTap: _sendLink),
+          HaloRow(glyph: G.clipboard, title: 'Copy to the PC', subtitle: 'Then paste it there with Ctrl+V', onTap: _sendText),
+          HaloRow(glyph: G.sun, title: 'Brief me now', onTap: () => widget.run(core.briefNow)),
+        ]),
+        const SizedBox(height: 12),
+        HaloGroup(children: [
+          HaloRow(
+            glyph: G.stop,
+            title: 'Stop everything',
+            subtitle: 'Every conversation that’s working, right now',
+            danger: true,
+            onTap: () async {
               await widget.run(core.stopAll);
               _done('Compii stopped everything on ${link.pc}.');
-            }),
-          ],
-        ),
-        const SizedBox(height: 18),
-        if (!anywhere)
+            },
+          ),
+        ]),
+        if (!anywhere) ...[
+          const SizedBox(height: 16),
           Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(color: c.accentSoft, borderRadius: Shapes.r16),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: c.raised, borderRadius: BorderRadius.circular(18), border: Border.all(color: c.border)),
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -1115,16 +1408,14 @@ class _PcTabState extends State<_PcTab> {
                 Expanded(
                   child: Text(
                     'Want Compii when you’re out? Install the free Tailscale app on this phone and the PC and sign in to both '
-                    'with the same account. Compii finds the new address by itself; nothing to set up here.',
-                    style: context.type.bodySmall,
+                    'with the same account. Compii finds the new address by itself.',
+                    style: context.type.bodySmall?.copyWith(color: c.muted, height: 1.45),
                   ),
                 ),
               ],
             ),
           ),
-        const SizedBox(height: 10),
-        TextButton(onPressed: widget.onForget,
-            child: Text('Forget ${link.pc}', style: context.type.labelLarge?.copyWith(color: c.danger))),
+        ],
       ],
     );
   }
@@ -1145,7 +1436,7 @@ class _ScreenCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.c;
     return Container(
-      decoration: BoxDecoration(color: c.raised, borderRadius: Shapes.r18, border: Border.all(color: c.border)),
+      decoration: BoxDecoration(color: c.raised, borderRadius: BorderRadius.circular(18), border: Border.all(color: c.border)),
       clipBehavior: Clip.antiAlias,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1168,8 +1459,19 @@ class _ScreenCard extends StatelessWidget {
                           ? const CircularProgressIndicator()
                           : Padding(
                               padding: const EdgeInsets.all(20),
-                              child: Text(error ?? 'Tap Look to see the PC’s screen.',
-                                  textAlign: TextAlign.center, style: context.type.bodySmall?.copyWith(color: c.muted)),
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Text(error ?? 'See what’s on your PC’s screen right now.',
+                                      textAlign: TextAlign.center, style: context.type.bodySmall?.copyWith(color: c.muted)),
+                                  const SizedBox(height: 12),
+                                  FilledButton.icon(
+                                    onPressed: onPeek,
+                                    icon: const Glyph(G.eye, size: 18),
+                                    label: const Text('Look'),
+                                  ),
+                                ],
+                              ),
                             ),
                     ),
             ),
@@ -1211,38 +1513,6 @@ class _ScreenCard extends StatelessWidget {
   }
 }
 
-class _Action extends StatelessWidget {
-  const _Action({required this.glyph, required this.label, required this.onTap, this.danger = false});
-  final GlyphData glyph;
-  final String label;
-  final VoidCallback onTap;
-  final bool danger;
-
-  @override
-  Widget build(BuildContext context) {
-    final c = context.c;
-    final fg = danger ? c.danger : c.accent;
-    return Material(
-      color: danger ? c.dangerSoft : c.raised,
-      borderRadius: Shapes.r16,
-      child: InkWell(
-        borderRadius: Shapes.r16,
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              Glyph(glyph, color: fg, size: 20),
-              const SizedBox(width: 10),
-              Expanded(child: Text(label, style: context.type.labelLarge?.copyWith(color: danger ? c.danger : c.text))),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 // ---- Banners ----------------------------------------------------------------------------------
 
 class _ApprovalBanner extends StatelessWidget {
@@ -1252,7 +1522,6 @@ class _ApprovalBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = context.c;
     final first = tasks.first.pendingApproval;
     final asked = tasks.first.pendingQuestion;
     final headline = first != null
@@ -1260,15 +1529,22 @@ class _ApprovalBanner extends StatelessWidget {
             ? 'Compii needs your OK: ${first['label'] ?? first['tool'] ?? 'an action'}'
             : '${tasks.length} things need your OK')
         : 'Compii is asking: ${asked?['question'] ?? 'a question'}';
-    return Material(
-      color: c.warningSoft,
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+      child: Material(
+      color: const Color(0xFF16120C),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: Color(0x73FFC58A)),
+      ),
+      clipBehavior: Clip.antiAlias,
       child: InkWell(
         onTap: onOpen,
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+          padding: const EdgeInsets.fromLTRB(16, 12, 14, 12),
           child: Row(
             children: [
-              Glyph(asked != null && first == null ? G.chat : G.hand, color: c.warning),
+              Glyph(asked != null && first == null ? G.chat : G.hand, color: const Color(0xFFFFC58A)),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -1278,10 +1554,11 @@ class _ApprovalBanner extends StatelessWidget {
                   style: context.type.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
                 ),
               ),
-              Text('Review', style: context.type.labelLarge?.copyWith(color: c.accent)),
+              Text('Review', style: context.type.labelLarge?.copyWith(color: const Color(0xFFFFC58A))),
             ],
           ),
         ),
+      ),
       ),
     );
   }

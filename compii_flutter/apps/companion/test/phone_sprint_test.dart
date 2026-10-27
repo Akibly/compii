@@ -104,7 +104,7 @@ void main() {
 
     tester.widget<NavigationBar>(find.byType(NavigationBar)).onDestinationSelected!(1);
     await tester.pump(const Duration(milliseconds: 400));
-    expect(find.text('Today'), findsOneWidget);
+    expect(find.text('Your day'), findsOneWidget);
     expect(find.text('Brief me now'), findsOneWidget);
     await _shot(tester, key, 'chats');
     await tester.pumpWidget(const SizedBox());

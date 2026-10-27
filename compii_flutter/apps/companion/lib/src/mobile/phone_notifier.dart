@@ -14,6 +14,10 @@ class PhoneNotifier extends ChangeNotifier {
 
   static const _askedKey = 'phone_alerts_asked';
   static const _enabledKey = 'phone_alerts';
+  // Read by the native link too (FlutterSharedPreferences, "flutter." + key).
+  static const _quietKey = 'phone_quiet';
+  static const _quietFromKey = 'phone_quiet_from';
+  static const _quietToKey = 'phone_quiet_to';
 
   final CoreClient core;
   final PhoneAlerts alerts;
@@ -23,6 +27,19 @@ class PhoneNotifier extends ChangeNotifier {
 
   bool permission = false;
   bool enabled = true;
+
+  /// Quiet hours: only what needs you (an approval, a question) comes through.
+  /// Minutes after midnight; the window may cross midnight (22:00 to 07:00).
+  bool quiet = false;
+  int quietFrom = 22 * 60;
+  int quietTo = 7 * 60;
+
+  bool isQuiet([DateTime? at]) {
+    if (!quiet) return false;
+    final t = at ?? DateTime.now();
+    final m = t.hour * 60 + t.minute;
+    return quietFrom <= quietTo ? m >= quietFrom && m < quietTo : m >= quietFrom || m < quietTo;
+  }
 
   /// The phone's own link to the PC is running: it posts approvals, answers
   /// and briefs even with the app closed, so this notifier stops posting copies
@@ -43,6 +60,9 @@ class PhoneNotifier extends ChangeNotifier {
     try {
       final p = await SharedPreferences.getInstance();
       enabled = p.getBool(_enabledKey) ?? true;
+      quiet = p.getBool(_quietKey) ?? false;
+      quietFrom = p.getInt(_quietFromKey) ?? quietFrom;
+      quietTo = p.getInt(_quietToKey) ?? quietTo;
     } on Object {
       // defaults
     }
@@ -111,6 +131,21 @@ class PhoneNotifier extends ChangeNotifier {
 
   Future<void> openSettings() => alerts.openNotificationSettings();
 
+  Future<void> setQuiet({bool? on, int? from, int? to}) async {
+    quiet = on ?? quiet;
+    quietFrom = from ?? quietFrom;
+    quietTo = to ?? quietTo;
+    try {
+      final p = await SharedPreferences.getInstance();
+      await p.setBool(_quietKey, quiet);
+      await p.setInt(_quietFromKey, quietFrom);
+      await p.setInt(_quietToKey, quietTo);
+    } on Object {
+      // applies this session
+    }
+    if (!_disposed) notifyListeners();
+  }
+
   /// Called by the phone shell as the app moves in and out of view.
   void setForeground(bool value) {
     if (foreground == value) return;
@@ -169,6 +204,7 @@ class PhoneNotifier extends ChangeNotifier {
             failed ? 'Compii couldn’t finish' : 'Compii finished',
             _tidy(t.finalText!),
             'task:${t.id}',
+            needsYou: false,
           );
         }
       }
@@ -193,11 +229,13 @@ class PhoneNotifier extends ChangeNotifier {
       title.isEmpty ? 'From Compii' : title,
       body.isEmpty ? 'There’s something new on your PC.' : body,
       task.isEmpty ? 'chats' : 'task:$task',
+      needsYou: false,
     );
   }
 
-  void _post(String tag, String title, String body, String destination) {
+  void _post(String tag, String title, String body, String destination, {bool needsYou = true}) {
     if (linked) return; // the link posts these, with buttons, even when the app is gone
+    if (!needsYou && isQuiet()) return; // it's in Chats in the morning
     unawaited(alerts.notify(tag: tag, title: title, body: body, destination: destination));
   }
 

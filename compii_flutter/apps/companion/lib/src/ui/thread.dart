@@ -10,6 +10,7 @@ import 'reader.dart';
 import 'reply_text.dart';
 import 'supervisor.dart';
 import 'outcome.dart';
+import 'phone_kit.dart';
 import 'tokens.dart';
 import 'trust.dart';
 import 'chrome.dart';
@@ -1074,7 +1075,13 @@ class ApprovalCard extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Text('${approval['label']}', style: context.type.bodyLarge?.copyWith(fontWeight: FontWeight.w500)),
-          if (compact) ...[const SizedBox(height: 12), actions],
+          // On the phone, deleting and paying are held, not tapped: a brush in a pocket can't do it.
+          if (compact && destructive) ...[
+            const SizedBox(height: 12),
+            HoldButton(label: kind == 'spend' ? 'pay' : 'delete', color: c.danger, onHeld: () => run(() => core.decide(id, approved: true))),
+            const SizedBox(height: 8),
+            Wrap(spacing: 8, runSpacing: 8, children: [decline, ?always]),
+          ] else if (compact) ...[const SizedBox(height: 12), actions],
           if (preview != null) ...[const SizedBox(height: 12), preview],
           const SizedBox(height: 8),
           if (why.isNotEmpty) note(c.danger, why, color: c.danger),

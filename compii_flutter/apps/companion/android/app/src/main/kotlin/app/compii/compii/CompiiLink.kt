@@ -230,8 +230,20 @@ class CompiiLinkService : Service() {
         CompiiLink.setSince(this, out.optDouble("now", CompiiLink.since(this)))
     }
 
+    /** Quiet hours, as the app saved them: only approvals and questions come through. */
+    private fun quietNow(): Boolean {
+        val p = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        if (!p.getBoolean("flutter.phone_quiet", false)) return false
+        val from = p.getLong("flutter.phone_quiet_from", 22L * 60).toInt()
+        val to = p.getLong("flutter.phone_quiet_to", 7L * 60).toInt()
+        val now = java.util.Calendar.getInstance()
+        val m = now.get(java.util.Calendar.HOUR_OF_DAY) * 60 + now.get(java.util.Calendar.MINUTE)
+        return if (from <= to) m in from until to else m >= from || m < to
+    }
+
     private fun post(s: JSONObject) {
         val kind = s.optString("kind")
+        if (kind != "needs_you" && kind != "question" && quietNow()) return // it waits in Chats
         val id = s.optString("id")
         val task = s.optString("task_id")
         val title = s.optString("title", "Compii")
